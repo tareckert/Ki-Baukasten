@@ -709,6 +709,7 @@ class Preference(Paradigm):
             loss = -F.logsigmoid(rc - rr - margin).mean()
             if self.cfg.center_coef:
                 loss = loss + self.cfg.center_coef * (rc + rr).square().mean()
+        rc, rr = rc.detach(), rr.detach()
         return loss, {"loss": float(loss.detach()), "accuracy": float((rc > rr).float().mean()),
                       "reward_margin": float((rc - rr).mean())}
 
@@ -762,6 +763,7 @@ class DPO(Paradigm):
             else:
                 loss = (-(1 - c.label_smoothing) * F.logsigmoid(c.beta * delta)
                         - c.label_smoothing * F.logsigmoid(-c.beta * delta)).mean()
+        delta = delta.detach()
         return loss, {"loss": float(loss.detach()), "accuracy": float((delta > 0).float().mean()),
                       "reward_margin": float((c.beta * delta).mean())}
 

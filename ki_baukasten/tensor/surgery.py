@@ -673,8 +673,8 @@ class TensorSurgeon:
     def report(self) -> str:
         frozen = sum(p.numel() for p in self.model.parameters() if not p.requires_grad)
         total = sum(p.numel() for p in self.model.parameters())
-        lines = [f"Tensor-Chirurgie: {len(self.rules)} Regeln, {len(self.bindings)} Bindungen; "
-                 f"eingefroren {frozen:,}/{total:,} Parameter".replace(",", ".")]
+        lines = [f"Tensor-Chirurgie: {len(self.rules)} Regeln, {len(self.bindings)} Bindungen; eingefroren "
+                 + f"{frozen:,}/{total:,}".replace(",", ".") + " Parameter"]
         for b in self.bindings[:30]:
             lines.append(f"  {b.rule.op.name:<13} {b.name}" + (f"[{b.rule.index}]" if b.index is not None else ""))
         if len(self.bindings) > 30:

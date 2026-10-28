@@ -50,7 +50,7 @@ from ..components.layers import LAYERS, DropPath
 from ..components.normalization import build_norm
 from ..core import (BaseConfig, ComponentParam, Level, NestedParam, Param, T, resolve_layer_config,
                     validate_overrides)
-from .base import MODELS, BaseModel, ModelConfig, mark_residual_projections
+from .base import MODELS, BaseModel, InitConfig, ModelConfig, mark_residual_projections
 
 
 # ===========================================================================
@@ -245,6 +245,13 @@ class TransformerConfig(ModelConfig):
         "Die vielseitigste Architektur der modernen KI – Sprache, Bilder, Zeitreihen, Audio, Multimodal.",
         "Sprachmodelle, Klassifikation, Übersetzung, Vision Transformer, Prognosen.",
     )
+
+    init = NestedParam(InitConfig, level=Level.ADVANCED, group="Initialisierung", default_factory=lambda: InitConfig(
+        embedding={"name": "normal", "std": 0.02}, linear_bias="zeros"), tooltip=T(
+        "Initialisierung (Transformer-Standard: Embeddings ~ N(0, 0.02²), Biases 0).",
+        "Kleine Embeddings halten die Logits gebundener Ausgabegewichte anfangs klein → stabiler Start.",
+        "GPT-2-Schema zusätzlich: linear_weight normal(0.02) + residual_projection scaled_normal.",
+    ))
 
     # --- Grundarchitektur --------------------------------------------------
     architecture = Param("decoder_only", choices={

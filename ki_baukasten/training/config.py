@@ -139,8 +139,8 @@ class TrainingConfig(BaseConfig):
     epochs = Param(10, min=1, group="Umfang", tooltip=T(
         "Durchläufe durch den Datensatz.", "Mehr = mehr Lernen, aber Überanpassungsgefahr.", "5–100."))
     max_steps = Param(None, type=int, min=1, group="Umfang", tooltip=T(
-        "Maximale Optimierungsschritte (überschreibt epochs, wenn früher erreicht).",
-        "Feste Rechenbudgets.", "LLM-Training wird meist in Schritten bemessen."))
+        "Exakte Anzahl Optimierungsschritte (wenn gesetzt, wird 'epochs' ignoriert).",
+        "Feste Rechenbudgets unabhängig von der Datensatzgröße.", "LLM-Training wird meist in Schritten bemessen."))
     batch_size = Param(32, min=1, group="Umfang", tooltip=T(
         "Beispiele pro Schritt.", "Größer = stabilere Gradienten, mehr Speicher.", "8–512."))
     eval_batch_size = Param(None, type=int, min=1, group="Umfang", level=Level.ADVANCED, tooltip=T(
