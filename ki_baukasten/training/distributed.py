@@ -170,8 +170,6 @@ class DistributedContext:
         for t in list(model.parameters()) + list(model.buffers()):
             dist.broadcast(t.data, src=0)
         if forward_only:
-            from torch.nn.parallel import DistributedDataParallel
-
             ids = [self.device.index] if self.device.type == "cuda" else None
             self.wrapped = True
             return _DDP(model, device_ids=ids, find_unused_parameters=self.cfg.find_unused_parameters)

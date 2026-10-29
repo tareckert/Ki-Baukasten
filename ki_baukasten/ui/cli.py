@@ -475,8 +475,10 @@ def cmd_trainieren(a: argparse.Namespace) -> None:
     p.train()
     if p.config.data.name == "anomaly":
         print("Anomalie-Erkennung:", p.anomaly_report())
+    from ..training.distributed import is_main_process
+
     target = p.save(a.speichern) if a.speichern != "-" else None
-    if target:
+    if target and is_main_process():
         print(f"Gespeichert in: {target}")
 
 

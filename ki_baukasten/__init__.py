@@ -22,6 +22,8 @@ Leitprinzipien
    und eine Speicherschätzung mit Empfehlungen.
 6. **Alles ist durchschaubar.** Komplette Aufbau-Darstellung, Ratgeber mit direkt
    übernehmbaren Vorschlägen, Rückgängig/Wiederholen, Export.
+7. **Alles ist schaltbar – und trotzdem übersichtlich.** Drei Ebenen: Ziele (Assistent
+   empfiehlt Modelle), Techniken (Katalog mit Häkchen), Einstellungen (An · Aus · Eigen).
 
 Schnellstart
 ------------
@@ -42,7 +44,9 @@ Paketübersicht
 ``memory``      Präzision, Checkpointing, Streaming/Offloading, Quantisierung, LoRA, Speicherschätzung
 ``tensor``      Tensor- und Modul-Chirurgie, Geltungsbereiche
 ``compress``    Modelle eindampfen: Pruning, Low-Rank, Sparsity, Quantisierung, Heilen
-``analysis``    Aufbau-Darstellung, Ratgeber, Export, Messung
+``analysis``    Aufbau-Darstellung, Ratgeber, Export, Messung, Zielsysteme, Notfall-Ausführung, Ziel-Assistent
+``techniques``  Katalog an/abwählbarer Techniken (Stabilität … Schwarm, Evolution, experimentell)
+``workflow``    Ablauf: Suche (Zufall/Gitter/Evolution/PSO/PBT), föderiert, Model Soup
 ``data``        Datensätze (synthetisch + eigene Dateien)
 ``presets``     Vorlagen je Anwendungsgebiet, Speicherprofile
 ``project``     ``Project``-Fassade
@@ -51,12 +55,13 @@ Paketübersicht
 
 from __future__ import annotations
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 from .core import (BaseConfig, BuildError, ComponentListParam, ComponentParam, ComponentSpec, ConfigError,
                    ConfigListParam, FreeConfig, KIBaukastenError, Level, NestedParam, Param, T, Tooltip,
                    TrainingError, all_registries, register, registry, select_indices)
 from . import components, models, training, memory, tensor, compress, data, presets, analysis  # noqa: E402,F401
+from . import techniques, workflow  # noqa: E402,F401
 from .memory import MemoryConfig, estimate_memory  # noqa: E402
 from .models import BaseModel, ModelConfig, build_model  # noqa: E402
 from .presets import DOMAINS, MEMORY_PROFILES, apply_memory_profile, get_preset, presets_by_domain  # noqa: E402

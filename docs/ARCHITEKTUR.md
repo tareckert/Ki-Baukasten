@@ -10,12 +10,15 @@ vollständige Aufbau-Darstellung eines Beispielmodells (so sieht die Ausgabe von
 
 ```mermaid
 flowchart LR
+  Z["Ziele<br/>goals · from_goals"] -->|empfiehlt Vorlage + Techniken| A
+  T["Techniken-Katalog<br/>enable / disable"] -->|setzt Einstellungen| A
   A["ProjectConfig<br/>(JSON/YAML/Python)"] --> B["Validierung<br/>+ auto_fit_dims"]
   B --> C["Registry 'model'<br/>baut das Modell"]
   C --> D["Modul-Chirurgie<br/>module_rules"]
   D --> E["Tensor-Chirurgie<br/>tensor_rules"]
   E --> F["MemoryManager<br/>Präzision · Quantisierung · LoRA ·<br/>Checkpointing · Streaming/Offload"]
-  F --> G["Trainer<br/>Paradigma · Optimierer · Zeitplan ·<br/>Verluste · Callbacks"]
+  F --> G["Trainer<br/>Paradigma · Optimierer · Zeitplan ·<br/>Verluste · Callbacks · Logger · Cluster"]
+  W["Ablauf (workflow)<br/>Suche · föderiert · Model Soup"] -->|run| G
   G --> R["Zielsystem-Übersicht<br/>recommend_for · reduce_for"]
   R --> K["Kompression<br/>Pruning · Low-Rank · Quantisierung ·<br/>Heilen / Lehrer-Schüler"]
   K --> H["Projekt speichern<br/>projekt.json · modell.pt (+ Struktur-Regeln)"]
@@ -36,10 +39,21 @@ flowchart LR
 | Kompression | `compress/*` | `compress()`, `compression.steps`, `distill()` |
 | Zielsysteme | `analysis/targets.py` | `deployment.*`, `recommend_for()`, `reduce_for()` |
 | Import | `models/external.py` | `Project.import_model()`, Modell `extern` |
+| Ziele | `analysis/goals.py` | `goals.*`, `Project.from_goals()`, `set_goals()`, `goal_check()` |
+| Techniken | `techniques.py` | `Project.enable()/disable()/techniques()` |
+| Schalter | `core/switches.py` | `Project.switch()`, `set(pfad, "aus")`, `switches()` |
+| Notfall-Ausführung | `analysis/fallback.py`, `memory/streaming.py`, `memory/offload.py`, `memory/execution.py` | `fallback_options()`, `apply_fallback()`, `memory.offload.*`, `memory.oom_strategy` |
+| Cluster | `training/distributed.py` | `training.distributed.*`, CLI `verteilt` |
+| Logger | `training/logger.py` | `training.logging.*`, `Project.add_logger()` |
+| Ablauf | `workflow/*` | `workflow.*`, `Project.run()`, `tune()`, `federated_train()`, `model_soup()` |
 
 ---
 
 ## 2. Ebenen der Anpassung
+
+Ganz oben stehen drei Bedien-Ebenen: **Ziele** (der Assistent wählt Vorlage und Techniken), **Techniken** (benannte
+Bündel von Einstellungen mit Status an/aus/teilweise) und **Schalter** je Einstellung (an = empfohlener Wert, aus =
+wirkungslos, eigen = eigener Wert). Darunter liegen die Werkzeuge für feinste Eingriffe.
 
 Von grob nach fein – jede Ebene kann **für alle**, **nur bestimmte** oder **genau ein** Element gelten:
 

@@ -3,13 +3,18 @@
 Ein Python-Baukasten (PyTorch), mit dem sich **KIs und ganze KI-Systeme bis ins kleinste Detail** zusammenstellen,
 kombinieren, trainieren und speichern lassen – mit einer **Erklärung zu jeder einzelnen Einstellung**.
 
-- **1.053 einzeln dokumentierte Einstellungen** – jede mit Tooltip: *Was ist das? Warum/Nutzen? Wofür wichtig? Tipp*
-- **352 austauschbare Komponenten** in 25 Registries (Aktivierungen, Normen, Attention-Kernel, Mixer, FFN/MoE/KAN,
+- **1.169 einzeln dokumentierte Einstellungen** – jede mit Tooltip: *Was ist das? Warum/Nutzen? Wofür wichtig? Tipp* –
+  und jede mit Schalter **An · Aus · Eigen**
+- **Übersichtlich in drei Ebenen**: **Ziel-Assistent** (Zweck und Prioritäten angeben → passende Modelle werden
+  empfohlen, unpassende abgeraten), **Techniken-Katalog** (92 Verfahren aus Community, Forschung und Industrie in
+  13 Kategorien, je mit einem Häkchen an/aus) und **Einstellungen** (jede einzeln, mit Ansichtsfilter)
+- **363 austauschbare Komponenten** in 26 Registries (Aktivierungen, Normen, Attention-Kernel, Mixer, FFN/MoE/KAN,
   Modelle, Optimierer, Zeitpläne, Verluste, Belohnungen, Tensor- und Modul-Operationen, Kompressions-Schritte …) – alle
   per Name überall einsetzbar; Gesamtübersicht in [`docs/MOEGLICHKEITEN.md`](docs/MOEGLICHKEITEN.md)
 - **19 Modelle** (inkl. **Import fremder Modelle**), beliebig kombinierbar und verschachtelbar
-- **12 Trainings-Paradigmen** inkl. Reinforcement Learning mit frei kombinierbaren Belohnungen
-- **34 Vorlagen** für 11 Anwendungsgebiete – sofort lauffähig ohne Downloads
+- **13 Trainings-Paradigmen** inkl. Reinforcement Learning mit frei kombinierbaren Belohnungen und gradientenfreien
+  **Evolution Strategies**
+- **34 Vorlagen** für 11 Anwendungsgebiete – sofort lauffähig ohne Downloads; **23 kommentierte Beispiele**
 - **Jede Schicht darf anders sein** (schichtweise Overrides mit **Übernahme** von anderen Schichten), **jedes gebaute
   Modul** (Modul-Chirurgie) und **jeder Tensor-Ausschnitt** (Tensor-Chirurgie) ist einzeln steuerbar – jeweils mit
   Geltungsbereich **für alle / nur bestimmte / nur genau einen / alle außer**
@@ -31,7 +36,17 @@ kombinieren, trainieren und speichern lassen – mit einer **Erklärung zu jeder
   Histogramme/-Heatmaps, Attention-Karten, Testlauf mit Konfusionsmatrix – auch in der GUI
 - **Ratgeber & Aufbau**: Optimierungs-/Speichervorschläge zum direkten Übernehmen, komplette Aufbau-Darstellung
   (Text, Markdown, Mermaid, JSON), Export (torch.export mit dynamischen Formen, TorchScript, ONNX)
-- **Drei Oberflächen**: Python-API, Kommandozeile (deutsch), grafischer Editor mit Maus-Tooltips, Rückgängig/Wiederholen
+- **Notfall-Ausführung**: passt ein Modell trotz Verkleinern nicht, wird stückweise gerechnet – Schicht für Schicht
+  von der SSD, eingefrorene Basis auf der SSD mit Adaptern im RAM, Teile auf der CPU, LISA, Batches automatisch teilen,
+  lange Prompts in Stücken – jeweils mit Schätzung von Speicher und Tempo
+- **Cluster**: verteiltes Training mit DDP, ZeRO-1 und FSDP über `torchrun` (`python -m ki_baukasten verteilt …`)
+- **Schwarm & Evolution**: Hyperparameter-Suche per Zufall, Gitter, genetischem Algorithmus, Partikelschwarm und
+  Population Based Training; föderiertes Lernen (FedAvg/FedProx), Model Soups, Kreuzvalidierung, LR-Finder – als
+  schaltbarer Ablauf (`Project.run()`)
+- **Logger**: Umfang von „still“ bis „debug“, Ziele Konsole/Datei (Rotation)/JSONL/CSV/Python-`logging`/TensorBoard/
+  W&B/MLflow – je Ziel eigene Stufe – und eigene Logger
+- **Drei Oberflächen**: Python-API, Kommandozeile (deutsch), grafischer Editor mit Menüs, Assistent, Techniken-Fenster,
+  Maus-Tooltips und Rückgängig/Wiederholen
 
 Es gibt keine „verbotenen“ Einstellungen: auch experimentelle, exotische oder scheinbar unnötige Optionen sind
 änderbar. Erfahrungsstufen (*Basis → Fortgeschritten → Experte → Experimentell*) dienen nur der Orientierung.
@@ -42,19 +57,23 @@ Es gibt keine „verbotenen“ Einstellungen: auch experimentelle, exotische ode
 
 1. [Installation](#installation)
 2. [Schnellstart](#schnellstart) – Python, Kommandozeile, GUI
-3. [Grundkonzepte](#grundkonzepte)
-4. [Was alles drin ist](#was-alles-drin-ist)
-5. [Vorlagen nach Anwendungsgebiet](#vorlagen-nach-anwendungsgebiet)
-6. [Speicher & große Modelle](#speicher--große-modelle) – Streaming, Quantisierung, LoRA, 8-Bit-Optimierer
-7. [Mamba, Generierung & KV-Cache](#mamba-generierung--kv-cache)
-8. [Modelle eindampfen, Lehrer-Schüler & Zielsysteme](#modelle-eindampfen-lehrer-schüler--zielsysteme)
-9. [Fremde Modelle importieren & Probelauf](#fremde-modelle-importieren--probelauf)
-10. [Aufbau, Ratgeber & Export](#aufbau-ratgeber--export)
-11. [Reinforcement Learning & Belohnungen](#reinforcement-learning--belohnungen)
-12. [Eigene Komponenten](#eigene-komponenten)
-13. [Projektstruktur](#projektstruktur)
-14. [Tests](#tests)
-15. [Ehrliche Grenzen](#ehrliche-grenzen)
+3. [Ziele, Techniken, Schalter – die drei Ebenen](#ziele-techniken-schalter--die-drei-ebenen)
+4. [Grundkonzepte](#grundkonzepte)
+5. [Was alles drin ist](#was-alles-drin-ist)
+6. [Vorlagen nach Anwendungsgebiet](#vorlagen-nach-anwendungsgebiet)
+7. [Speicher & große Modelle](#speicher--große-modelle) – Streaming, Quantisierung, LoRA, 8-Bit-Optimierer
+8. [Notfall-Ausführung](#notfall-ausführung-wenn-es-trotz-verkleinern-nicht-passt)
+9. [Mamba, Generierung & KV-Cache](#mamba-generierung--kv-cache)
+10. [Modelle eindampfen, Lehrer-Schüler & Zielsysteme](#modelle-eindampfen-lehrer-schüler--zielsysteme)
+11. [Ablauf: Suche, Schwarm, Evolution, föderiert](#ablauf-suche-schwarm-evolution-föderiert)
+12. [Logger & Cluster](#logger--cluster)
+13. [Fremde Modelle importieren & Probelauf](#fremde-modelle-importieren--probelauf)
+14. [Aufbau, Ratgeber & Export](#aufbau-ratgeber--export)
+15. [Reinforcement Learning & Belohnungen](#reinforcement-learning--belohnungen)
+16. [Eigene Komponenten](#eigene-komponenten)
+17. [Projektstruktur](#projektstruktur)
+18. [Tests](#tests)
+19. [Ehrliche Grenzen](#ehrliche-grenzen)
 
 Ausführliche Erklärung des inneren Aufbaus und aller Eingriffspunkte: [`docs/ARCHITEKTUR.md`](docs/ARCHITEKTUR.md).
 
@@ -79,12 +98,20 @@ Die grafische Oberfläche nutzt Tkinter (in Python enthalten; unter Debian/Ubunt
 ```python
 from ki_baukasten import Project
 
+# Variante A: nach Zielen – der Assistent wählt die Vorlage und schaltet passende Techniken ein
+p = Project.from_goals(description="Spam-Filter direkt auf dem Handy", task="text_klassifizieren",
+                       priorities=["geschwindigkeit", "datenschutz"], data_size="klein")
+print(p.goal_report)                                # empfohlen / abgeraten (mit Begründung), Techniken, Hinweise
+
+# Variante B: direkt eine Vorlage
 p = Project.from_preset("sprachmodell_mini")        # Vorlage: kleines GPT-artiges Sprachmodell
 p.set("model.n_layers", 6)                          # jede Einstellung per Pfad …
 p.set("model.block.mixer.num_heads", 8)             # … auch tief verschachtelt
 p.set("model.layer_overrides", {"-1": {"ffn": "moe"}})   # nur die letzte Schicht als Mixture-of-Experts
 
 p.set_all("dropout", 0.1)                           # eine Einstellung überall setzen (Platzhalter: "model.**.dropout")
+p.set("**.dropout", "aus")                          # … oder per Schalter: an · aus · eigen · standard
+p.enable("qlora", "spike_schutz", "ema")            # Techniken aus dem Katalog an- und abwählen
 
 print(p.explain("model.block.norm_position"))       # Tooltip + Typ + Bereich + alle Optionen
 print(p.search("speicher sparen"))                  # Volltextsuche über Pfade, Tooltips und Komponenten
@@ -105,6 +132,13 @@ schueler = p.distill(width=0.5, depth=0.5)          # Lehrer-Schüler: kleineres
 ### Kommandozeile
 
 ```bash
+python -m ki_baukasten ziele --text "Bilder auf dem Handy in Echtzeit erkennen" --erstellen neu.json  # Assistent
+python -m ki_baukasten techniken sprachmodell_mini --an qlora --an spike_schutz --speichern llm.json  # Katalog
+python -m ki_baukasten schalter sprachmodell_mini --aus dropout --an training.ema       # An/Aus/Eigen je Einstellung
+python -m ki_baukasten notfall sprachmodell_mini --budget-mb 8 --training --anwenden auto  # wenn es nicht passt
+python -m ki_baukasten automl tabellen_klassifikation --methode pso --versuche 12       # Schwarm-/Evolutions-Suche
+python -m ki_baukasten ablauf meine_ki.json --setze workflow.cross_validation=5         # ganzer Ablauf
+python -m ki_baukasten verteilt meine_ki.json --prozesse 4 --strategie fsdp            # Cluster (torchrun)
 python -m ki_baukasten presets                              # Vorlagen nach Anwendungsgebiet
 python -m ki_baukasten modelle                              # alle Modelle
 python -m ki_baukasten komponenten                          # alle Registries
@@ -138,7 +172,14 @@ python -m ki_baukasten gui sprachmodell_mini
 
 `python -m ki_baukasten gui [vorlage|datei]` öffnet einen Editor mit
 
-- **Baum** aller Einstellungen (Modell, Daten, Training, Speicher, Tensor-Regeln),
+- **Menü** Datei · Assistent · Einstellungen · Techniken · Ausführen · Analyse · Einsatz · Hilfe und einer schlanken
+  Werkzeugleiste für das Häufigste,
+- **✚ Neue KI nach Zielen…**: Aufgabe, Beschreibung, Prioritäten (Häkchen), Datenmenge, Zielgerät → Empfehlungen und
+  Abratungen mit Begründung → neues Projekt; später „Ziele prüfen / ändern“,
+- **Techniken**: Fenster mit Reitern je Kategorie, Häkchen zum An-/Abwählen, Status, Suche, Tooltips (wer nutzt es),
+- **An · Aus · Eigen** neben jeder Einstellung und **Ansichtsfilter** (alle, nur eingeschaltete, nur ausgeschaltete,
+  nur eigene Werte) – so bleibt es bei über tausend Einstellungen übersichtlich,
+- **Baum** aller Einstellungen (Modell, Daten, Training, Speicher, Tensor-Regeln, Ziele, Ablauf),
 - **Formular** des gewählten Knotens – **Maus über einen Namen zeigt den Tooltip**, `?` zeigt alle Details und Optionen,
 - **Stufenfilter** (Basis … Experimentell), **Suche** über alle Einstellungen,
 - Komponentenwechsel per Auswahlliste, Listen (Verluste, Belohnungen, Stufen, Regeln) hinzufügen/entfernen,
@@ -146,9 +187,41 @@ python -m ki_baukasten gui sprachmodell_mini
 - **Aufbau** (komplette Auflistung), **Optimieren** (Ratgeber mit Übernahme-Dialog), **↶ Rückgängig / ↷ Wiederholen**,
 - **Probelauf & Gewichte**: Fenster mit allen Wegen durchs Netz (Ausgabeform, Statistik, Gradient, Zeit, ⚠-Warnungen),
   Histogramm + Heatmap jeder Modulausgabe und jedes Gewichts, Attention-Karten je Kopf, Testlauf mit Konfusionsmatrix,
-- **Reduzieren / Export**: Zielsystem wählen → Empfehlung lesen → anwenden → exportieren; **Modell importieren…**.
+- **Reduzieren / Export**: Zielsystem wählen → Empfehlung lesen → anwenden → exportieren; **Notfall-Ausführung…**
+  (Optionen mit Schätzung, eine wählen und einschalten); **Modell importieren…**,
+- **Ausführen**: Ablauf, automatische Suche, föderiert, Model Soup, Kreuzvalidierung, LR-Finder – im Hintergrund.
 
 ---
+
+## Ziele, Techniken, Schalter – die drei Ebenen
+
+Trotz über tausend Einstellungen bleibt es übersichtlich, weil man auf drei Ebenen arbeiten kann:
+
+| Ebene | Wofür | Python | CLI | GUI |
+|---|---|---|---|---|
+| **1. Ziele** | Zweck, wichtige Punkte, Zielgerät → Modell wird empfohlen, Unpassendes abgeraten | `Project.from_goals`, `set_goals`, `goal_check` | `ziele` | ✚ Neue KI nach Zielen |
+| **2. Techniken** | 92 bewährte Verfahren in 13 Kategorien mit einem Häkchen | `enable`, `disable`, `techniques` | `techniken` | Techniken |
+| **3. Einstellungen** | jede einzelne: An (empfohlen) · Aus · Eigen | `switch`, `set(…, "aus")`, `switches` | `schalter` | Formular + Ansicht |
+
+**Ziel-Assistent** – Beispiel `evaluate_goals({"description": "Pflanzenkrankheiten per Handykamera in Echtzeit",
+"data_size": "klein"})`: erkannt werden Aufgabe *Bilder erkennen*, Zielgerät *Smartphone* und die Prioritäten *wenig
+Speicher, Energie, Echtzeit*; empfohlen wird das mobile CNN (✓ passt auf das Smartphone, ✓ Echtzeit …), abgeraten vom
+Vision Transformer (✗ braucht mehr Daten, ✗ zu groß fürs Smartphone). Vorgeschlagene Techniken (Checkpointing,
+Augmentierung, Early Stopping, Kompression nach dem Training …) werden eingeschaltet; aufwendige wie DP-SGD oder
+föderiertes Lernen nur vorgeschlagen. Die Ziele bleiben im Projekt (`goals`) und lassen sich jederzeit ändern.
+
+**Techniken-Katalog** – Kategorien: Stabilität (Gradient-Clipping, Warmup, Verlust-Spitzen-Schutz mit Rücksprung, EMA,
+QK-Norm, z-Loss …), gegen Auswendiglernen (Dropout, DropPath, Weight-Decay, Label Smoothing, Mixup, CutMix, SAM, SWA,
+Early Stopping, Kreuzvalidierung …), Performance (bf16, torch.compile, TF32, GQA …), große Modelle auf kleiner Hardware
+(Checkpointing, 8-Bit-AdamW, Adafactor, LoRA/QLoRA, Streaming, SSD-Streaming, device_map, LISA …), Cluster (DDP, ZeRO-1,
+FSDP), automatische Suche, Schwarmintelligenz (Partikelschwarm, föderiert, Model Soup), Evolution (genetisch, PBT,
+Evolution Strategies), Daten, Datenschutz (DP-SGD), Überwachung, Kompression, Experimentelles (Lookahead, Gradient
+Centralization, Grokfast, Lion, Muon …). Jede Technik zeigt, wer sie nutzt, und `disable` stellt den vorherigen
+Zustand exakt wieder her. Vollständige Liste: [`docs/MOEGLICHKEITEN.md`](docs/MOEGLICHKEITEN.md#techniken-katalog).
+
+**Schalter je Einstellung** – `an` = empfohlener Wert, `aus` = wirkungslos (Dropout 0, Mixup 0, Komponente `none`, Liste
+leer …), `eigen` = eigener Wert (wird beim Ausschalten gemerkt). Gruppen lassen sich als Ganzes schalten
+(`p.switch("training.regularization", "aus")`), `p.switch_overview()` zeigt kompakt, was an ist.
 
 ## Grundkonzepte
 
@@ -429,6 +502,30 @@ Einstellungen vor.
 
 ---
 
+## Notfall-Ausführung: wenn es trotz Verkleinern nicht passt
+
+```python
+print(p.recommend_for("mikrocontroller"))           # enthält bei Bedarf "Passt trotz Verkleinern nicht? …"
+for o in p.fallback_options(budget_mb=500, training=True):
+    print(o)                                        # ✓/✗, Gerätespeicher, RAM/SSD, Verlangsamung, Einstellungen
+p.apply_fallback("auto", budget_mb=500, training=True)   # schnellste passende Option ohne Qualitätsverlust
+klein = p.reduce_for("raspberry_pi", fallback="auto")    # verkleinern und – falls nötig – Notfall einschalten
+```
+
+| Inferenz | Training |
+|---|---|
+| Eingaben stückweise (`predict(chunk_size=…)`) | Checkpointing + Mikro-Batches + Akkumulation + bf16 |
+| hintere Blöcke auf der CPU (`offload.mode = "split"`) | 8-Bit-AdamW, LISA (nur wenige Blöcke gleichzeitig) |
+| Blöcke im RAM bzw. Schicht für Schicht von der SSD | LoRA / QLoRA |
+| große Stapel: jede Schicht nur einmal laden (AirLLM-Prinzip) | Blöcke im RAM streamen (`offload.mode = "stream"`) |
+| 4-Bit-Gewichte (nf4) | eingefrorene Basis auf der SSD + Adapter im RAM (`offload.storage = "disk"`) |
+| auf der CPU rechnen | CPU, oder FSDP über mehrere Geräte |
+
+Dazu: **Speichermangel = kein Abbruch** (`memory.oom_strategy = "batch_teilen"` teilt den Batch und akkumuliert –
+gleiches Ergebnis), **Chunked Prefill** für lange Prompts (`generate(..., prefill_chunk=512)`, identisches Ergebnis)
+und **Laden per Memory-Map** (`Project.load(ordner, mmap=True)`). Mit `memory.memory_budget_gb` warnt `train()` vorab und
+nennt passende Optionen.
+
 ## Mamba, Generierung & KV-Cache
 
 **Mamba-Training**: Der Zustands-Scan `h_t = exp(Δ·A)·h_{t-1} + Δ·B·x_t` läuft als eigene Autograd-Funktion
@@ -499,6 +596,42 @@ Mikrocontroller (Cortex-M, ≤ 1 MB)    3,0 MB 1115.7 ms  nein   prune_heads →
 `apple_silicon`, `server_cpu`, `laptop_cpu`, `smartphone`, `raspberry_pi`, `mikrocontroller`, `browser`.
 
 ---
+
+## Ablauf: Suche, Schwarm, Evolution, föderiert
+
+```python
+p.tune("pso", space={"training.optimizer.lr": {"min": 1e-4, "max": 1e-2, "log": True},
+                     "model.layer.dropout": [0.0, 0.1, 0.2]}, trials=20)   # random | grid | evolution | pso | pbt
+p.federated_train(clients=10, rounds=20, split="nicht_iid", algorithm="fedprox")   # Daten bleiben verteilt
+p.model_soup(4)                                     # 4 Läufe vom selben Start, Gewichte gemittelt (greedy)
+p.cross_validate(k=5)                               # Mittel ± Streuung
+p.find_lr(apply=True)                               # LR-Range-Test, Empfehlung übernehmen
+p.set("training.paradigm", "evolution_strategies")  # gradientenfrei (OpenAI-ES)
+
+p.update({"workflow.search.method": "evolution", "workflow.soup_runs": 3, "workflow.compress_after_training": True,
+          "workflow.export_format": "export"})
+p.run()                                             # Suche → Training (Soup) → Kompression → Export
+```
+
+PBT verändert Trainings-Einstellungen *während* des Trainings (schlechte Mitglieder übernehmen Gewichte und
+Einstellungen der guten und variieren sie). Neue Trainings-Techniken: Verlust-Spitzen-Schutz mit Rücksprung, SWA,
+Lookahead, Gradient Centralization, Grokfast, Bild-Augmentierung inkl. CutMix, Token-Rauschen, Klassen-Ausgleich,
+Label Smoothing für jede Klassifikation, DP-SGD (Gradient je Beispiel begrenzen + Rauschen).
+
+## Logger & Cluster
+
+```python
+p.set("training.logging", {"level": "minimal",                        # still | minimal | normal | ausfuehrlich | debug
+                           "backends": ["console", {"name": "jsonl", "args": {"level": "debug"}}, "csv", "datei",
+                                        "tensorboard"],
+                           "weights_every_n_steps": 200, "gradients_every_n_steps": 100, "max_file_mb": 50})
+p.add_logger(logging.getLogger("firma.ki"))         # eigener Logger (oder Objekt mit message/metrics/…)
+```
+
+Verteilt: `training.distributed.strategy = ddp | zero1 | fsdp`, Start mit
+`python -m ki_baukasten verteilt projekt.json --prozesse 4` (mehrere Rechner: `--knoten 2 --knoten-rang 0 --master
+host:29500`). Jeder Prozess sieht seinen Teil der Daten; Ausgaben und Speichern übernimmt Prozess 0. Getestet ist,
+dass 2 Prozesse exakt dasselbe Ergebnis liefern wie ein Prozess mit doppeltem Batch – für DDP, ZeRO-1 und FSDP.
 
 ## Fremde Modelle importieren & Probelauf
 
@@ -598,25 +731,30 @@ außerdem ein freies `extras`-dict.
 
 ```
 ki_baukasten/
-├── core/          Param, BaseConfig, Tooltip/Level, Registry, ComponentSpec, Selektoren, Fehler
+├── core/          Param, BaseConfig, Tooltip/Level, Registry, ComponentSpec, Selektoren, Schalter, Fehler
 ├── components/    activations, normalization, initializers, positional, attention, feedforward, mixers, layers,
 │                  scan (schnelle lineare Rekurrenzen), cache (KV-/Zustands-Cache)
 ├── models/        base, mlp, cnn, rnn, transformer (+ssm/hybrid), autoencoder, generative (gan/diffusion),
 │                  gnn, rl_nets, graph (freies Netz), composite (ensemble/pipeline/fusion/mixture/multitask),
 │                  external (Import fremder Modelle)
-├── training/      config, trainer, paradigms, optimizers, schedulers, losses, callbacks, data_utils, continual
+├── training/      config, trainer, paradigms (+ Evolution Strategies), optimizers, schedulers, losses, callbacks
+│                  (+ LISA, SWA), data_utils, continual, distributed (DDP/ZeRO-1/FSDP), logger, lr_finder
 │   └── rl/        environments, rewards, algorithms (ppo/a2c/reinforce/dqn)
-├── memory/        config, manager, streaming (RAM-Training), offload (Swapping), quant (int8/int4/nf4),
-│                  lora (LoRA/DoRA/QLoRA), estimator
+├── memory/        config, manager, streaming (RAM-/SSD-Training), offload (Swapping, device_map), quant
+│                  (int8/int4/nf4), lora (LoRA/DoRA/QLoRA), estimator, execution (stückweise, OOM-Teilung)
 ├── tensor/        surgery (Tensor-Chirurgie), modules (Modul-Chirurgie), selection (Geltungsbereiche)
 ├── compress/      structure, methods (Pruning, Low-Rank, Sparsity), pipeline (Rezepte + Messung)
-├── analysis/      architecture, advisor, export, benchmark (Größe/MACs/Latenz), targets (Zielsysteme), probe
+├── analysis/      architecture, advisor, export, benchmark (Größe/MACs/Latenz), targets (Zielsysteme), probe,
+│                  fallback (Notfall-Ausführung), goals (Ziel-Assistent)
+├── workflow/      config (Ablauf), search (Zufall/Gitter/Evolution/PSO/PBT), federated (FedAvg/FedProx, Model Soup)
+├── techniques.py  Techniken-Katalog (an/aus, Status)
 ├── data/          datasets (synthetisch + CSV/Text/Tensor-Dateien)
 ├── presets/       Vorlagen je Anwendungsgebiet, Speicherprofile
-├── ui/            cli, gui (Tkinter), inspector (Probelauf-Fenster), docs (Referenz + Möglichkeiten-Katalog)
+├── ui/            cli, gui (Tkinter), assistant (Ziel-Assistent, Techniken-Fenster), inspector (Probelauf-Fenster),
+│                  docs (Referenz + Möglichkeiten-Katalog)
 └── project.py     Project-Fassade
-examples/          18 ausführlich kommentierte Beispiele + Beispiel-Konfigurationsdatei
-tests/             ~410 Tests (pytest), CI per GitHub Actions (Python 3.10 und 3.12)
+examples/          23 ausführlich kommentierte Beispiele + Beispiel-Konfigurationsdatei
+tests/             ~460 Tests (pytest), CI per GitHub Actions (Python 3.10 und 3.12)
 docs/              ARCHITEKTUR.md, MOEGLICHKEITEN.md (Katalog), PARAMETER_REFERENZ.md (beide automatisch erzeugt)
 ```
 
@@ -632,6 +770,11 @@ docs/              ARCHITEKTUR.md, MOEGLICHKEITEN.md (Katalog), PARAMETER_REFERE
 | `16_lehrer_schueler_weiterlernen.py` | Schüler per Distillation, Weiterlernen mit LwF/EWC/Replay im Vergleich |
 | `17_import_aendern_export.py` | `.pt2` importieren und nachtrainieren, Gewichte mit `key_map` laden, komprimieren, neu exportieren |
 | `18_probelauf_gewichte.py` | Probelauf aller Wege, Gewichte, Histogramm/Heatmap, Attention-Karten, Testlauf |
+| `19_ziele_assistent.py` | Zweck & Prioritäten → Empfehlen/Abraten, Projekt nach Zielen, Ziele später ändern |
+| `20_techniken_und_schalter.py` | Techniken an/ab, An/Aus/Eigen je Einstellung, Gruppen, Übersicht |
+| `21_notfall_ausfuehrung.py` | Notfall-Optionen mit Schätzung, Training mit Basis auf der SSD, stückweise Inferenz |
+| `22_ablauf_suche_schwarm_evolution.py` | PSO, genetisch, PBT, föderiert, Model Soup, Evolution Strategies, `run()` |
+| `23_logger_und_cluster.py` | Logger-Ziele und -Stufen, eigener Logger, verteiltes Training mit 2 Prozessen |
 
 Konvention: **Code-Bezeichner englisch** (wie in PyTorch und Fachliteratur), **alle Erklärungen,
 Kommentare, Tooltips und Ausgaben deutsch**.
@@ -642,7 +785,7 @@ Kommentare, Tooltips und Ausgaben deutsch**.
 
 ```bash
 pip install pytest
-pytest            # ~410 Tests, ca. 40–70 s auf CPU
+pytest            # ~460 Tests, ca. 60–90 s auf CPU
 ```
 
 Geprüft werden u. a.: jede Komponente jeder Registry, jedes Modell vorwärts/rückwärts, Kausalität aller Mixer und
@@ -651,7 +794,12 @@ Positionskodierungen, SDPA = manuelle Attention, jedes Paradigma, jeder Optimier
 alle Vorlagen (Bauen + Konfigurations-Rundlauf), CLI und Doku-Export – und dass PPO CartPole löst. Neu:
 Scan-Gradienten gegen Referenz (inkl. gradcheck), Cache = Neuberechnung für alle Mixer/Positionen, RAM-Streaming
 gradienten- und trainingsgleich, Quantisierungsgenauigkeit, LoRA-Start/-Merge, QLoRA speichern/laden, 8-Bit-AdamW-
-Konvergenz, Übernahme/Geltungsbereiche/Modul-Regeln, Ratgeber/Aufbau/Export/Rückgängig.
+Konvergenz, Übernahme/Geltungsbereiche/Modul-Regeln, Ratgeber/Aufbau/Export/Rückgängig. Runde 3: Schalter
+(Aus/An/Eigen, Gruppen, Rückgängig), jede Technik an → aus stellt den Zustand exakt wieder her, Ziel-Assistent
+(Empfehlungen je Szenario), SSD-Streaming trainingsgleich zu RAM-Streaming, device_map exakt, OOM-Teilung, LISA,
+Chunked Prefill, verteiltes Training (2 gloo-Prozesse = 1 Prozess mit doppeltem Batch für DDP/ZeRO-1/FSDP, GAN per
+All-Reduce), Logger-Stufen/-Ziele/Rotation, alle Suchverfahren, föderiert, Model Soup, Evolution Strategies,
+Spike-Schutz mit Rücksprung, Lookahead, DP-SGD.
 
 ---
 
@@ -673,6 +821,17 @@ Konvergenz, Übernahme/Geltungsbereiche/Modul-Regeln, Ratgeber/Aufbau/Export/Rü
 - **Import** über `safetensors`/Hugging Face braucht die jeweiligen Pakete und ist in dieser Testumgebung nicht
   geprüft; aus `torch.export` importierte Graphen behalten Namen, aber keine `nn.Linear`-Objekte (LoRA/Quantisierung
   dort erst nach Import der Gewichte in eine Baukasten-Architektur). Exportierte SSM-Modelle sind reine Inferenz.
-- Keine verteilte Mehr-GPU-Ausführung (DDP/FSDP) – eine natürliche Erweiterung.
+- **Verteiltes Training** ist mit 2 CPU-Prozessen (gloo) geprüft; NCCL/Mehr-GPU und mehrere Rechner sind in dieser
+  Umgebung nicht testbar. FSDP setzt voraus, dass das Paradigma das Modell nur über `model(...)` aufruft.
+- **DP-SGD** rechnet jedes Beispiel einzeln (exakte Begrenzung, aber langsam) und berechnet kein Privacy-Budget (ε);
+  für formale Garantien Opacus nutzen. Nicht mit BatchNorm kombinierbar.
+- **Föderiertes Lernen** wird simuliert (Teilnehmer = Teile des Datensatzes); echte Geräte-Kommunikation ist nicht
+  eingebaut. **Model Soups** sind für Läufe vom selben Startpunkt gedacht.
+- Der **Ziel-Assistent** ist ein nachvollziehbares Regelwerk (jede Begründung wird angezeigt), kein Orakel; die
+  Profile beziehen sich auf die mitgelieferten Vorlagen.
+- **Notfall-Schätzungen** (Speicher, Verlangsamung) sind Größenordnungen; die Schicht-für-Schicht-Ausführung von der
+  SSD ist für Inferenz gedacht (Training mit Basis auf der SSD: `stream` + `storage = "disk"`).
+- **TensorBoard, W&B, MLflow** sind als Logger-Ziele eingebunden, in dieser Umgebung aber nicht installiert und daher
+  nur auf „fehlt → Warnung, Training läuft weiter“ geprüft.
 - Die Vorlagen sind auf kleine synthetische Daten abgestimmt; für echte Projekte `data` auf `csv`, `text` oder
   `tensor_file` umstellen (Größen passen sich automatisch an) und Umfang/Lernrate anpassen.

@@ -8,7 +8,8 @@ Aufbau des Fensters
 -------------------
 ::
 
-    ┌ Werkzeugleiste: Vorlage ▾ | Öffnen | Speichern | Stufe ▾ | Suchen | Prüfen | Bauen | Speicher | Trainieren ┐
+    ┌ Menü: Datei · Assistent · Einstellungen · Techniken · Ausführen · Analyse · Einsatz · Hilfe              ┐
+    ├ Werkzeugleiste: Neue KI nach Zielen | Vorlage ▾ | Stufe ▾ | Ansicht ▾ | Suchen | Trainieren | Techniken … ┤
     ├──────────────────────────────┬───────────────────────────────────────────────────────────────────────┤
     │ Baum der Konfiguration       │ Formular des gewählten Knotens                                        │
     │  ▸ model ⟨transformer⟩       │   Name          [ Wert       ]  ?    ← Maus über den Namen = Tooltip  │
@@ -141,8 +142,13 @@ class BaukastenGUI(tk.Tk):
     def _build_ui(self) -> None:
         from ..core import registry
 
+        self._build_menu()
         bar = ttk.Frame(self, padding=4)
         bar.pack(fill="x")
+        b = ttk.Button(bar, text="✚ Neue KI nach Zielen…", command=self.goal_wizard)
+        b.pack(side="left", padx=(0, 8))
+        HoverTip(b, lambda: "Assistent: Zweck, wichtige Punkte und Ziele angeben → passende Modelle werden empfohlen, "
+                            "unpassende abgeraten, Techniken vorgeschlagen.")
         ttk.Label(bar, text="Vorlage:").pack(side="left")
         self.preset_var = tk.StringVar(value=self.project.config.name)
         presets = registry("preset").names()
@@ -178,16 +184,20 @@ class BaukastenGUI(tk.Tk):
         for text, cmd, tip in (
             ("Prüfen", self.validate, "Alle Einstellungen und Abhängigkeiten prüfen."),
             ("Bauen", self.build_model, "Modell bauen und Aufbau anzeigen."),
-            ("Speicher", self.memory, "Speicherbedarf schätzen und Empfehlungen anzeigen."),
-            ("Trainieren", self.train, "Training im Hintergrund starten (Fortschritt im Protokoll)."),
-            ("Aufbau", self.architecture, "Komplette Auflistung des Modells: Module, Formen, Schichten, Anpassungspfade."),
-            ("Optimieren", self.advise, "Ratgeber: Vorschläge für Speicher, Tempo und Stabilität (mit Übernahme)."),
+            ("▶ Trainieren", self.train, "Training im Hintergrund starten (Fortschritt im Protokoll)."),
+            ("▶▶ Ablauf", self.run_workflow, "Ganzer Ablauf (workflow): Suche → Training (normal/föderiert/Model Soup) "
+                                             "→ Kreuzvalidierung → Kompression → Export."),
             ("Probelauf & Gewichte", self.inspector,
              "Testlauf im Fenster: alle Wege durchs Netz, Aktivierungen, Gradienten, Gewichte, Attention, Metriken."),
+            ("Techniken", self.techniques_window,
+             "Katalog: Stabilität, gegen Auswendiglernen, Performance, große Modelle, Cluster, Schwarm, Evolution … "
+             "– jede Technik an/abwählbar."),
+            ("Optimieren", self.advise, "Ratgeber: Vorschläge für Speicher, Tempo und Stabilität (mit Übernahme)."),
             ("Reduzieren / Export", self.reduce_dialog,
-             "Zielsystem wählen (Smartphone, Raspberry Pi, CPU, GPU …): Empfehlung, Verkleinern, Exportieren."),
-            ("↶ Rückgängig", self.undo, "Letzte Änderung zurücknehmen."),
-            ("↷ Wiederholen", self.redo, "Zurückgenommene Änderung wiederherstellen."),
+             "Zielsystem wählen (Smartphone, Raspberry Pi, CPU, GPU …): Empfehlung, Verkleinern, Notfall-Ausführung, "
+             "Exportieren."),
+            ("↶", self.undo, "Rückgängig: letzte Änderung zurücknehmen."),
+            ("↷", self.redo, "Wiederholen: zurückgenommene Änderung wiederherstellen."),
         ):
             b = ttk.Button(bar, text=text, command=cmd)
             b.pack(side="left", padx=2)
@@ -556,6 +566,112 @@ class BaukastenGUI(tk.Tk):
             messagebox.showerror("Liste", str(exc))
         self.refresh_tree()
         self.select_path(path)
+
+    # ================================================================ Menü
+    def _build_menu(self) -> None:
+        m = tk.Menu(self)
+        self.config(menu=m)
+
+        def menu(title: str, items: list) -> None:
+            sub = tk.Menu(m, tearoff=False)
+            for item in items:
+                if item is None:
+                    sub.add_separator()
+                else:
+                    sub.add_command(label=item[0], command=item[1])
+            m.add_cascade(label=title, menu=sub)
+
+        menu("Datei", [("Öffnen…", self.open_file), ("Speichern…", self.save_file),
+                       ("Modell importieren…", self.import_model), None, ("Beenden", self.destroy)])
+        menu("Assistent", [("Neue KI nach Zielen…", self.goal_wizard),
+                           ("Ziele prüfen / ändern…", lambda: self.goal_wizard(check_current=True)),
+                           ("Optimieren (Ratgeber)", self.advise)])
+        menu("Einstellungen", [("Schalter-Übersicht (an/aus/eigen)", self.switch_overview),
+                               ("Ansicht: nur eingeschaltete", lambda: self._set_view("Nur eingeschaltete")),
+                               ("Ansicht: nur eigene Werte", lambda: self._set_view("Nur eigene Werte")),
+                               ("Ansicht: alle", lambda: self._set_view("Alle")), None,
+                               ("Prüfen", self.validate), ("Rückgängig", self.undo), ("Wiederholen", self.redo)])
+        menu("Techniken", [("Katalog öffnen…", self.techniques_window),
+                           ("Nur eingeschaltete Techniken anzeigen",
+                            lambda: self.log_write(self.project.technique_overview(only_active=True) + "\n"))])
+        menu("Ausführen", [("Bauen", self.build_model), ("Trainieren", self.train),
+                           ("Ablauf starten (workflow)", self.run_workflow), None,
+                           ("Automatische Suche (AutoML)", self.automl),
+                           ("Föderiert trainieren", lambda: self._run_bg("Föderiertes Lernen",
+                                                                        self.project.federated_train)),
+                           ("Model Soup", lambda: self._run_bg("Model Soup", self.project.model_soup)),
+                           ("Kreuzvalidierung (5-fach)", lambda: self._run_bg("Kreuzvalidierung",
+                                                                             lambda: self.project.cross_validate(5))),
+                           ("Lernraten-Finder", lambda: self._run_bg("LR-Finder", lambda: self.project.find_lr())),
+                           None, ("Probelauf & Gewichte…", self.inspector)])
+        menu("Analyse", [("Aufbau", self.architecture), ("Speicherschätzung", self.memory),
+                         ("Notfall-Optionen (Training)…", lambda: self.fallback_dialog(None))])
+        menu("Einsatz", [("Reduzieren / Export…", self.reduce_dialog),
+                         ("Notfall-Ausführung…", lambda: self.fallback_dialog(None)),
+                         ("Verteilt trainieren (Startbefehl)…", self.distributed_info)])
+        menu("Hilfe", [("Möglichkeiten-Katalog", self.possibilities)])
+
+    def _set_view(self, name: str) -> None:
+        self.view.set(name)
+        self.show_form(self.current_path)
+
+    def set_project(self, project: Any, message: str = "") -> None:
+        self.project = project
+        self.preset_var.set(project.config.name)
+        self.refresh_tree()
+        self.select_path("")
+        if message:
+            self.log_write(message + "\n")
+
+    def goal_wizard(self, check_current: bool = False) -> None:
+        from .assistant import GoalWizard
+
+        GoalWizard(self, check_current)
+
+    def techniques_window(self) -> None:
+        from .assistant import TechniqueWindow
+
+        TechniqueWindow(self)
+
+    def switch_overview(self) -> None:
+        self.log_write(self.project.switch_overview() + "\n")
+
+    def possibilities(self) -> None:
+        from .docs import capabilities_markdown
+
+        win = tk.Toplevel(self)
+        win.title("Möglichkeiten-Katalog")
+        win.geometry("1000x700")
+        txt = tk.Text(win, wrap="word", font=("TkFixedFont", 9))
+        txt.pack(fill="both", expand=True)
+        txt.insert("1.0", capabilities_markdown())
+
+    def run_workflow(self) -> None:
+        def job():
+            report = self.project.run()
+            return "Ablauf fertig: " + ", ".join(report)
+
+        self._run_bg("Ablauf", job)
+
+    def automl(self) -> None:
+        def job():
+            method = self.project.config.workflow.search.method
+            return str(self.project.tune(method if method != "none" else "random"))
+
+        self._run_bg("Automatische Suche", job)
+
+    def distributed_info(self) -> None:
+        import shlex
+
+        from ..training.distributed import launch_command
+
+        cmd = launch_command("projekt.json", 2, self.project.config.training.distributed.strategy
+                             if self.project.config.training.distributed.strategy != "none" else "ddp")
+        text = ("Verteiltes Training startet mehrere Prozesse (je GPU einer). Projekt speichern (Datei → Speichern) "
+                "und im Terminal starten:\n\n  " + " ".join(shlex.quote(c) for c in cmd) +
+                "\n\nKurzform: python -m ki_baukasten verteilt projekt.json --prozesse 2 --strategie ddp"
+                "\nMehrere Rechner: --knoten 2 --knoten-rang <i> --master <adresse:port>")
+        messagebox.showinfo("Verteilt trainieren", text)
 
     # ================================================================ Aktionen
     def load_preset(self, name: str) -> None:

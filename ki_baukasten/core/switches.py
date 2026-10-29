@@ -167,7 +167,6 @@ def off_value(param: Param) -> Any:
             if c in choices:
                 return c
         return None if param.nullable else UNSET
-    default = param.make_default()
     numeric = any(t in (int, float) for t in types) and bool not in types
     if numeric and (param.min is None or param.min <= 0) and (param.max is None or param.max >= 0):
         if _STRENGTH_RX.search(param.name or "") and not _NOT_STRENGTH_RX.search(param.name or ""):
