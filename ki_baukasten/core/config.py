@@ -906,6 +906,25 @@ class BaseConfig:
         _set_path(self, segs, value, _path or path)
         return self
 
+    def find(self, pattern: str, max_level: Level | str | None = None) -> list[str]:
+        """Alle Einstellungs-Pfade, die auf ein Muster passen.
+
+        Musterregeln (Segmente durch Punkte getrennt):
+            * ``*``  – genau ein Segment (auch Teil-Glob wie ``*dropout``)
+            * ``**`` – beliebig viele Segmente (auch keines)
+            * Ohne Punkt (z. B. ``"dropout"``) wird überall gesucht (= ``**.dropout``).
+
+        Beispiele::
+
+            cfg.find("dropout")                  # jede Einstellung namens 'dropout'
+            cfg.find("model.block.*.dropout")    # dropout direkt in Unterteilen des Blocks
+            cfg.find("**.num_heads")             # Kopfzahl überall
+        """
+        if "." not in pattern and "*" not in pattern:
+            pattern = "**." + pattern
+        segs = pattern.split(".")
+        return [ref.path for ref in self.walk(max_level=max_level) if _glob_match(segs, ref.path.split("."))]
+
     def param_at(self, path: str) -> ParamRef:
         """Liefert Definition + Wert der Einstellung unter ``path``.
 
@@ -1121,6 +1140,18 @@ class FreeConfig(BaseConfig):
 
 def _max_level(a: Level, b: Level) -> Level:
     return a if a.rank >= b.rank else b
+
+
+def _glob_match(pattern: list[str], parts: list[str]) -> bool:
+    """Glob-Vergleich auf Pfadsegmenten (``*`` = ein Segment, ``**`` = beliebig viele)."""
+    import fnmatch
+
+    if not pattern:
+        return not parts
+    head, rest = pattern[0], pattern[1:]
+    if head == "**":
+        return any(_glob_match(rest, parts[i:]) for i in range(len(parts) + 1))
+    return bool(parts) and fnmatch.fnmatchcase(parts[0], head) and _glob_match(rest, parts[1:])
 
 
 def _split_path(path: str) -> list[str]:

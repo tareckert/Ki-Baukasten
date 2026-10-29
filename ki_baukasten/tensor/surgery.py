@@ -7,8 +7,11 @@ sogar einzelne Ausschnitte davon.
 
 Eine Regel (``TensorRuleConfig``) besteht aus
 ------------------------------------------
-* **Auswahl**: Regex auf Parameternamen (``target``/``exclude``), Modultyp
-  (``module_type``, z. B. ``"Linear"``), Art (weight/bias), Dimensionalität
+* **Auswahl**: Regex/exakter Name (``target``/``match``/``exclude``), Modultyp
+  (``module_type``, z. B. ``"Linear"``), Art (weight/bias), Dimensionalität,
+  Blöcke (``layers``, z. B. ``"0"``, ``"-2:"``)
+* **Geltungsbereich** (``scope`` + ``pick``): alle Treffer, nur eine Auswahl,
+  genau einer oder alle außer einer Auswahl (siehe ``tensor.selection``)
 * **Ausschnitt** (optional): ``index`` wie in Python, z. B. ``"0:16, :"``
   (erste 16 Zeilen), ``"..., -1"`` (letzte Spalte), ``"3"`` (Zeile 3)
 * **Operation** (Registry ``tensor_op``) mit eigenen Argumenten
@@ -30,7 +33,7 @@ Wann wirkt welche Operation?
 Phase           Operationen
 ==============  ==============================================================
 Aufbau          init, scale, add, set, noise, clamp, prune, low_rank,
-                orthogonalize, load, custom, tie, freeze, unfreeze
+                orthogonalize, load, copy, custom, tie, freeze, unfreeze
 Optimierer      lr_scale, weight_decay (eigene Parametergruppen)
 Gradient        grad_scale, grad_clip, grad_noise, grad_mask (+ prune, freeze-Ausschnitt)
 nach jedem      constraint (max_norm, unit_norm, non_negative, clip, orthogonal),
@@ -50,6 +53,7 @@ from torch import nn
 
 from ..components.initializers import apply_initializer
 from ..core import BaseConfig, ComponentParam, ConfigError, Level, Param, T, create_registry, format_number
+from .selection import apply_scope, layer_filter, name_matcher, scope_params
 
 TENSOR_OPS = create_registry(
     "tensor_op",
@@ -210,6 +214,22 @@ class LoadConfig(BaseConfig):
     key = Param(None, type=str, tooltip=T("Schlüssel im dict (.pt).", "Welcher Tensor.", "Bei dict-Dateien."))
 
 
+class CopyConfig(BaseConfig):
+    source = Param("", tooltip=T(
+        "Name des Quell-Parameters (z. B. 'blocks.0.mixer.attn.q_proj.weight').",
+        "Werte eines anderen Tensors übernehmen (statt nur Einstellungen).",
+        "Schichten gleich initialisieren, Gewichte von Schicht 0 in Schicht 5 übernehmen."))
+    source_index = Param(None, type=str, nullable=True, tooltip=T(
+        "Ausschnitt der Quelle (Python-Syntax wie 'index').", "Nur Teile übernehmen (z. B. einen Kopf).",
+        "'0:8, :'."), level=Level.ADVANCED)
+    mode = Param("replace", choices={
+        "replace": "Ziel = Quelle", "add": "Ziel += Quelle", "mean": "Ziel = (Ziel + Quelle) / 2",
+        "interpolate": "Ziel = (1-α)·Ziel + α·Quelle"}, tooltip=T(
+        "Wie Quelle und Ziel kombiniert werden.", "Vom Kopieren bis zum sanften Angleichen.", "replace."))
+    alpha = Param(0.5, min=0.0, max=1.0, tooltip=T(
+        "Anteil der Quelle bei mode = interpolate.", "Mischungsverhältnis.", "0.5."), level=Level.ADVANCED)
+
+
 class TieConfig(BaseConfig):
     source = Param("", tooltip=T(
         "Exakter Name des Quellparameters, dessen Gewichte geteilt werden.",
@@ -355,6 +375,31 @@ def _low_rank(a: LowRankConfig):
     return fn
 
 
+def _copy(a: CopyConfig):
+    def fn(t, ctx):
+        params = dict(ctx["model"].named_parameters(remove_duplicate=False))
+        if a.source not in params:
+            raise ConfigError(f"copy: Quell-Parameter '{a.source}' existiert nicht.")
+        src = params[a.source].detach()
+        idx = parse_index(a.source_index)
+        if idx is not None:
+            src = src[idx]
+        if tuple(src.shape) != tuple(t.shape):
+            raise ConfigError(f"copy: Formen passen nicht (Quelle {tuple(src.shape)}, Ziel {tuple(t.shape)}). "
+                              "Mit index/source_index passende Ausschnitte wählen.")
+        src = src.to(t.device, t.dtype).clone()
+        if a.mode == "replace":
+            t.copy_(src)
+        elif a.mode == "add":
+            t.add_(src)
+        elif a.mode == "mean":
+            t.add_(src).mul_(0.5)
+        else:
+            t.mul_(1 - a.alpha).add_(src, alpha=a.alpha)
+        return t
+    return fn
+
+
 def _orthogonalize(t, ctx):
     if t.dim() < 2:
         raise ConfigError("orthogonalize braucht ≥ 2D-Tensoren.")
@@ -436,6 +481,10 @@ R("load", lambda a: _Simple(_load(a)), config=LoadConfig, tooltip=T(
     "Werte aus Datei laden.", "Externe/vortrainierte Gewichte für einzelne Tensoren.", "Transfer, Experimente."))
 R("custom", lambda a: _Simple(lambda t, c: t.copy_(a.function.build()(t.clone()))), config=CustomConfig,
   level=Level.EXPERT, tooltip=T("Eigene Funktion anwenden.", "Unbegrenzte Freiheit.", "Forschung."))
+R("copy", lambda a: _Simple(_copy(a)), config=CopyConfig, aliases=("kopieren", "uebernehmen"), tooltip=T(
+    "Werte aus einem anderen Parameter übernehmen (kopieren, addieren, mitteln, interpolieren).",
+    "Übernahme von Gewichten zwischen Schichten – ganz oder ausschnittsweise.",
+    "Gleiche Startgewichte für mehrere Schichten, Wissenstransfer zwischen Köpfen."))
 R("tie", lambda a: TieOp(a), config=TieConfig, level=Level.ADVANCED, tooltip=T(
     "Gewichte mit anderem Parameter teilen (gleiches Tensor-Objekt).", "Weight Tying.", "Kopplung von Schichten."))
 R("lr_scale", lambda a: _GroupOp({"lr_scale": a.factor}), config=FactorConfig, tooltip=T(
@@ -482,10 +531,11 @@ class TensorRuleConfig(BaseConfig):
     )
     label = Param("", tooltip=T("Beschreibung (frei).", "Für die Übersicht.", "z. B. 'Embeddings einfrieren'."))
     target = Param(".*", tooltip=T(
-        "Regulärer Ausdruck auf den Parameternamen (re.search).",
+        "Regulärer Ausdruck auf den Parameternamen (re.search; siehe 'match').",
         "Wählt Parameter, z. B. 'blocks\\.0\\.', 'q_proj', 'bias$'.",
         "Namen zeigt 'python -m ki_baukasten parameter' bzw. model.parameter_table().",
     ))
+    match, layers, scope, pick = scope_params()
     exclude = Param(None, type=str, tooltip=T(
         "Regex für Ausnahmen.", "Schließt Parameter wieder aus.", "z. B. 'norm'."), level=Level.ADVANCED)
     module_type = Param(None, type=str, tooltip=T(
@@ -537,14 +587,15 @@ class TensorSurgeon:
 
     def matches(self, rule: TensorRuleConfig) -> list[tuple[str, nn.Parameter]]:
         owners = self._owner_types()
-        rx = re.compile(rule.target)
+        hit = name_matcher(rule.target, rule.match)
+        in_layers = layer_filter(self.model, rule.layers)
         ex = re.compile(rule.exclude) if rule.exclude else None
         found = []
         seen: set[int] = set()
         # remove_duplicate=False: geteilte Gewichte (Weight Tying) sind unter JEDEM ihrer Namen auswählbar,
         # werden aber pro Regel nur einmal behandelt.
         for name, p in self.model.named_parameters(remove_duplicate=False):
-            if id(p) in seen or not rx.search(name) or (ex and ex.search(name)):
+            if id(p) in seen or not hit(name) or not in_layers(name) or (ex and ex.search(name)):
                 continue
             if rule.module_type and owners.get(name) != rule.module_type:
                 continue
@@ -557,7 +608,7 @@ class TensorSurgeon:
                 continue
             seen.add(id(p))
             found.append((name, p))
-        return found
+        return apply_scope(found, rule.scope, rule.pick, f"Tensor-Regel '{rule.label or rule.target}'")
 
     def preview(self) -> str:
         """Welche Parameter würde jede Regel treffen? (ohne etwas zu ändern)"""
@@ -565,7 +616,10 @@ class TensorSurgeon:
         for i, rule in enumerate(self.rules):
             hits = self.matches(rule)
             title = rule.label or f"Regel {i}"
-            lines.append(f"{title}: op={rule.op.name} target='{rule.target}' index={rule.index} → {len(hits)} Parameter")
+            where = f" layers={rule.layers}" if rule.layers else ""
+            scope = f" scope={rule.scope}" + (f"[{rule.pick}]" if rule.pick else "") if rule.scope != "alle" else ""
+            lines.append(f"{title}: op={rule.op.name} target='{rule.target}'{where}{scope} index={rule.index} "
+                         f"→ {len(hits)} Parameter")
             for name, p in hits[:12]:
                 lines.append(f"    {name}  {tuple(p.shape)}")
             if len(hits) > 12:
@@ -593,7 +647,7 @@ class TensorSurgeon:
                     if isinstance(op, FreezeOp) and index is None:
                         pass  # ganzer Parameter: requires_grad=False genügt
                     else:
-                        op.build(view, {"key": b.key, "name": name, "num_layers": num_layers})
+                        op.build(view, {"key": b.key, "name": name, "num_layers": num_layers, "model": self.model})
                 self.bindings.append(b)
         return self
 

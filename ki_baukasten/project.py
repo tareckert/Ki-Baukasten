@@ -39,7 +39,7 @@ from torch import nn
 
 from .core import BaseConfig, ComponentParam, ConfigError, ConfigListParam, Level, NestedParam, Param, T
 from .memory import MemoryConfig, MemoryManager, estimate_memory
-from .tensor import TensorRuleConfig, TensorSurgeon
+from .tensor import ModuleRuleConfig, ModuleSurgeon, TensorRuleConfig, TensorSurgeon
 from .training import Trainer, TrainingConfig
 from .training.data_utils import to_device
 from .training.paradigms import call_model
@@ -64,9 +64,14 @@ class ProjectConfig(BaseConfig):
         "Datenquelle (synthetisch oder eigene Datei).", "Woraus gelernt wird.", "Siehe 'python -m ki_baukasten komponenten dataset'."))
     training = NestedParam(TrainingConfig, group="Training")
     memory = NestedParam(MemoryConfig, group="Speicher")
+    module_rules = ConfigListParam(ModuleRuleConfig, group="Modul-Chirurgie", level=Level.ADVANCED, tooltip=T(
+        "Regeln für Eingriffe in ganze Schichten (ersetzen, entfernen, LoRA/Quantisierung einzeln, Hooks …).",
+        "Jede Schicht jeder Art anpassen – für alle, nur bestimmte oder genau eine (scope).",
+        "Ablationen, gezieltes Feintuning, Präzision pro Schicht, Analyse. Wirken vor den Tensor-Regeln."))
     tensor_rules = ConfigListParam(TensorRuleConfig, group="Tensor-Chirurgie", level=Level.ADVANCED, tooltip=T(
-        "Regeln für Eingriffe in einzelne Tensoren (Einfrieren, Pruning, eigene LR …).",
-        "Feinste Kontrolle bis auf einzelne Gewichte.", "Transfer-Learning, Kompression, Experimente."))
+        "Regeln für Eingriffe in einzelne Tensoren (Einfrieren, Pruning, Kopieren, eigene LR …).",
+        "Feinste Kontrolle bis auf einzelne Gewichte – für alle, nur bestimmte oder genau einen (scope).",
+        "Transfer-Learning, Kompression, Experimente."))
     auto_fit_dims = Param(True, tooltip=T(
         "Modellgrößen (Ein-/Ausgabe, Vokabular, Beobachtungen …) automatisch an Daten/Umgebung anpassen.",
         "Vorlagen passen dadurch ohne Handarbeit zu jedem Datensatz.", "Aus, wenn exakte Werte erzwungen werden sollen."),
@@ -94,6 +99,7 @@ class Project:
         self.config: ProjectConfig = config or ProjectConfig()
         self.model: nn.Module | None = None
         self.surgeon: TensorSurgeon | None = None
+        self.module_surgeon: ModuleSurgeon | None = None
         self.trainer: Trainer | None = None
         self._bundle: Any = None
         self.history: list[dict] = []
@@ -117,9 +123,63 @@ class Project:
 
     # ================================================================ Einstellungen
     def set(self, path: str, value: Any) -> "Project":
+        """Setzt eine Einstellung. Enthält ``path`` ein ``*``, gilt der Wert für alle Treffer (siehe ``set_all``)."""
+        if "*" in path:
+            self.set_all(path, value)
+            return self
         self.config.set(path, value)
         self._invalidate()
         return self
+
+    def find(self, pattern: str) -> list[str]:
+        """Pfade zu einem Muster (``*`` = ein Segment, ``**`` = beliebig viele; ohne Punkt = überall)."""
+        return self.config.find(pattern)
+
+    def set_all(self, pattern: str, value: Any, scope: str = "alle", pick: str | None = None) -> list[str]:
+        """Setzt einen Wert für **alle** passenden Einstellungen – oder nur für bestimmte bzw. genau eine.
+
+        Args:
+            pattern: Pfad-Muster wie bei ``find`` (z. B. ``"dropout"``, ``"model.**.num_heads"``).
+            scope:   ``alle`` | ``nur_auswahl`` | ``nur_einer`` | ``alle_ausser`` (mit ``pick``).
+            pick:    Positionen in der Trefferliste (z. B. ``"0"``, ``"-1"``, ``"0,2"``).
+
+        Returns:
+            Die geänderten Pfade. Erst wenn **alle** Treffer den Wert akzeptieren, wird geändert
+            (alles oder nichts).
+        """
+        from .tensor.selection import apply_scope
+
+        paths = apply_scope(self.config.find(pattern), scope, pick, f"set_all('{pattern}')")
+        if not paths:
+            raise ConfigError(f"Kein Pfad passt auf '{pattern}'. Tipp: Project.search('{pattern}').")
+        trial = self.config.copy()
+        errors = []
+        for path in paths:
+            try:
+                trial.set(path, value)
+            except ConfigError as exc:
+                errors.append(f"{path}: {exc}")
+        if errors:
+            raise ConfigError("set_all: nicht alle Treffer akzeptieren den Wert:\n  - " + "\n  - ".join(errors))
+        for path in paths:
+            self.config.set(path, value)
+        self._invalidate()
+        return paths
+
+    def search(self, text: str, max_level: str | None = None, limit: int = 40) -> list[tuple[str, str]]:
+        """Volltextsuche über Pfade **und** Tooltips → ``[(pfad, Kurzbeschreibung)]``.
+
+        Beispiel: ``p.search("speicher")`` findet alle Einstellungen, deren Name oder
+        Erklärung mit Speicher zu tun hat.
+        """
+        words = [w.lower() for w in text.split()]
+        hits = []
+        for ref in self.config.walk(max_level=max_level):
+            tip = ref.param.tooltip
+            blob = " ".join([ref.path, tip.what, tip.why, tip.use_for, tip.tip] if tip else [ref.path]).lower()
+            if all(w in blob for w in words):
+                hits.append((ref.path, tip.what if tip else ""))
+        return hits[:limit]
 
     def get(self, path: str) -> Any:
         return self.config.get(path)
@@ -227,6 +287,9 @@ class Project:
         torch.manual_seed(cfg.training.seed if cfg.training.seed is not None else 0)
         model = cfg.model.build()
         self.surgeon = None
+        self.module_surgeon = None
+        if cfg.module_rules:
+            self.module_surgeon = ModuleSurgeon(model, list(cfg.module_rules)).apply()
         if cfg.tensor_rules:
             self.surgeon = TensorSurgeon(model, list(cfg.tensor_rules))
             self.surgeon.apply_build(num_layers=model.depth() if hasattr(model, "depth") else None)
