@@ -303,9 +303,11 @@ class LinearKernel(nn.Module):
             kf = kf * masks.key_padding_mask.to(kf.dtype).view(kf.shape[0], 1, -1, 1)
         eps = self.cfg.eps
         if masks.causal:
-            kv = torch.einsum("bhsd,bhse->bhsde", kf, v).cumsum(2)
+            # Bei Cache-Nutzung gibt es weniger Queries als Keys: Queries = letzte q_len Positionen.
+            tq = qf.shape[2]
+            kv = torch.einsum("bhsd,bhse->bhsde", kf, v).cumsum(2)[:, :, -tq:]
             num = torch.einsum("bhtd,bhtde->bhte", qf, kv)
-            den = torch.einsum("bhtd,bhtd->bht", qf, kf.cumsum(2)) + eps
+            den = torch.einsum("bhtd,bhtd->bht", qf, kf.cumsum(2)[:, :, -tq:]) + eps
         else:
             kv = torch.einsum("bhsd,bhse->bhde", kf, v)
             num = torch.einsum("bhtd,bhde->bhte", qf, kv)
@@ -419,6 +421,17 @@ class AttentionConfig(BaseConfig):
         "Reduziert 'Attention Sinks' und Aktivierungsausreißer, verbessert Stabilität.",
         "Neuere LLM-Forschung (Qwen3-Next).",
     ), level=Level.EXPERIMENTAL)
+    kv_compression_dim = Param(None, type=int, min=1, tooltip=T(
+        "MLA-lite: Keys/Values entstehen aus einem gemeinsamen, komprimierten Latent-Vektor dieser Größe.",
+        "Der KV-Cache speichert nur noch den Latent-Vektor (r statt 2·H_kv·head_dim Werte pro Token) – "
+        "oft 4–16× weniger Cache-Speicher; zusätzlich weniger Parameter.",
+        "Lange Kontexte, Generierung mit großen Batches (DeepSeek-V2/V3 Multi-Head Latent Attention).",
+        "Vereinfachte Variante: RoPE wird auf die rekonstruierten Keys angewandt (keine entkoppelten RoPE-Köpfe).",
+    ), level=Level.EXPERT, group="Speicher & Geschwindigkeit")
+    kv_latent_norm = ComponentParam("normalization", "rmsnorm", tooltip=T(
+        "Normalisierung des MLA-Latent-Vektors (nur mit kv_compression_dim).",
+        "Stabilisiert die Rekonstruktion von Keys/Values.", "DeepSeek: RMSNorm."),
+        level=Level.EXPERT, group="Speicher & Geschwindigkeit")
 
     def check(self) -> list[str]:
         problems = []
@@ -450,14 +463,33 @@ class MultiHeadAttention(nn.Module):
         kv_dim = kv_dim or d_model
         inner, kv_inner = self.num_heads * self.head_dim, self.num_kv_heads * self.head_dim
         self.q_proj = nn.Linear(d_model, inner, bias=cfg.qkv_bias)
-        self.k_proj = nn.Linear(kv_dim, kv_inner, bias=cfg.qkv_bias)
-        self.v_proj = nn.Linear(kv_dim, kv_inner, bias=cfg.qkv_bias)
+        r = cfg.kv_compression_dim
+        if r is None:
+            self.k_proj = nn.Linear(kv_dim, kv_inner, bias=cfg.qkv_bias)
+            self.v_proj = nn.Linear(kv_dim, kv_inner, bias=cfg.qkv_bias)
+        else:
+            # MLA-lite: x → Latent c (r) → Keys/Values. Gecacht wird nur c.
+            self.kv_down = nn.Linear(kv_dim, r, bias=False)
+            self.kv_norm = build_norm(cfg.kv_latent_norm, r) if cfg.kv_latent_norm is not None else nn.Identity()
+            self.k_up = nn.Linear(r, kv_inner, bias=cfg.qkv_bias)
+            self.v_up = nn.Linear(r, kv_inner, bias=cfg.qkv_bias)
         self.o_proj = nn.Linear(inner, d_model, bias=cfg.out_bias)
         self.gate_proj = nn.Linear(d_model, inner, bias=True) if cfg.output_gate else None
         self.q_norm = build_norm(cfg.qk_norm, self.head_dim) if cfg.qk_norm is not None else None
         self.k_norm = build_norm(cfg.qk_norm, self.head_dim) if cfg.qk_norm is not None else None
         self.kernel = cfg.kernel.build()
         self.scale = cfg.scale if cfg.scale is not None else 1.0 / math.sqrt(self.head_dim)
+
+    supports_cache = True
+
+    def _keys_values(self, src: torch.Tensor, B: int, S: int) -> tuple[torch.Tensor, torch.Tensor]:
+        Hkv, hd = self.num_kv_heads, self.head_dim
+        if self.cfg.kv_compression_dim is None:
+            k, v = self.k_proj(src), self.v_proj(src)
+        else:
+            c = self.kv_norm(self.kv_down(src))
+            k, v = self.k_up(c), self.v_up(c)
+        return k.view(B, S, Hkv, hd).transpose(1, 2), v.view(B, S, Hkv, hd).transpose(1, 2)
 
     def forward(
         self,
@@ -467,32 +499,59 @@ class MultiHeadAttention(nn.Module):
         positional=None,
         positions: torch.Tensor | None = None,
         causal: bool = False,
+        cache=None,
     ) -> torch.Tensor:
         """
         Args:
             x:   Queries-Quelle ``[B, T, D]``.
             kv:  Key/Value-Quelle ``[B, S, D_kv]`` (Cross-Attention); ``None`` = Self-Attention.
-            key_padding_mask: ``[B, S]``, ``True`` = gültig.
+            key_padding_mask: ``[B, S]``, ``True`` = gültig (mit Cache: nur für die neuen Positionen).
             positional: ``PositionalEncoding`` (nur bei Self-Attention angewendet).
-            positions:  Positionsindizes ``[T]``.
+            positions:  Positionsindizes ``[T]`` (mit Cache: absolute Positionen der neuen Tokens).
             causal: kausale Maske (wird durch ``cfg.causal`` überschrieben, falls gesetzt).
+            cache:  ``LayerCache`` dieser Schicht (nur Self-Attention) – speichert Keys/Values bzw.
+                    bei MLA-lite den Latent-Vektor; ``x`` enthält dann nur die **neuen** Positionen.
         """
         B, Tq, _ = x.shape
         src = x if kv is None else kv
         S = src.shape[1]
         H, Hkv, hd = self.num_heads, self.num_kv_heads, self.head_dim
+        is_self = kv is None
+        if cache is not None and not is_self:
+            cache = None  # Cross-Attention: Quelle ist ohnehin vollständig vorhanden
+        if positions is None:
+            positions = torch.arange(Tq, device=x.device)
 
         q = self.q_proj(x).view(B, Tq, H, hd).transpose(1, 2)
-        k = self.k_proj(src).view(B, S, Hkv, hd).transpose(1, 2)
-        v = self.v_proj(src).view(B, S, Hkv, hd).transpose(1, 2)
+        mla = self.cfg.kv_compression_dim is not None
+        if mla and cache is not None:
+            # Latent cachen, Keys/Values für alle (alten + neuen) Positionen daraus rekonstruieren.
+            c = cache.append("latent", self.kv_norm(self.kv_down(src)), dim=1)
+            old = cache.get("positions")
+            k_positions = positions if old is None else torch.cat([old, positions])
+            cache["positions"] = cache.truncate(k_positions, 0)  # exakte Positionen (nie quantisiert)
+            S = c.shape[1]
+            k = self.k_up(c).view(B, S, Hkv, hd).transpose(1, 2)
+            v = self.v_up(c).view(B, S, Hkv, hd).transpose(1, 2)
+        else:
+            k, v = self._keys_values(src, B, S)
+            k_positions = positions
         if self.q_norm is not None:
             q, k = self.q_norm(q), self.k_norm(k)
 
-        is_self = kv is None
         if positional is not None and is_self:
-            if positions is None:
-                positions = torch.arange(Tq, device=x.device)
-            q, k = positional.rotate(q, k, positions)
+            if mla and cache is not None:
+                # Queries (neue Positionen) und rekonstruierte Keys (alle Positionen) getrennt drehen.
+                q = positional.rotate_keys(q, positions)
+                k = positional.rotate_keys(k, k_positions)
+            else:
+                q, k = positional.rotate(q, k, positions)
+        if cache is not None and not mla:
+            k = cache.append("k", k, dim=2)
+            v = cache.append("v", v, dim=2)
+            S = k.shape[2]
+        if cache is not None:
+            key_padding_mask = cache.append_mask(key_padding_mask, B, Tq, x.device)
         if Hkv != H:  # GQA: KV-Köpfe für Gruppen von Query-Köpfen wiederverwenden
             k = k.repeat_interleave(H // Hkv, dim=1)
             v = v.repeat_interleave(H // Hkv, dim=1)

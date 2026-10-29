@@ -28,32 +28,8 @@ from torch import nn
 from ..components.normalization import build_norm
 from ..core import (BaseConfig, ComponentParam, Level, NestedParam, Param, T, resolve_layer_config,
                     validate_overrides)
+from ..components.mixers import MinGRU  # noqa: F401  (paralleler Scan, auch als Mixer nutzbar)
 from .base import MODELS, BaseModel, ModelConfig
-
-
-class MinGRU(nn.Module):
-    """minGRU (Feng et al. 2024, "Were RNNs All We Needed?").
-
-    Gate und Kandidat hängen nur von der Eingabe ab (nicht vom Zustand):
-    ``h_t = (1 - z_t) ⊙ h_{t-1} + z_t ⊙ h̃_t``. Dadurch wäre ein paralleler
-    Scan möglich; hier sequenziell implementiert (einfach und korrekt).
-    """
-
-    def __init__(self, input_size: int, hidden_size: int):
-        super().__init__()
-        self.gate = nn.Linear(input_size, hidden_size)
-        self.cand = nn.Linear(input_size, hidden_size)
-        self.hidden_size = hidden_size
-
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, None]:
-        z = torch.sigmoid(self.gate(x))
-        cand = self.cand(x)
-        h = x.new_zeros(x.shape[0], self.hidden_size)
-        outs = []
-        for t in range(x.shape[1]):
-            h = (1 - z[:, t]) * h + z[:, t] * cand[:, t]
-            outs.append(h)
-        return torch.stack(outs, 1), None
 
 
 class RecurrentLayerConfig(BaseConfig):

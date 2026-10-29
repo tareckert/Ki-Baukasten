@@ -45,6 +45,7 @@ import torch
 from torch import nn
 
 from ..components.attention import AttentionConfig, MultiHeadAttention
+from ..components.cache import KVCacheConfig, ModelCache, module_supports_cache
 from ..components.layers import LAYERS, DropPath
 from ..components.normalization import build_norm
 from ..core import (BaseConfig, ComponentParam, Level, NestedParam, Param, T, resolve_layer_config,
@@ -162,10 +163,12 @@ class TransformerBlock(nn.Module):
         return pre(out) if pos == "post" else out
 
     def forward(self, x, key_padding_mask=None, positional=None, positions=None, causal=False,
-                memory=None, memory_mask=None):
+                memory=None, memory_mask=None, cache=None):
+        extra = {"cache": cache} if cache is not None else {}
+
         def mix(h):
             return self.mixer(h, key_padding_mask=key_padding_mask, positional=positional, positions=positions,
-                              causal=causal)
+                              causal=causal, **extra)
 
         if self.cfg.parallel:
             pos = self.cfg.norm_position
@@ -215,6 +218,12 @@ class GenerationConfig(BaseConfig):
         "Verhindert Endlosschleifen.", "1.1–1.3 bei Wiederholungsproblemen."), level=Level.ADVANCED)
     eos_token_id = Param(None, type=int, tooltip=T(
         "Token, das die Generierung beendet.", "Stoppt, sobald alle Sequenzen es erzeugt haben.", "Wenn vorhanden."))
+    use_cache = Param(True, tooltip=T(
+        "KV-/Zustands-Cache verwenden (nur neue Tokens berechnen).",
+        "Pro Token nur ein Schritt statt kompletter Neuberechnung – oft 5–50× schneller.",
+        "Immer an; aus nur zum Vergleichen. Mixer ohne Cache-Unterstützung schalten ihn automatisch ab.",
+    ), group="Cache")
+    cache = NestedParam(KVCacheConfig, group="Cache", level=Level.ADVANCED)
 
 
 def _filter_logits(logits: torch.Tensor, g: GenerationConfig) -> torch.Tensor:
@@ -479,7 +488,8 @@ class Transformer(BaseModel):
         return list(getattr(self, "encoder_blocks", [])) + list(self.blocks)
 
     # ------------------------------------------------------------ Vorwärts
-    def _embed(self, x: torch.Tensor, embed: nn.Module, mask: torch.Tensor | None, with_prefix: bool = True):
+    def _embed(self, x: torch.Tensor, embed: nn.Module, mask: torch.Tensor | None, with_prefix: bool = True,
+               offset: int = 0):
         c = self.config
         if embed is self.embed and c.input_type == "patches":
             h = embed(x).flatten(2).transpose(1, 2)
@@ -488,11 +498,11 @@ class Transformer(BaseModel):
         scale = c.embedding_scale if c.embedding_scale is not None else c.positional.name == "sinusoidal"
         if scale:
             h = h * (c.d_model ** 0.5)
-        if self.prefix is not None and with_prefix:
+        if self.prefix is not None and with_prefix and offset == 0:
             h = torch.cat([self.prefix.expand(h.shape[0], -1, -1).to(h.dtype), h], dim=1)
             if mask is not None:
                 mask = torch.cat([torch.ones(mask.shape[0], self.n_prefix, dtype=mask.dtype, device=mask.device), mask], 1)
-        positions = torch.arange(h.shape[1], device=h.device)
+        positions = torch.arange(offset, offset + h.shape[1], device=h.device)
         h = self.positional.embed(h, positions)
         return self.embed_drop(self.embed_norm(h)), mask, positions
 
@@ -503,23 +513,46 @@ class Transformer(BaseModel):
             return x != self.config.pad_token_id
         return None
 
-    def encode(self, inputs: torch.Tensor, attention_mask: torch.Tensor | None = None) -> tuple[torch.Tensor, Any]:
-        """Läuft durch Embedding + (Encoder-)Blöcke; liefert Repräsentation und Maske."""
+    def encode(self, inputs: torch.Tensor, attention_mask: torch.Tensor | None = None,
+               cache: ModelCache | None = None) -> tuple[torch.Tensor, Any]:
+        """Läuft durch Embedding + (Encoder-)Blöcke; liefert Repräsentation und Maske.
+
+        Mit ``cache`` (nur decoder_only) enthält ``inputs`` nur die **neuen** Tokens;
+        frühere Positionen kommen aus dem Cache (siehe ``new_cache``).
+        """
         c = self.config
         mask = self._auto_mask(inputs, attention_mask)
-        h, mask, positions = self._embed(inputs, self.embed, mask)
+        if cache is not None and c.architecture != "decoder_only":
+            raise ValueError("Ein Cache ist nur bei architecture='decoder_only' möglich.")
+        offset = cache.seen if cache is not None else 0
+        h, mask, positions = self._embed(inputs, self.embed, mask, offset=offset)
         if c.architecture == "encoder_decoder":
             for block in self.encoder_blocks:
                 h = block(h, key_padding_mask=mask, positional=self.positional, positions=positions, causal=False)
             return self.encoder_norm(h), mask
         causal = c.architecture == "decoder_only"
-        for block in self.blocks:
-            h = block(h, key_padding_mask=mask, positional=self.positional, positions=positions, causal=causal)
+        for i, block in enumerate(self.blocks):
+            h = block(h, key_padding_mask=mask, positional=self.positional, positions=positions, causal=causal,
+                      **({"cache": cache[i]} if cache is not None else {}))
+        if cache is not None:
+            cache.seen += h.shape[1]
         return self.final_norm(h), mask
+
+    # ------------------------------------------------------------ Cache
+    def supports_cache(self) -> bool:
+        """``True``, wenn alle Mixer des (Decoder-)Stapels einen Generierungs-Cache unterstützen."""
+        return self.config.architecture == "decoder_only" and all(module_supports_cache(b.mixer) for b in self.blocks)
+
+    def new_cache(self, cfg: KVCacheConfig | dict | None = None) -> ModelCache:
+        """Leerer Cache für ``forward(..., cache=...)`` bzw. eigene Generierungsschleifen."""
+        if not self.supports_cache():
+            raise ValueError("Mindestens ein Mixer dieses Modells unterstützt keinen Cache (oder kein decoder_only).")
+        return ModelCache(len(self.blocks), cfg)
 
     def forward(self, inputs: torch.Tensor, attention_mask: torch.Tensor | None = None,
                 decoder_inputs: torch.Tensor | None = None,
-                decoder_attention_mask: torch.Tensor | None = None) -> torch.Tensor:
+                decoder_attention_mask: torch.Tensor | None = None,
+                cache: ModelCache | None = None) -> torch.Tensor:
         c = self.config
         if c.architecture == "encoder_decoder":
             if decoder_inputs is None:
@@ -533,13 +566,14 @@ class Transformer(BaseModel):
             h = self.final_norm(h)
             return self._head(h)
 
-        h, mask = self.encode(inputs, attention_mask)
-        return self._head(self._pool(h, mask))
+        has_prefix = cache is None or cache.seen == 0  # mit Cache stehen Präfix-Tokens nur im ersten Aufruf
+        h, mask = self.encode(inputs, attention_mask, cache=cache)
+        return self._head(self._pool(h, mask, has_prefix))
 
-    def _pool(self, h: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
+    def _pool(self, h: torch.Tensor, mask: torch.Tensor | None, has_prefix: bool = True) -> torch.Tensor:
         p = self.config.pooling
         if p == "none":
-            return h[:, self.n_prefix:] if self.n_prefix else h
+            return h[:, self.n_prefix:] if self.n_prefix and has_prefix else h
         if p == "cls":
             return h[:, self.n_prefix - 1]
         body = h[:, self.n_prefix:]
@@ -566,8 +600,14 @@ class Transformer(BaseModel):
 
     # ------------------------------------------------------------ Generierung
     @torch.no_grad()
-    def generate(self, input_ids: torch.Tensor, generation: GenerationConfig | None = None, **overrides: Any) -> torch.Tensor:
-        """Autoregressive Generierung (decoder_only + tokens)."""
+    def generate(self, input_ids: torch.Tensor, generation: GenerationConfig | None = None,
+                 attention_mask: torch.Tensor | None = None, **overrides: Any) -> torch.Tensor:
+        """Autoregressive Generierung (decoder_only + tokens).
+
+        Mit ``use_cache`` (Standard) wird der Prompt einmal komplett verarbeitet
+        ("Prefill"), danach pro Schritt nur das neue Token. Ohne Cache wird
+        jedes Mal die ganze (auf ``max_seq_len`` gekürzte) Sequenz neu berechnet.
+        """
         c = self.config
         if c.architecture != "decoder_only" or c.input_type != "tokens" or c.pooling != "none":
             raise ValueError("generate() erfordert decoder_only, input_type='tokens' und pooling='none'.")
@@ -576,8 +616,22 @@ class Transformer(BaseModel):
         self.eval()
         ids = input_ids
         finished = torch.zeros(ids.shape[0], dtype=torch.bool, device=ids.device)
-        for _ in range(g.max_new_tokens):
-            logits = self(ids[:, -c.max_seq_len:])[:, -1, :].float()
+        use_cache = g.use_cache and self.supports_cache()
+        cache: ModelCache | None = None
+        limit = c.max_seq_len
+        mask = attention_mask
+
+        def prefill(tokens: torch.Tensor, m: torch.Tensor | None) -> torch.Tensor:
+            nonlocal cache
+            cache = self.new_cache(g.cache)
+            return self(tokens, attention_mask=m, cache=cache)[:, -1, :].float()
+
+        if use_cache:
+            logits = prefill(ids[:, -limit:], mask[:, -limit:] if mask is not None else None)
+        for step in range(g.max_new_tokens):
+            if not use_cache:
+                m = mask[:, -limit:] if mask is not None else None
+                logits = self(ids[:, -limit:], attention_mask=m)[:, -1, :].float()
             if g.repetition_penalty != 1.0:
                 prev = torch.gather(logits, 1, ids)
                 prev = torch.where(prev > 0, prev / g.repetition_penalty, prev * g.repetition_penalty)
@@ -591,8 +645,17 @@ class Transformer(BaseModel):
                 nxt = torch.where(finished.unsqueeze(1), torch.full_like(nxt, g.eos_token_id), nxt)
                 finished |= nxt.squeeze(1) == g.eos_token_id
             ids = torch.cat([ids, nxt], dim=1)
+            if mask is not None:
+                mask = torch.cat([mask, torch.ones_like(mask[:, :1])], 1)
             if g.eos_token_id is not None and bool(finished.all()):
                 break
+            if use_cache and step + 1 < g.max_new_tokens:
+                if cache.seen + 1 > limit + self.n_prefix:
+                    # Kontext voll: Cache aus den letzten Tokens neu aufbauen (overflow_keep).
+                    keep = max(1, int(round(limit * g.cache.overflow_keep)))
+                    logits = prefill(ids[:, -keep:], mask[:, -keep:] if mask is not None else None)
+                else:
+                    logits = self(nxt, cache=cache)[:, -1, :].float()
         self.train(was_training)
         return ids
 

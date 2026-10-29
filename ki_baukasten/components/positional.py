@@ -62,6 +62,10 @@ class PositionalEncoding(nn.Module):
         """Additiver Bias ``[H, Tq, Tk]`` auf die Attention-Logits (oder ``None``)."""
         return None
 
+    def rotate_keys(self, k: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
+        """Nur Keys rotieren (z. B. bei MLA-lite, wo Keys aus dem Cache neu entstehen)."""
+        return self.rotate(k, k, positions)[1]
+
 
 class NoPositional(PositionalEncoding):
     pass
@@ -140,11 +144,18 @@ class RotaryPositional(PositionalEncoding):
             out = torch.cat((x1 * cos - x2 * sin, x2 * cos + x1 * sin), dim=-1)
         return torch.cat((out.to(x.dtype), xp), dim=-1)
 
-    def rotate(self, q, k, positions):
-        rot, inv_freq = self._inv_freq(q.shape[-1], q.device)
+    def _cos_sin(self, head_dim: int, positions: torch.Tensor) -> tuple[int, torch.Tensor, torch.Tensor]:
+        rot, inv_freq = self._inv_freq(head_dim, positions.device)
         freqs = torch.outer(positions.float() * self.pos_scale, inv_freq)  # [T, rot/2]
-        cos, sin = freqs.cos(), freqs.sin()
+        return rot, freqs.cos(), freqs.sin()
+
+    def rotate(self, q, k, positions):
+        rot, cos, sin = self._cos_sin(q.shape[-1], positions)
         return self._rotate_one(q, rot, cos, sin), self._rotate_one(k, rot, cos, sin)
+
+    def rotate_keys(self, k, positions):
+        rot, cos, sin = self._cos_sin(k.shape[-1], positions)
+        return self._rotate_one(k, rot, cos, sin)
 
 
 def alibi_slopes(n: int) -> torch.Tensor:
@@ -234,6 +245,11 @@ class CombinedPositional(PositionalEncoding):
         for p in self.parts:
             q, k = p.rotate(q, k, positions)
         return q, k
+
+    def rotate_keys(self, k, positions):
+        for p in self.parts:
+            k = p.rotate_keys(k, positions)
+        return k
 
     def bias(self, q_len, k_len, num_heads, device, causal):
         total = None
