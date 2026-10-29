@@ -606,10 +606,25 @@ class BaukastenGUI(tk.Tk):
                            None, ("Probelauf & Gewichte…", self.inspector)])
         menu("Analyse", [("Aufbau", self.architecture), ("Speicherschätzung", self.memory),
                          ("Notfall-Optionen (Training)…", lambda: self.fallback_dialog(None))])
+        menu("Qualität", [("Perfektions-Check (Anforderungen)", self.perfection_check),
+                          ("Alles Empfohlene einschalten", self.apply_perfection), None,
+                          ("Datenprüfung", lambda: self._run_bg("Datenprüfung", lambda: str(self.project.data_check()))),
+                          ("Daten-Vorschläge übernehmen", self.apply_data_fixes), None,
+                          ("Testmenge auswerten", lambda: self._run_bg("Test", self.project.test)),
+                          ("Vergleich mit Basis", lambda: self._run_bg("Basis", self.project.baseline)),
+                          ("Fehleranalyse", lambda: self._run_bg("Fehleranalyse", self._error_text)),
+                          ("Kalibrieren", lambda: self._run_bg("Kalibrierung", self.project.calibrate)),
+                          ("Robustheit prüfen", lambda: self._run_bg("Robustheit",
+                                                                    lambda: str(self.project.robustness_report()))),
+                          ("Merkmals-Wichtigkeit", lambda: self._run_bg("Merkmals-Wichtigkeit",
+                                                                       lambda: str(self.project.feature_importance()))),
+                          None, ("Modellkarte anzeigen", self.model_card)])
         menu("Einsatz", [("Reduzieren / Export…", self.reduce_dialog),
                          ("Notfall-Ausführung…", lambda: self.fallback_dialog(None)),
+                         ("HTTP-Dienst starten (lokal)", self.start_server),
                          ("Verteilt trainieren (Startbefehl)…", self.distributed_info)])
-        menu("Hilfe", [("Möglichkeiten-Katalog", self.possibilities)])
+        menu("Hilfe", [("Möglichkeiten-Katalog", self.possibilities),
+                       ("Anforderungs-Katalog", self.requirements_catalog)])
 
     def _set_view(self, name: str) -> None:
         self.view.set(name)
@@ -635,6 +650,69 @@ class BaukastenGUI(tk.Tk):
 
     def switch_overview(self) -> None:
         self.log_write(self.project.switch_overview() + "\n")
+
+    # ------------------------------------------------------------ Qualität
+    def perfection_check(self) -> None:
+        self.log_write("\n" + str(self.project.perfection_check()) + "\n")
+
+    def apply_perfection(self) -> None:
+        done = self.project.apply_perfection()
+        self.refresh_tree()
+        self.log_write(f"✓ eingeschaltet: {', '.join(done) or 'nichts (alles Schaltbare ist an)'} · Punktzahl jetzt "
+                       f"{self.project.perfection_check().score:.0f}/100 · rückgängig mit ↶\n")
+
+    def apply_data_fixes(self) -> None:
+        changed = self.project.apply_data_fixes()
+        self.refresh_tree()
+        self.log_write(f"✓ übernommen: {', '.join(changed) or 'nichts'}\n")
+
+    def _error_text(self) -> str:
+        ea = self.project.error_analysis()
+        if "konfusionsmatrix" not in ea:
+            return f"Mittlerer Fehler {ea['mittlerer_fehler']:.4g}; größte: " + ", ".join(
+                f"#{e['index']} ({e['fehler']:.3g})" for e in ea["groesste_fehler"])
+        rows = "\n".join("  " + " ".join(f"{v:>5}" for v in r) for r in ea["konfusionsmatrix"])
+        worst = "\n".join(f"  #{w['index']}: richtig {w['richtig']}, vorhergesagt {w['vorhergesagt']} "
+                          f"({w['sicherheit']:.0%})" for w in ea["sicherste_fehler"])
+        return f"Fehlerquote {ea['fehlerquote']:.3f}\nKonfusionsmatrix (Zeile = richtig):\n{rows}\nSicherste Fehler:\n{worst}"
+
+    def _text_window(self, title: str, text: str) -> None:
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.geometry("1000x700")
+        txt = tk.Text(win, wrap="word", font=("TkFixedFont", 9))
+        txt.pack(fill="both", expand=True)
+        txt.insert("1.0", text)
+
+    def model_card(self) -> None:
+        self._text_window("Modellkarte", self.project.model_card())
+
+    def requirements_catalog(self) -> None:
+        from ..requirements import requirements_markdown
+
+        self._text_window("Anforderungs-Katalog", requirements_markdown())
+
+    def start_server(self) -> None:
+        import threading
+
+        from .serve import create_server
+
+        if getattr(self, "_server", None) is not None:
+            host, port = self._server.server_address[:2]
+            self.log_write(f"HTTP-Dienst läuft bereits: http://{host}:{port}/\n")
+            return
+        if self.project.model is None:
+            messagebox.showinfo("HTTP-Dienst", "Erst trainieren oder ein gespeichertes Projekt laden.")
+            return
+        try:
+            self._server = create_server(self.project)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("HTTP-Dienst", str(exc))
+            return
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        host, port = self._server.server_address[:2]
+        self.log_write(f"✓ HTTP-Dienst: http://{host}:{port}/  (POST /vorhersage, /frage, /generieren; endet mit "
+                       "dem Programm)\n")
 
     def possibilities(self) -> None:
         from .docs import capabilities_markdown

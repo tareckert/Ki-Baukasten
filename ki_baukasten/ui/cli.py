@@ -39,8 +39,14 @@ trainieren      trainieren (und speichern)
 ablauf          ganzer Ablauf: Suche → Training (normal/föderiert/Model Soup) → Prüfung → Kompression → Export
 automl          automatische Suche: Zufall, Gitter, Evolution, Partikelschwarm, PBT
 verteilt        verteilt trainieren: mehrere GPUs/Rechner/Prozesse (DDP, ZeRO-1, FSDP über torchrun)
-generieren      gespeichertes Projekt laden und Text/Samples erzeugen
-doku            vollständige Parameter-Referenz als Markdown exportieren
+generieren      gespeichertes Projekt laden und Text/Samples erzeugen (Instruction-Modelle: Frage → Antwort)
+perfektion      Anforderungs-Katalog: was braucht diese KI, was ist an/aus/offen/fehlt (+ alles Empfohlene an)
+datenpruefung   Daten prüfen (Lecks, Duplikate, Klassen, NaN, Skalen …) mit Abhilfen
+bewerten        gespeichertes Projekt bewerten: Validierung, Test, Basis, Fehleranalyse, Kalibrierung
+modellkarte     Modellkarte (Markdown) eines gespeicherten Projekts anzeigen/schreiben
+drift           neue Daten (CSV/Tensor-Datei) mit den Trainingsdaten vergleichen (PSI, KS, Vorhersage-Drift)
+bereitstellen   gespeichertes Projekt als HTTP-Dienst starten (JSON: /vorhersage, /frage, /generieren)
+doku            vollständige Parameter-Referenz + Anforderungs-Katalog als Markdown exportieren
 gui             grafische Oberfläche starten
 ==============  =================================================================
 
@@ -522,7 +528,9 @@ def cmd_generieren(a: argparse.Namespace) -> None:
 
     p = Project.load(a.ordner)
     model = p.model
-    if hasattr(model, "generate") and hasattr(model, "lm_head"):
+    if p._info().get("prompt_template"):
+        print(p.ask(a.prompt, max_new_tokens=a.laenge))
+    elif hasattr(model, "generate") and hasattr(model, "lm_head"):
         print(p.generate(a.prompt, max_new_tokens=a.laenge, temperature=a.temperatur, top_k=a.top_k))
     else:
         samples = p.sample(a.anzahl)
@@ -530,10 +538,114 @@ def cmd_generieren(a: argparse.Namespace) -> None:
 
 
 def cmd_doku(a: argparse.Namespace) -> None:
+    from ..requirements import requirements_markdown
     from .docs import export_markdown
 
     path = export_markdown(a.ausgabe)
     print(f"Parameter-Referenz geschrieben: {path}")
+    req = Path(path).parent / "ANFORDERUNGEN.md"
+    req.write_text(requirements_markdown(), encoding="utf-8")
+    print(f"Anforderungs-Katalog geschrieben: {req}")
+
+
+def _open(source: str, sets: list[str] | None = None):
+    """Gespeicherter Projektordner (mit Gewichten) oder Preset/Datei – ohne zu bauen."""
+    from ..project import Project
+
+    if Path(source).is_dir():
+        return Project.load(source)
+    return _project(source, sets)
+
+
+def cmd_perfektion(a: argparse.Namespace) -> None:
+    if a.katalog:
+        from ..requirements import requirements_markdown
+
+        text = requirements_markdown()
+        if a.ausgabe:
+            Path(a.ausgabe).write_text(text, encoding="utf-8")
+            print(f"Katalog geschrieben: {a.ausgabe}")
+        else:
+            print(text)
+        return
+    p = _open(a.quelle, a.setze)
+    print(p.perfection_check(a.stufe))
+    if a.anwenden:
+        done = p.apply_perfection(a.stufe, include_heavy=a.aufwendig)
+        print(f"\nEingeschaltet: {', '.join(done) or 'nichts (alles Schaltbare ist schon an)'}")
+        print(f"Neue Punktzahl: {p.perfection_check(a.stufe).score:.0f} / 100")
+    if a.speichern:
+        p.config.save(a.speichern, only_changed=True)
+        print(f"Gespeichert: {a.speichern}")
+
+
+def cmd_datenpruefung(a: argparse.Namespace) -> None:
+    p = _open(a.quelle, a.setze)
+    report = p.data_check()
+    print(report)
+    if a.anwenden:
+        print("\nÜbernommen: " + (", ".join(p.apply_data_fixes(report)) or "nichts"))
+    if a.speichern:
+        p.config.save(a.speichern, only_changed=True)
+        print(f"Gespeichert: {a.speichern}")
+
+
+def cmd_bewerten(a: argparse.Namespace) -> None:
+    p = _open(a.quelle, a.setze)
+    if p.trainer is None and not Path(a.quelle).is_dir():
+        p.train()
+    data = None
+    if Path(a.quelle).is_dir():                     # geladenes Projekt: auf seinen Daten bewerten
+        bundle = p.data()
+        data = bundle.val if bundle.val is not None else bundle.train
+    fmt = (lambda d: "  ".join(f"{k}={v:.4g}" for k, v in d.items() if isinstance(v, (int, float))))
+    print("Validierung: " + fmt(p.evaluate(data)))
+    if p.test_data is not None:
+        print("Test:        " + fmt(p.test()))
+    if p.config.training.paradigm.name == "supervised":
+        print("Basis:       " + fmt(p.baseline(data)))
+        ea = p.error_analysis(data, top=a.top)
+        if "konfusionsmatrix" in ea:
+            print(f"Fehlerquote: {ea['fehlerquote']:.3f}")
+            print("Konfusionsmatrix (Zeile = richtig, Spalte = vorhergesagt):")
+            for row in ea["konfusionsmatrix"]:
+                print("  " + " ".join(f"{v:>5}" for v in row))
+            for w in ea["sicherste_fehler"]:
+                print(f"  #{w['index']}: richtig {w['richtig']}, vorhergesagt {w['vorhergesagt']} "
+                      f"({w['sicherheit']:.0%} sicher)")
+        else:
+            print(f"Mittlerer Fehler: {ea['mittlerer_fehler']:.4g}; größte: "
+                  + ", ".join(f"#{e['index']} ({e['fehler']:.3g})" for e in ea["groesste_fehler"]))
+        if a.kalibrieren:
+            print("Kalibrierung: " + fmt(p.calibrate(data)))
+
+
+def cmd_modellkarte(a: argparse.Namespace) -> None:
+    p = _open(a.quelle)
+    text = p.model_card(a.ausgabe)
+    print(text if not a.ausgabe else f"Modellkarte geschrieben: {a.ausgabe}")
+
+
+def cmd_drift(a: argparse.Namespace) -> None:
+    import csv as _csv
+
+    import torch
+
+    from ..data.artifacts import prepare_raw
+
+    p = _open(a.quelle)
+    if a.neu.endswith(".pt"):
+        new = torch.load(a.neu, weights_only=True)
+    else:
+        with open(a.neu, newline="", encoding="utf-8") as f:
+            rows = list(_csv.DictReader(f, delimiter=a.trenner))
+        new = {"inputs": prepare_raw(p._info(), rows)}
+    print(p.drift_report(new, with_model=not a.ohne_modell))
+
+
+def cmd_bereitstellen(a: argparse.Namespace) -> None:
+    p = _open(a.quelle)
+    p.serve(host=a.host, port=a.port, api_key=a.schluessel)
 
 
 def cmd_gui(a: argparse.Namespace) -> None:
@@ -779,7 +891,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--population", type=int, default=6)
     sp.add_argument("--generationen", type=int, default=3)
     sp.add_argument("--metrik", default="val_loss")
-    sp.add_argument("--richtung", default="min", choices=["min", "max"])
+    sp.add_argument("--richtung", default="auto", choices=["auto", "min", "max"])
     sp.add_argument("--speichern", help="Konfiguration mit den besten Einstellungen speichern")
     sp.set_defaults(fn=cmd_automl)
 
@@ -802,6 +914,50 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--top-k", type=int, default=None)
     sp.add_argument("--anzahl", type=int, default=16)
     sp.set_defaults(fn=cmd_generieren)
+
+    sp = sub.add_parser("perfektion", help="Anforderungs-Katalog: Perfektions-Check eines Projekts")
+    sp.add_argument("quelle", nargs="?", default="tabellen_klassifikation",
+                    help="Preset, Konfigurationsdatei oder gespeicherter Projektordner")
+    sp.add_argument("--setze", action="append", default=[], metavar="PFAD=WERT")
+    sp.add_argument("--stufe", default="optional", choices=["pflicht", "empfohlen", "optional"],
+                    help="ab welcher Wichtigkeit anzeigen/einschalten")
+    sp.add_argument("--anwenden", action="store_true", help="alle schaltbaren offenen Anforderungen einschalten")
+    sp.add_argument("--aufwendig", action="store_true", help="auch aufwendige Techniken (DP-SGD, föderiert …)")
+    sp.add_argument("--katalog", action="store_true", help="ganzen Katalog als Markdown ausgeben")
+    sp.add_argument("-o", "--ausgabe", help="Katalog in diese Datei schreiben")
+    sp.add_argument("--speichern", help="geänderte Konfiguration speichern")
+    sp.set_defaults(fn=cmd_perfektion)
+
+    sp = sub.add_parser("datenpruefung", help="Daten prüfen (Lecks, Duplikate, Klassen …)")
+    with_source(sp)
+    sp.add_argument("--anwenden", action="store_true", help="Vorschläge übernehmen")
+    sp.add_argument("--speichern", help="geänderte Konfiguration speichern")
+    sp.set_defaults(fn=cmd_datenpruefung)
+
+    sp = sub.add_parser("bewerten", help="Validierung, Test, Basis, Fehleranalyse, Kalibrierung")
+    with_source(sp)
+    sp.add_argument("--top", type=int, default=5, help="so viele sicherste Fehler zeigen")
+    sp.add_argument("--kalibrieren", action="store_true", help="zusätzlich Temperature Scaling bestimmen")
+    sp.set_defaults(fn=cmd_bewerten)
+
+    sp = sub.add_parser("modellkarte", help="Modellkarte anzeigen/schreiben")
+    sp.add_argument("quelle", help="gespeicherter Projektordner (oder Preset)")
+    sp.add_argument("-o", "--ausgabe", help="als Datei schreiben")
+    sp.set_defaults(fn=cmd_modellkarte)
+
+    sp = sub.add_parser("drift", help="neue Daten mit den Trainingsdaten vergleichen")
+    sp.add_argument("quelle", help="gespeicherter Projektordner (oder Preset)")
+    sp.add_argument("neu", help="neue Daten: CSV (gleiche Spalten wie im Training) oder .pt-Datei mit Tensoren")
+    sp.add_argument("--trenner", default=",", help="CSV-Trennzeichen")
+    sp.add_argument("--ohne-modell", action="store_true", help="keine Vorhersage-Drift berechnen")
+    sp.set_defaults(fn=cmd_drift)
+
+    sp = sub.add_parser("bereitstellen", help="als HTTP-Dienst starten")
+    sp.add_argument("quelle", help="gespeicherter Projektordner (oder Preset)")
+    sp.add_argument("--host", default=None, help="Adresse (Standard 127.0.0.1 = nur lokal)")
+    sp.add_argument("--port", type=int, default=None)
+    sp.add_argument("--schluessel", default=None, help="API-Schlüssel (Kopfzeile X-API-Key)")
+    sp.set_defaults(fn=cmd_bereitstellen)
 
     sp = sub.add_parser("doku", help="Parameter-Referenz exportieren")
     sp.add_argument("-o", "--ausgabe", default="docs/PARAMETER_REFERENZ.md")

@@ -285,15 +285,20 @@ class Trainer:
             if vocab:
                 swap = torch.rand(inputs.shape, device=inputs.device) < a.token_noise
                 inputs = torch.where(swap, torch.randint_like(inputs, vocab), inputs)
+        # Ziele je Position (Segmentierungsmasken, Token-Labels): kein Mixup/CutMix, Geometrie wird mitgeführt
+        dense = isinstance(targets, torch.Tensor) and targets.dim() >= 2 and not targets.is_floating_point()
         if isinstance(inputs, torch.Tensor) and inputs.is_floating_point() and inputs.dim() == 4:
-            inputs = self._augment_images(inputs)
-            if a.cutmix_alpha > 0 and isinstance(targets, torch.Tensor) and inputs.shape[0] > 1 and \
+            mask = targets if dense and targets.dim() == 3 and targets.shape[-2:] == inputs.shape[-2:] else None
+            inputs, mask = self._augment_images(inputs, mask)
+            if mask is not None:
+                targets = mask
+            if a.cutmix_alpha > 0 and isinstance(targets, torch.Tensor) and not dense and inputs.shape[0] > 1 and \
                     (r.mixup_alpha <= 0 or torch.rand(()) < 0.5):
                 return self._cutmix(inputs, targets, a.cutmix_alpha)
         if isinstance(inputs, torch.Tensor) and inputs.is_floating_point():
             if r.input_noise_std > 0:
                 inputs = inputs + torch.randn_like(inputs) * r.input_noise_std
-            if r.mixup_alpha > 0 and isinstance(targets, torch.Tensor) and inputs.shape[0] > 1:
+            if r.mixup_alpha > 0 and isinstance(targets, torch.Tensor) and not dense and inputs.shape[0] > 1:
                 lam = float(torch.distributions.Beta(r.mixup_alpha, r.mixup_alpha).sample())
                 perm = torch.randperm(inputs.shape[0], device=inputs.device)
                 inputs = lam * inputs + (1 - lam) * inputs[perm]
@@ -305,22 +310,32 @@ class Trainer:
                     targets = lam * targets + (1 - lam) * targets[perm]
         return inputs, targets
 
-    def _augment_images(self, x: torch.Tensor) -> torch.Tensor:
+    def _augment_images(self, x: torch.Tensor, mask: torch.Tensor | None = None
+                        ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Bild-Augmentierung; eine Segmentierungsmaske ``[N, H, W]`` wird geometrisch genauso verändert."""
         a = self.cfg.augmentation
         n = x.shape[0]
         if a.hflip:
             flip = torch.rand(n, device=x.device) < 0.5
             x = torch.where(flip[:, None, None, None], x.flip(-1), x)
+            if mask is not None:
+                mask = torch.where(flip[:, None, None], mask.flip(-1), mask)
         if a.vflip:
             flip = torch.rand(n, device=x.device) < 0.5
             x = torch.where(flip[:, None, None, None], x.flip(-2), x)
+            if mask is not None:
+                mask = torch.where(flip[:, None, None], mask.flip(-2), mask)
         if a.crop_padding:
             pad = a.crop_padding
             h, w = x.shape[-2:]
-            padded = torch.nn.functional.pad(x, (pad, pad, pad, pad), mode="reflect" if pad < min(h, w) else "constant")
+            mode = "reflect" if pad < min(h, w) else "constant"
+            padded = torch.nn.functional.pad(x, (pad, pad, pad, pad), mode=mode)
             dy = torch.randint(0, 2 * pad + 1, (n,)).tolist()
             dx = torch.randint(0, 2 * pad + 1, (n,)).tolist()
             x = torch.stack([padded[i, :, dy[i]:dy[i] + h, dx[i]:dx[i] + w] for i in range(n)])
+            if mask is not None:
+                pm = torch.nn.functional.pad(mask[:, None].float(), (pad, pad, pad, pad), mode=mode)[:, 0].long()
+                mask = torch.stack([pm[i, dy[i]:dy[i] + h, dx[i]:dx[i] + w] for i in range(n)])
         if a.random_erasing:
             h, w = x.shape[-2:]
             x = x.clone()
@@ -330,7 +345,7 @@ class Trainer:
                         max(1, int(w * float(torch.empty(()).uniform_(0.1, 0.4))))
                     y0, x0 = int(torch.randint(0, h - eh + 1, ())), int(torch.randint(0, w - ew + 1, ()))
                     x[i, :, y0:y0 + eh, x0:x0 + ew] = 0.0
-        return x
+        return x, mask
 
     def _cutmix(self, x: torch.Tensor, targets: torch.Tensor, alpha: float) -> tuple[torch.Tensor, torch.Tensor]:
         lam = float(torch.distributions.Beta(alpha, alpha).sample())

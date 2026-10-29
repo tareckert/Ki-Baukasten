@@ -7,3 +7,4 @@ offload_cache/
 ausgaben/
 *.pt
 training_log.*
+logs/

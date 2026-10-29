@@ -457,6 +457,21 @@ def _technique_suggestions(g: GoalsConfig) -> tuple[list[tuple[str, str]], list[
     notes: list[str] = []
     add = (lambda key, why: tech.append((key, why)) if key not in [k for k, _ in tech] else None)
     p = set(g.priorities)
+    if g.labels == "vorhanden" and g.task not in ("steuerung_rl", "bild_erzeugen"):
+        add("testmenge", "ehrliche Endbewertung auf nie gesehenen Daten")
+    if g.task in ("tabelle_klassifizieren", "text_klassifizieren", "bild_klassifizieren", "anomalien_finden",
+                  "audio_klassifizieren"):
+        add("stratifiziert", "Klassen fair auf Training/Validierung/Test verteilt")
+        add("kalibrierung", "Wahrscheinlichkeiten ehrlich machen")
+    if g.task == "zeitreihe_prognose":
+        add("zeitliche_aufteilung", "keine Zukunftsdaten im Training")
+    if g.task in ("text_erzeugen", "assistent"):
+        add("keine_wiederholungen", "keine Wiederholungsschleifen beim Generieren")
+    if g.task == "uebersetzen":
+        add("beam_search", "wahrscheinlichste Gesamtübersetzung")
+    if g.task == "assistent":
+        notes.append("Assistent: Datensatz 'instructions' (Frage → Antwort, Verlust nur auf Antworten); danach "
+                     "project.ask('…'). Für echte Assistenten ein vortrainiertes Modell importieren + LoRA.")
     if "genauigkeit" in p:
         add("ema", "geglättete Gewichte sind meist genauer")
         add("partikelschwarm", "Hyperparameter automatisch optimieren")
@@ -465,6 +480,9 @@ def _technique_suggestions(g: GoalsConfig) -> tuple[list[tuple[str, str]], list[
         add("gradient_clipping", "keine Ausreißer-Schritte")
         add("spike_schutz", "Verlust-Spitzen abfangen")
         add("oom_schutz", "kein Abbruch bei Speichermangel")
+        add("conformal", "garantierte Unsicherheitsangabe (Mengen/Intervalle)")
+        add("robustheitspruefung", "Qualität unter Rauschen und Angriffen messen")
+        add("fortsetzen", "nach Abbrüchen automatisch weitermachen")
     if "wenig_speicher" in p or "energie" in p:
         add("checkpointing", "weniger Aktivierungsspeicher")
         add("adamw8bit", "Optimierer-Speicher ÷ 4")
@@ -482,12 +500,17 @@ def _technique_suggestions(g: GoalsConfig) -> tuple[list[tuple[str, str]], list[
     if "erklaerbarkeit" in p:
         add("l1_sparsity", "spärliche, besser deutbare Gewichte")
         add("gewichts_ueberwachung", "nachvollziehen, welche Schichten lernen")
-        notes.append("Erklärbarkeit: kleine Modelle bevorzugen; der Probelauf (GUI 'Probelauf & Gewichte') zeigt "
-                     "Aktivierungen, Gewichte und Attention-Karten.")
+        add("modellkarte", "Zweck, Daten, Ergebnisse und Grenzen dokumentiert")
+        notes.append("Erklärbarkeit: project.explain_prediction(x) (warum diese Vorhersage?), "
+                     "project.feature_importance() (welche Merkmale zählen?); kleine Modelle bevorzugen; der Probelauf "
+                     "(GUI 'Probelauf & Gewichte') zeigt Aktivierungen, Gewichte und Attention-Karten.")
     if "weiterlernen" in p:
         add("checkpoints", "Stände sichern")
         notes.append("Weiterlernen ohne Vergessen: projekt.continue_training(neue_daten, method='lwf' | 'ewc' | "
-                     "'replay').")
+                     "'replay'); vorher project.drift_report(neue_daten) prüfen.")
+    if "datenschutz" in p or "erklaerbarkeit" in p:
+        notes.append("Entscheidungen über Menschen: project.fairness_report('spalte') prüft Gruppen-Gerechtigkeit; "
+                     "inference.abstain_below lässt unsichere Fälle von Menschen entscheiden.")
     if "kreativitaet" in p and g.task in ("text_erzeugen",):
         notes.append("Kreative Texte: generate(..., temperature=0.9, top_p=0.95); für Fakten temperature 0–0.3.")
     if "lange_kontexte" in p or g.sequence_length in ("lang", "sehr_lang"):
@@ -509,8 +532,9 @@ def _technique_suggestions(g: GoalsConfig) -> tuple[list[tuple[str, str]], list[
         add("ddp", "Daten parallel auf mehreren GPUs")
         add("fsdp", "Modell über GPUs verteilen, falls es nicht auf eine passt")
     if g.labels == "wenige":
-        notes.append("Wenige Labels: erst selbstüberwacht vortrainieren (bert_vortraining / kontrastiv_vortraining), "
-                     "dann feintunen.")
+        notes.append("Wenige Labels: project.select_for_labeling(pool) schlägt die lohnendsten Beispiele zum "
+                     "Beschriften vor (Active Learning), project.pseudo_label(unbeschriftet) nutzt sichere Vorhersagen "
+                     "mit; alternativ selbstüberwacht vortrainieren (bert_vortraining / kontrastiv_vortraining).")
     if g.pretrained:
         notes.append("Vortrainiertes Modell: Project.import_model(pfad) – dann LoRA/QLoRA oder schichtweise Lernraten.")
     if g.target:

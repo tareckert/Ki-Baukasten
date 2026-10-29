@@ -44,6 +44,7 @@ from .analysis.targets import DeploymentConfig
 from .compress import CompressionConfig
 from .memory import MemoryConfig, MemoryManager, estimate_memory
 from .tensor import ModuleRuleConfig, ModuleSurgeon, TensorRuleConfig, TensorSurgeon
+from .models.transformer import GenerationConfig
 from .training import Trainer, TrainingConfig
 from .training.data_utils import to_device
 from .training.paradigms import call_model
@@ -81,6 +82,9 @@ class ProjectConfig(BaseConfig):
     compression = NestedParam(CompressionConfig, group="Kompression", level=Level.ADVANCED)
     deployment = NestedParam(DeploymentConfig, group="Kompression")
     inference = NestedParam(InferenceConfig, group="Einsatz")
+    generation = NestedParam(GenerationConfig, group="Einsatz", tooltip=T(
+        "Standard-Einstellungen für generate()/ask() (Temperatur, top_p, Beam Search, Wiederholungssperre …).",
+        "Einmal einstellen, überall gleich – auch im HTTP-Server.", "Sprachmodelle."))
     workflow = NestedParam(WorkflowConfig, group="Ablauf")
     auto_fit_dims = Param(True, tooltip=T(
         "Modellgrößen (Ein-/Ausgabe, Vokabular, Beobachtungen …) automatisch an Daten/Umgebung anpassen.",
@@ -92,8 +96,8 @@ class ProjectConfig(BaseConfig):
 
 
 #: Bereiche, deren Änderung ein trainiertes Modell nicht ungültig macht.
-_KEEP_MODEL = {"inference", "deployment", "goals", "workflow", "compression", "name", "description", "domain",
-               "output_dir"}
+_KEEP_MODEL = {"inference", "generation", "deployment", "goals", "workflow", "compression", "name", "description",
+               "domain", "output_dir"}
 
 
 def _changed_tops(a: dict, b: dict) -> list[str]:
@@ -138,6 +142,7 @@ class Project:
         self.last_calibration: dict[str, Any] = {}
         self.last_fairness: Any = None
         self.last_robustness: Any = None
+        self.last_baseline: dict[str, float] = {}
         self._artifacts: dict[str, Any] | None = None  # gespeicherte Vorverarbeitung (Project.load)
 
     # ================================================================ Erzeugen
@@ -422,6 +427,21 @@ class Project:
     def disable(self, *keys: str) -> list[str]:
         """Techniken ausschalten (vorherige Werte kommen zurück)."""
         return [path for k in keys for path in self.technique(k, "aus")]
+
+    def perfection_check(self, min_importance: str = "optional") -> Any:
+        """Prüft das Projekt gegen den **Anforderungs-Katalog** seiner Anwendung (Daten, Modell, Training,
+        Bewertung, Vertrauen, Einsatz): je Punkt aktiv / eingebaut / aus / offen / fehlt – mit Punktzahl und den
+        nächsten Schritten. ``print(project.perfection_check())``."""
+        from .requirements import perfection_check
+
+        return perfection_check(self, min_importance)
+
+    def apply_perfection(self, min_importance: str = "empfohlen", include_heavy: bool = False) -> list[str]:
+        """Schaltet für alle offenen Anforderungen (ab ``min_importance``: pflicht | empfohlen | optional) die
+        passende Technik ein. Rückgängig mit ``undo()`` bzw. einzeln mit ``disable(…)``."""
+        from .requirements import apply
+
+        return apply(self, min_importance, include_heavy)
 
     def technique_overview(self, only_active: bool = False, max_level: str | None = None) -> str:
         """Alle Techniken nach Kategorien mit Status (● an · ○ aus · ◐ teilweise · – passt nicht)."""
@@ -829,14 +849,13 @@ class Project:
         Ohne ``data``: die mit ``training.test_split`` zurückgehaltene Testmenge bzw. ``data.test`` des Datensatzes.
         Validierungswerte sind durch Early Stopping/Suche leicht geschönt – der Test zeigt die echte Qualität.
         """
-        if self.trainer is None:
-            raise ConfigError("Erst trainieren (train), dann testen.")
+        trainer = self._eval_trainer()
         data = data if data is not None else self.test_data
         if data is None:
             raise ConfigError("Keine Testmenge vorhanden – training.test_split > 0 setzen (z. B. "
                               "project.turn_on('training.test_split')) und neu trainieren, oder Daten übergeben.",
                               "training.test_split")
-        result = self.trainer.evaluate(data, prefix="test_")
+        result = trainer.evaluate(data, prefix="test_")
         if self._verbose("eval"):
             print("  Test: " + "  ".join(f"{k}={v:.4g}" for k, v in result.items()))
         self.last_test = dict(result)
@@ -1171,10 +1190,18 @@ class Project:
         return model_soup(self, runs or max(2, w.soup_runs), mode or w.soup_mode)
 
     def run(self) -> dict[str, Any]:
-        """Führt den ganzen **Ablauf** aus (``workflow``): Suche → Training (normal / föderiert / Model Soup)
-        → Kreuzvalidierung → Kompression → Export. Jede Stufe ist einzeln schaltbar."""
+        """Führt den ganzen **Ablauf** aus (``workflow``): Datenprüfung → Suche → Training (normal / föderiert /
+        Model Soup) → Test → Kalibrierung → Robustheit/Fairness → Kreuzvalidierung → Kompression → Export →
+        Speichern. Jede Stufe ist einzeln schaltbar."""
         w = self.config.workflow
         report: dict[str, Any] = {}
+        supervised = self.config.training.paradigm.name != "reinforcement" and self.config.data.name != "none"
+        if w.check_data and supervised:
+            report["datenpruefung"] = self.data_check()
+            if self._verbose():
+                print(report["datenpruefung"])
+            if w.apply_data_fixes and not report["datenpruefung"].ok:
+                report["datenkorrekturen"] = self.apply_data_fixes()
         if w.search.method != "none":
             report["suche"] = self.tune()
         if w.federated.enabled:
@@ -1183,6 +1210,23 @@ class Project:
             report["model_soup"] = self.model_soup()
         elif self.config.workflow.search.method != "pbt":       # PBT hat bereits trainiert
             report["training"] = self.train()
+        if w.run_test and self.test_data is not None and self.trainer is not None:
+            report["test"] = self.test()
+        if w.compare_baseline and supervised and self.trainer is not None \
+                and self.config.training.paradigm.name == "supervised":
+            try:
+                report["basis"] = self.baseline()
+            except ConfigError as exc:
+                self._note(f"Basis-Vergleich übersprungen: {exc}")
+        if self.config.inference.auto_calibrate and self.last_calibration:
+            report["kalibrierung"] = self.last_calibration
+        if w.robustness_check and supervised and self.trainer is not None:
+            try:
+                report["robustheit"] = self.robustness_report()
+            except ConfigError as exc:
+                self._note(f"Robustheitsprüfung übersprungen: {exc}")
+        if w.fairness_column and self.trainer is not None:
+            report["fairness"] = self.fairness_report(w.fairness_column)
         if w.cross_validation >= 2:
             report["kreuzvalidierung"] = self.cross_validate(w.cross_validation)
         if w.compress_after_training:
@@ -1195,6 +1239,8 @@ class Project:
         if w.export_format != "none":
             path = w.export_path or str(Path(self.config.output_dir) / self.config.name / "modell")
             report["export"] = self.export(path, w.export_format)
+        if w.save_project:
+            report["gespeichert"] = self.save()
         return report
 
     def find_lr(self, min_lr: float = 1e-7, max_lr: float = 1.0, steps: int = 100, apply: bool = False) -> Any:
@@ -1257,13 +1303,23 @@ class Project:
         self._loggers.append(logger)
         return self
 
-    def evaluate(self, data: Any = None) -> dict[str, float]:
+    def _eval_trainer(self) -> Trainer:
+        """Trainer für Bewertungen – nach ``load()`` ohne Training ein reiner Bewertungs-Trainer."""
         if self.trainer is None:
-            raise ConfigError("Erst trainieren (train) oder Trainer erzeugen.")
+            if self.model is None:
+                raise ConfigError("Erst trainieren (train) oder ein gespeichertes Projekt laden (Project.load).")
+            self.trainer = Trainer(self.model, self.config.training, MemoryConfig(), log_backends=self._loggers,
+                                   run_name=self.config.name)
+            self.model = self.trainer.module
+        return self.trainer
+
+    def evaluate(self, data: Any = None) -> dict[str, float]:
+        """Bewertung (Präfix ``val_``) – ohne ``data`` auf der Validierung des Datensatzes."""
+        trainer = self._eval_trainer()
         if data is None:
             bundle = self.data()
             data = bundle.val if bundle.val is not None else bundle.train
-        return self.trainer.evaluate(data)
+        return trainer.evaluate(data)
 
     # ================================================================ Vertrauen
     def _eval_data(self, data: Any = None, prefer_test: bool = False) -> Any:
@@ -1544,6 +1600,74 @@ class Project:
         self.last_fairness = fairness_report(pred, target, groups, positive_class, names)
         return self.last_fairness
 
+    def baseline(self, data: Any = None) -> dict[str, float]:
+        """Vergleich mit einer **einfachen Basis**: häufigste Klasse bzw. Mittelwert der Trainingsziele.
+
+        Ein Modell, das die Basis nicht deutlich schlägt, hat nichts gelernt (oder die Metrik ist ungeeignet).
+        """
+        from .training.metrics import auto_specs, compute_metrics, task_of
+        from .training.paradigms import is_segmentation
+
+        out, target, _ = self._outputs(self._eval_data(data))
+        if is_segmentation(out, target):
+            out, target = out.permute(0, 2, 3, 1).reshape(-1, out.shape[1]), target.reshape(-1)
+        task = task_of(out, target)
+        train_targets = None
+        try:
+            from .training.data_utils import as_dataset, class_labels
+
+            train = self.data().train
+            train_targets = class_labels(as_dataset(train)) if task == "klassifikation" else \
+                (train.get("targets") if isinstance(train, dict) else None)
+        except Exception:  # noqa: BLE001 - ohne Trainingsdaten: Validierung als Bezug
+            pass
+        if task == "klassifikation":
+            ref = train_targets if train_targets is not None else target.reshape(-1)
+            ref = ref[ref >= 0]
+            majority = int(torch.bincount(ref.long()).argmax())
+            const = torch.full_like(out, -10.0)
+            const[..., majority] = 10.0
+        else:
+            ref = train_targets if isinstance(train_targets, torch.Tensor) and train_targets.shape[1:] == \
+                target.shape[1:] else target
+            const = ref.float().mean(0, keepdim=True).expand_as(target).reshape(out.shape) \
+                if target.numel() == out.numel() else torch.zeros_like(out)
+        base = compute_metrics(auto_specs(task), const, target, prefix="basis_")
+        model = compute_metrics(auto_specs(task), out, target, prefix="modell_")
+        result = {**base, **model}
+        self.last_baseline = result
+        if self._verbose():
+            print("  Basis vs. Modell: " + "  ".join(f"{k}={v:.4g}" for k, v in result.items()))
+        return result
+
+    def error_analysis(self, data: Any = None, top: int = 10) -> dict[str, Any]:
+        """Fehleranalyse: Konfusionsmatrix, Präzision/Trefferquote je Klasse und die sichersten Fehlgriffe
+        (Klassifikation) bzw. die größten Fehler (Regression) – mit Index zum Nachschauen."""
+        out, target, _ = self._outputs(self._eval_data(data))
+        names = self._info().get("label_names")
+        if self._is_classification(out, target) and out.dim() == 2:
+            probs = (out / self.config.inference.temperature).softmax(-1)
+            pred = probs.argmax(-1)
+            k = out.shape[-1]
+            cm = torch.bincount(target.long() * k + pred, minlength=k * k).reshape(k, k)
+            per_class = {}
+            for c in range(k):
+                tp, fp, fn = int(cm[c, c]), int(cm[:, c].sum() - cm[c, c]), int(cm[c].sum() - cm[c, c])
+                per_class[names[c] if names and c < len(names) else c] = {
+                    "praezision": tp / max(1, tp + fp), "trefferquote": tp / max(1, tp + fn), "anzahl": int(cm[c].sum())}
+            wrong = (pred != target).nonzero().flatten()
+            conf = probs[wrong].max(-1).values
+            order = wrong[conf.argsort(descending=True)][:top]
+            label = (lambda i: names[i] if names and i < len(names) else i)
+            worst = [{"index": int(i), "richtig": label(int(target[i])), "vorhergesagt": label(int(pred[i])),
+                      "sicherheit": float(probs[i].max())} for i in order]
+            return {"konfusionsmatrix": cm.tolist(), "klassen": names, "je_klasse": per_class,
+                    "sicherste_fehler": worst, "fehlerquote": float((pred != target).float().mean())}
+        err = (out.reshape(out.shape[0], -1).float() - target.reshape(target.shape[0], -1).float()).abs().mean(1)
+        order = err.argsort(descending=True)[:top]
+        return {"groesste_fehler": [{"index": int(i), "fehler": float(err[i])} for i in order],
+                "mittlerer_fehler": float(err.mean())}
+
     def robustness_report(self, data: Any = None, epsilons: list[float] | None = None, metric: str | None = None,
                           methods: tuple[str, ...] = ("rauschen", "fgsm", "pgd"), limit: int = 512) -> Any:
         """Wie stark leidet die Qualität unter Rauschen und gezielten Angriffen (FGSM/PGD)?
@@ -1707,8 +1831,7 @@ class Project:
         model = self._ensure_model()
         info = self._info()
         tok = info.get("tokenizer")
-        if info.get("eos_token_id") is not None:
-            generation.setdefault("eos_token_id", info["eos_token_id"])
+        generation = self._generation_args(model, info, generation)
         if isinstance(prompt, str):
             if tok is None:
                 raise ConfigError("Für Text-Prompts wird ein Tokenizer im Datensatz benötigt (z. B. Datensatz 'text').")
@@ -1716,6 +1839,17 @@ class Project:
             out = model.generate(ids, **generation)
             return tok.decode(out[0].tolist())
         return model.generate(prompt.to(self._device()), **generation)
+
+    def _generation_args(self, model: nn.Module, info: dict, overrides: dict) -> dict:
+        """``project.generation`` als Standard, Aufruf-Argumente haben Vorrang; Ende-Token aus den Daten."""
+        import inspect
+
+        if "generation" not in inspect.signature(model.generate).parameters:
+            return overrides
+        g = self.config.generation
+        if g.eos_token_id is None and info.get("eos_token_id") is not None and "eos_token_id" not in overrides:
+            overrides = {**overrides, "eos_token_id": info["eos_token_id"]}
+        return {"generation": g, **overrides}
 
     def ask(self, question: str, **generation: Any) -> str:
         """Frage an ein Instruction-Modell (Datensatz ``instructions``): gleiche Vorlage wie im Training, Antwort
@@ -1726,11 +1860,9 @@ class Project:
             raise ConfigError("ask() braucht einen Datensatz mit Vorlage (data = 'instructions').")
         prompt = template.format(prompt=question)
         generation.setdefault("temperature", 0.0)
-        generation.setdefault("max_new_tokens", 48)
         n = len(tok.encode(prompt))
         model = self._ensure_model()
-        if info.get("eos_token_id") is not None:
-            generation.setdefault("eos_token_id", info["eos_token_id"])
+        generation = self._generation_args(model, info, generation)
         ids = torch.tensor([tok.encode(prompt)], device=self._device())
         out = model.generate(ids, **generation)[0, n:].tolist()
         text = tok.decode(out)

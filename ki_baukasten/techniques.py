@@ -14,7 +14,7 @@ Kategorien
 ----------
 Stabilität · gegen Auswendiglernen · Performance · große Modelle auf kleiner Hardware · Cluster ·
 automatische Suche · Schwarmintelligenz · Evolution · Daten · Datenschutz · Überwachung ·
-Kompression & Einsatz · experimentell
+Kompression & Einsatz · Bewertung & Vertrauen · experimentell
 
 Nutzung::
 
@@ -52,6 +52,8 @@ CATEGORIES: dict[str, tuple[str, str]] = {
     "datenschutz": ("Datenschutz", "Sensible Daten schützen."),
     "ueberwachung": ("Überwachung & Reproduzierbarkeit", "Protokolle, Checkpoints, Seeds."),
     "kompression": ("Kompression & Einsatz", "Nach dem Training verkleinern und exportieren."),
+    "vertrauen": ("Bewertung & Vertrauen", "Ehrlich messen, Wahrscheinlichkeiten kalibrieren, Unsicherheit zeigen, "
+                                          "robust gegen Störungen."),
     "experimentell": ("Experimentell", "Neue Verfahren aus der Forschung – Nutzen nicht immer gesichert."),
 }
 
@@ -122,13 +124,32 @@ def _arg(cfg: BaseConfig, name: str) -> Any:
 
 
 def _images(cfg: BaseConfig) -> bool:
-    return cfg.get("model").name == "cnn" or _arg(cfg, "input_type") in ("image", "patches") or \
-        cfg.get("data").name in ("shapes",)
+    if cfg.get("data").name == "audio":                  # Spektrogramme: Spiegeln wäre Zeitumkehr
+        return False
+    return cfg.get("model").name in ("cnn", "unet") or _arg(cfg, "input_type") in ("image", "patches") or \
+        cfg.get("data").name in ("shapes", "image_folder", "segmentation")
+
+
+_TOKEN_DATA = ("text", "sequence_classification", "seq2seq_toy", "text_classification", "instructions")
 
 
 def _tokens(cfg: BaseConfig) -> bool:
-    return _arg(cfg, "input_type") == "tokens" or cfg.get("data").name in ("text", "sequence_classification",
-                                                                          "seq2seq_toy")
+    return _arg(cfg, "input_type") == "tokens" or cfg.get("data").name in _TOKEN_DATA
+
+
+def _supervised(cfg: BaseConfig) -> bool:
+    return cfg.get("training.paradigm").name == "supervised"
+
+
+def _float_supervised(cfg: BaseConfig) -> bool:
+    """Überwacht mit Zahlen-Eingaben (Tabellen, Bilder, Signale) – Voraussetzung für Angriffe/Gradienten."""
+    return _supervised(cfg) and not _tokens(cfg) and cfg.get("data").name not in ("graphs", "multimodal", "none")
+
+
+def _generator(cfg: BaseConfig) -> bool:
+    """Textgenerierung möglich (Decoder-Transformer auf Tokens)."""
+    return cfg.get("model").name in ("transformer", "ssm", "hybrid") and _arg(cfg, "architecture") in (
+        None, "decoder_only") and _arg(cfg, "input_type") in (None, "tokens") and _arg(cfg, "pooling") in (None, "none")
 
 
 def _not_rl(cfg: BaseConfig) -> bool:
@@ -427,6 +448,11 @@ CATALOG: list[Technique] = [
     _K("klassen_ausgleich", "Seltene Klassen ausgleichen", "daten", T(
         "Seltene Klassen häufiger ziehen.", "Unausgewogene Daten werden fair gelernt.", "Betrug, Diagnosen."),
         {"training.balance_classes": True}, "Standard bei unbalancierten Daten", applies=_classification),
+    _K("bpe_tokenizer", "BPE-Tokenizer", "daten", T(
+        "Häufige Zeichenfolgen werden zu einem Token zusammengefasst (wie GPT/LLaMA).",
+        "Kürzere Folgen als Zeichen-Tokens, keine unbekannten Wörter wie beim Wort-Tokenizer.",
+        "Texte mit genug Trainingsmaterial."), {"data.tokenizer": "bpe"}, "GPT-2, LLaMA, RoBERTa",
+        applies=lambda cfg: hasattr(cfg.get("data").args, "tokenizer")),
     _K("curriculum", "Curriculum (leicht → schwer)", "daten", T(
         "Zuerst kurze/leichte Beispiele, dann alle.", "Schnellerer, stabilerer Start.", "Sprachmodelle, Logik."),
         {"training.curriculum.strategy": "length"}, "Bengio et al. (2009)", level=Level.ADVANCED, applies=_not_rl),
@@ -488,6 +514,95 @@ CATALOG: list[Technique] = [
         "Im Training bereits mit gerundeten Gewichten rechnen.", "Kaum Qualitätsverlust bei späterer Quantisierung.",
         "Modelle für int8-Geräte."), {"memory.quantization": "fake_quant"}, "Google, Qualcomm (TFLite, AIMET)",
         level=Level.ADVANCED),
+
+    # ------------------------------------------------------------------ Bewertung & Vertrauen
+    _K("testmenge", "Testmenge zurückhalten (15 %)", "vertrauen", T(
+        "Ein Teil der Daten wird nie fürs Training oder die Auswahl benutzt und erst am Ende geprüft (Project.test).",
+        "Validierungswerte sind durch Early Stopping und Suche leicht geschönt – nur der Test zeigt die echte "
+        "Qualität.", "Jedes ernsthafte Projekt mit genug Daten."),
+        {"training.test_split": 0.15}, "Standard in Forschung und Industrie", applies=_data_paradigm),
+    _K("metriken_auto", "Passende Metriken automatisch", "vertrauen", T(
+        "F1, AUROC, Kalibrierungsfehler (Klassifikation), MAE/RMSE/R² (Regression), Perplexität, BLEU, IoU …",
+        "Der Verlust allein sagt wenig über die echte Qualität.", "Immer."),
+        {"training.auto_metrics": True}, "scikit-learn/torchmetrics-Praxis", applies=_data_paradigm),
+    _K("stratifiziert", "Stratifizierte Aufteilung", "vertrauen", T(
+        "Klassenanteile in Training, Validierung und Test gleich halten.", "Faire Bewertung, besonders bei seltenen "
+        "Klassen.", "Klassifikation."), {"training.validation_strategy": "stratifiziert"}, "scikit-learn "
+        "StratifiedKFold", also=("daten",), applies=_classification),
+    _K("zeitliche_aufteilung", "Zeitliche Aufteilung (keine Zukunft im Training)", "vertrauen", T(
+        "Die letzten Beispiele werden Validierung/Test.", "Zufälliges Mischen verrät bei Zeitreihen die Zukunft – "
+        "die Bewertung wäre geschönt.", "Prognosen, Zeitreihen, Logs."), {"training.validation_strategy": "zeitlich"},
+        "Prognose-Wettbewerbe (M4/M5)", level=Level.ADVANCED, applies=_data_paradigm),
+    _K("kalibrierung", "Wahrscheinlichkeiten kalibrieren (Temperature Scaling)", "vertrauen", T(
+        "Nach dem Training eine Temperatur auf der Validierung einstellen.",
+        "'90 % sicher' soll in 90 % der Fälle stimmen – moderne Netze sind oft überkonfident.",
+        "Entscheidungen mit Risiko, Schwellenwerte."), {"inference.auto_calibrate": True}, "Guo et al. (2017)",
+        applies=_classification),
+    _K("schwelle_optimieren", "Entscheidungsschwelle optimieren (F1)", "vertrauen", T(
+        "Bei zwei Klassen die Schwelle wählen, die F1 auf der Validierung maximiert.", "0.5 ist bei seltenen "
+        "Positiven selten optimal.", "Betrug, Diagnosen, Fehlererkennung."),
+        {"inference.auto_calibrate": True, "inference.optimize_threshold": "f1"}, "Praxis in Kreditscoring/Medizin",
+        level=Level.ADVANCED, applies=_classification),
+    _K("enthaltung", "Bei Unsicherheit enthalten ('unsicher')", "vertrauen", T(
+        "Liegt die Konfidenz unter 70 %, lautet die Antwort 'unsicher' statt zu raten.",
+        "Unsichere Fälle gehen an einen Menschen – weniger teure Fehler.", "Medizin, Qualitätskontrolle, Support."),
+        {"inference.abstain_below": 0.7}, "Selective Prediction / Reject Option", level=Level.ADVANCED,
+        applies=_classification),
+    _K("conformal", "Conformal Prediction (90 % garantiert)", "vertrauen", T(
+        "Statt einer Antwort eine Menge (Klassen) bzw. ein Intervall (Zahlen), das in 90 % der Fälle stimmt.",
+        "Statistisch garantierte Unsicherheitsangabe – für jedes Modell, ohne Annahmen.", "Risiko-Entscheidungen."),
+        {"inference.conformal_alpha": 0.1, "inference.auto_calibrate": True}, "Angelopoulos & Bates (2021)",
+        level=Level.ADVANCED, applies=_supervised),
+    _K("mc_dropout", "Unsicherheit per MC-Dropout", "vertrauen", T(
+        "Mehrere Vorhersagen mit aktivem Dropout; die Streuung zeigt die Unsicherheit.",
+        "Erkennt Eingaben, die das Modell nicht kennt.", "Modelle mit Dropout."),
+        {"inference.uncertainty": "mc_dropout"}, "Gal & Ghahramani (2016)", level=Level.ADVANCED, applies=_supervised),
+    _K("tta", "Test-Time Augmentation", "vertrauen", T(
+        "Vorhersage über das Original und gespiegelte Varianten mitteln.", "Meist 0,5–2 Punkte genauer und "
+        "stabiler.", "Bilder."), {"inference.uncertainty": "tta"}, "Kaggle-Standard", level=Level.ADVANCED,
+        applies=_images),
+    _K("adversarial_training", "Adversariales Training (PGD)", "vertrauen", T(
+        "Zusätzlich auf gezielt gestörten Eingaben trainieren, die das Modell am stärksten täuschen.",
+        "Robust gegen Angriffe und Rauschen; wirkt auch als Regularisierung.", "Sicherheitskritische Modelle."),
+        {"training.adversarial.method": "pgd"}, "Madry et al. (2018)", level=Level.ADVANCED,
+        also=("generalisierung",), applies=_float_supervised),
+    _K("fgsm_training", "Adversariales Training (FGSM, schnell)", "vertrauen", T(
+        "Ein-Schritt-Variante des adversarialen Trainings.", "Fast so robust bei viel weniger Rechenzeit.",
+        "Einstieg in Robustheit."), {"training.adversarial.method": "fgsm"}, "Goodfellow et al. (2015), "
+        "Wong et al. (2020)", level=Level.ADVANCED, applies=_float_supervised),
+    _K("klassengewichte", "Klassengewichte im Verlust", "daten", T(
+        "Seltene Klassen zählen im Verlust stärker (N / (K · n_Klasse)).", "Unausgewogene Daten werden fair gelernt "
+        "– ohne die Daten zu verändern.", "Betrug, Diagnosen, seltene Fehler."),
+        {"training.class_weights": "ausgeglichen"}, "scikit-learn class_weight='balanced'",
+        also=("vertrauen",), applies=_classification),
+    _K("beam_search", "Beam Search bei der Generierung", "vertrauen", T(
+        "Mehrere Fortsetzungen parallel verfolgen und die wahrscheinlichste Gesamtfolge wählen.",
+        "Bessere Antworten bei Übersetzung, Zusammenfassung und Aufgaben mit fester Lösung.", "Nicht für kreative "
+        "Texte."), {"generation.num_beams": 4}, "Übersetzungssysteme (Marian, T5)", level=Level.ADVANCED,
+        applies=_generator),
+    _K("keine_wiederholungen", "Keine Wiederholungs-Schleifen (n-Gramm-Sperre)", "vertrauen", T(
+        "Kein 3-Gramm darf sich in der Ausgabe wiederholen.", "Verhindert die typischen Endlosschleifen kleiner "
+        "Sprachmodelle.", "Textgenerierung."), {"generation.no_repeat_ngram_size": 3}, "Hugging Face generate()",
+        level=Level.ADVANCED, applies=_generator),
+    _K("datenpruefung", "Datenprüfung vor dem Training", "vertrauen", T(
+        "Project.run prüft die Daten zuerst (Klassen, Lecks, Duplikate, NaN, Skalen …).",
+        "Die meisten KI-Probleme sind Datenprobleme.", "Jedes Projekt."), {"workflow.check_data": True},
+        "Google 'Data Validation for ML'", also=("daten",), applies=_data_paradigm),
+    _K("robustheitspruefung", "Robustheitsprüfung nach dem Training", "vertrauen", T(
+        "Project.run misst die Qualität unter Rauschen und gezielten Angriffen (FGSM/PGD).",
+        "Zeigt, ob kleine Störungen das Modell aus der Bahn werfen.", "Sicherheitskritische Modelle."),
+        {"workflow.robustness_check": True}, "Robustheits-Benchmarks (RobustBench)", level=Level.ADVANCED,
+        applies=_float_supervised),
+    _K("modellkarte", "Modellkarte beim Speichern", "ueberwachung", T(
+        "MODELLKARTE.md und umgebung.json neben dem Modell ablegen.", "Zweck, Daten, Ergebnisse, Grenzen und "
+        "Versionen dokumentiert – nachvollziehbar und prüfbar.", "Immer, besonders bei Weitergabe."),
+        {"deployment.model_card": True}, "Mitchell et al. (2019), Hugging Face Model Cards"),
+    _K("fortsetzen", "Automatisch fortsetzen (neuester Checkpoint)", "ueberwachung", T(
+        "Das Training startet beim neuesten Checkpoint statt von vorn.", "Nach Abbruch, Stromausfall oder "
+        "Zeitlimit geht keine Arbeit verloren.", "Lange Läufe, Cluster mit Zeitslots."),
+        {"training.resume_from": "auto", "+training.callbacks": {"name": "checkpoint", "every_n_steps": 500,
+                                                               "save_best_only": False}},
+        "Lightning/Hugging Face 'resume_from_checkpoint'", level=Level.ADVANCED, applies=_not_rl),
 
     # ------------------------------------------------------------------ Experimentell
     _K("lookahead", "Lookahead-Optimierer", "experimentell", T(

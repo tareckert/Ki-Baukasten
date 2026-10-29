@@ -90,10 +90,31 @@ class FederatedConfig(BaseConfig):
 class WorkflowConfig(BaseConfig):
     __title__ = "Ablauf (Project.run)"
     __tooltip__ = T(
-        "Was Project.run() nacheinander ausführt: Suche → Training → Kreuzvalidierung → Kompression → Export.",
+        "Was Project.run() nacheinander ausführt: Datenprüfung → Suche → Training → Test → Robustheit/Fairness → "
+        "Kreuzvalidierung → Kompression → Export → Speichern.",
         "Ein Befehl für den ganzen Weg zur fertigen KI; jede Stufe einzeln schaltbar.",
         "Reproduzierbare Pipelines, Automatisierung (python -m ki_baukasten ablauf …).",
     )
+    check_data = Param(True, group="Prüfung", tooltip=T(
+        "Vor dem Training die Daten prüfen (Klassen, Lecks, Duplikate, NaN, Skalen …).",
+        "Die meisten KI-Probleme sind Datenprobleme – früh erkannt, viel Zeit gespart.", "an."))
+    apply_data_fixes = Param(False, group="Prüfung", level=Level.ADVANCED, tooltip=T(
+        "Vorschläge der Datenprüfung automatisch übernehmen (z. B. Klassengewichte, stratifiziert, Testmenge).",
+        "Weniger Handarbeit.", "an, wenn man den Vorschlägen vertraut."))
+    run_test = Param(True, group="Prüfung", tooltip=T(
+        "Nach dem Training auf der zurückgehaltenen Testmenge auswerten (wenn training.test_split > 0).",
+        "Ehrliche Endbewertung.", "an."))
+    compare_baseline = Param(True, group="Prüfung", tooltip=T(
+        "Nach dem Training mit einer einfachen Basis vergleichen (häufigste Klasse / Mittelwert).",
+        "Zeigt sofort, ob das Modell überhaupt etwas gelernt hat.", "an."))
+    robustness_check = Param(False, group="Prüfung", tooltip=T(
+        "Nach dem Training Robustheit gegen Rauschen und Angriffe messen.", "Zeigt Anfälligkeiten.",
+        "Sicherheitskritische Modelle."))
+    fairness_column = Param(None, type=str, nullable=True, group="Prüfung", level=Level.ADVANCED, tooltip=T(
+        "Merkmalsspalte für einen Fairness-Bericht nach dem Training (z. B. 'geschlecht'; None = keiner).",
+        "Prüft, ob Gruppen gleich behandelt werden.", "Entscheidungen über Menschen."))
+    save_project = Param(False, group="Abschluss", tooltip=T(
+        "Am Ende speichern (Konfiguration, Gewichte, Vorverarbeitung, Modellkarte).", "Fertig zum Einsatz.", "an."))
     search = NestedParam(SearchConfig, group="Suche")
     federated = NestedParam(FederatedConfig, group="Training")
     soup_runs = Param(0, min=0, tooltip=T(
