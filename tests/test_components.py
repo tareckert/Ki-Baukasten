@@ -23,7 +23,7 @@ def test_norms(name, dims, shape):
 @pytest.mark.parametrize("name", registry("initializer").names())
 def test_initializers(name):
     for shape in [(6, 4), (6,), (6, 4, 3, 3)]:
-        t = torch.empty(*shape)
+        t = torch.zeros(*shape)  # nicht torch.empty: 'keep' lässt den (sonst zufälligen) Inhalt unverändert
         registry("initializer").build(name, t, num_layers=4)
         assert torch.isfinite(t).all()
 
