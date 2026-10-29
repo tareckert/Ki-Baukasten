@@ -476,53 +476,206 @@ class Contrastive(Paradigm):
 # ===========================================================================
 
 class DistillationConfig(BaseConfig):
+    __title__ = "Distillation (Lehrer → Schüler)"
+    __tooltip__ = T(
+        "Ein (meist kleinerer) Schüler lernt die Ausgaben – und optional die inneren Zustände – eines Lehrers.",
+        "Weiche Lehrer-Ziele enthalten mehr Information als harte Labels ('dunkles Wissen'): kleine Modelle werden "
+        "deutlich besser als mit Labels allein.",
+        "Modellkompression, Heilen nach Pruning/Quantisierung, Weiterlernen ohne Vergessen (Lehrer = alte Version).",
+    )
     teacher = ComponentParam("model", None, tooltip=T(
-        "Lehrer-Modell (beliebiges Modell; meist größer).", "Liefert 'weiche' Ziele mit mehr Information als Labels.",
-        "Modellkompression."))
+        "Lehrer-Modell (beliebiges Modell aus der Registry; meist größer).",
+        "Liefert 'weiche' Ziele mit mehr Information als Labels.", "Modellkompression.",
+        "Alternativ teacher_project / teacher_export – oder Project.distill(), das den Lehrer direkt übergibt."))
     teacher_checkpoint = Param(None, type=str, tooltip=T(
-        "Pfad zu trainierten Lehrer-Gewichten (.pt).", "Ohne Gewichte lehrt der Lehrer Zufall!", "Pflicht in der Praxis."))
+        "Pfad zu trainierten Lehrer-Gewichten (.pt) für 'teacher'.", "Ohne Gewichte lehrt der Lehrer Zufall!",
+        "Pflicht in der Praxis, wenn 'teacher' gesetzt ist."))
+    teacher_project = Param(None, type=str, tooltip=T(
+        "Ordner eines gespeicherten Projekts als Lehrer (Project.save).",
+        "Bequemster Weg: trainiertes Projekt komplett als Lehrer verwenden.", "ausgaben/mein_grosses_modell."))
+    teacher_export = Param(None, type=str, tooltip=T(
+        "torch.export-Datei (.pt2) als Lehrer – auch Modelle von außerhalb des Baukastens.",
+        "Lehrer muss nicht mit dem Baukasten gebaut sein.", "Importierte/exportierte Modelle."), level=Level.ADVANCED)
+    task = Param("auto", choices={
+        "auto": "aus Daten ableiten (Labels → überwacht; nur Token-Eingaben → nächstes Token)",
+        "supervised": "harter Verlust mit Labels (Klassifikation/Regression)",
+        "causal_lm": "harter Verlust = nächstes Token vorhersagen (Sprachmodelle)",
+        "none": "nur vom Lehrer lernen",
+    }, tooltip=T("Wozu der harte Verlust (Anteil 1-α) dient.", "Kombiniert Lehrerwissen mit echten Daten.", "auto."))
     temperature = Param(2.0, min=1e-3, tooltip=T(
         "Temperatur zum Weichzeichnen der Lehrer-Verteilung.", "Macht 'dunkles Wissen' über Nebenklassen sichtbar.",
-        "2–5."))
+        "2–5; Sprachmodelle 1–2."))
     alpha = Param(0.5, min=0.0, max=1.0, tooltip=T(
         "Gewicht des Distillationsverlusts (1-α für echte Labels).", "Balance Lehrer vs. Daten.", "0.5–0.9."))
-    kd_loss = Param("kl", choices={"kl": "KL-Divergenz der Wahrscheinlichkeiten", "mse": "MSE der Logits"},
-                    tooltip=T("Art des Distillationsverlusts.", "kl für Klassifikation; mse für Regression/Logits.", "kl."))
+    kd_loss = Param("kl", choices={
+        "kl": "KL(Lehrer ‖ Schüler) – klassisch (Hinton), deckt die ganze Verteilung ab",
+        "reverse_kl": "KL(Schüler ‖ Lehrer) – modussuchend, gut für Sprachmodelle (MiniLLM)",
+        "js": "Jensen-Shannon – symmetrisch, robust",
+        "mse": "MSE der Logits (Regression, Logit-Matching)",
+        "cosine": "Kosinus-Abstand der Logits",
+    }, tooltip=T("Art des Distillationsverlusts.", "kl für Klassifikation; reverse_kl/js für Sprachmodelle.", "kl."))
+    feature_weight = Param(0.0, min=0.0, tooltip=T(
+        "Gewicht der Feature-Distillation (innere Block-Ausgaben angleichen; 0 = aus).",
+        "Der Schüler lernt nicht nur WAS, sondern WIE der Lehrer rechnet – hilft besonders bei starkem Pruning.",
+        "0.1–1. Blöcke werden proportional zugeordnet (Schüler-Block i ↔ Lehrer-Block i·N_L/N_S)."),
+        group="Features")
+    feature_loss = Param("auto", choices={
+        "auto": "mse bei gleicher Breite, sonst gram",
+        "mse": "MSE der normierten Zustände (gleiche Breite nötig)",
+        "cosine": "Kosinus-Abstand (gleiche Breite nötig)",
+        "gram": "Ähnlichkeiten zwischen Positionen angleichen – funktioniert bei beliebiger Breite",
+    }, tooltip=T("Wie innere Zustände verglichen werden.", "gram braucht keine Projektionsschicht.", "auto."),
+        group="Features", level=Level.ADVANCED)
+
+
+def _kd_divergence(s: torch.Tensor, t: torch.Tensor, kind: str, temp: float, valid: torch.Tensor | None):
+    """Distillationsverlust pro Position, gemittelt über gültige Positionen."""
+    s2, t2 = s.float().reshape(-1, s.shape[-1]), t.float().reshape(-1, t.shape[-1])
+    if kind == "mse":
+        per = (s2 - t2).square().mean(-1)
+    elif kind == "cosine":
+        per = 1 - F.cosine_similarity(s2, t2, dim=-1)
+    else:
+        ls, lt = F.log_softmax(s2 / temp, -1), F.log_softmax(t2 / temp, -1)
+        if kind == "kl":
+            per = (lt.exp() * (lt - ls)).sum(-1)
+        elif kind == "reverse_kl":
+            per = (ls.exp() * (ls - lt)).sum(-1)
+        else:  # js
+            m = torch.logsumexp(torch.stack([ls, lt]), 0) - math.log(2.0)
+            per = 0.5 * ((ls.exp() * (ls - m)).sum(-1) + (lt.exp() * (lt - m)).sum(-1))
+        per = per * temp ** 2
+    if valid is not None:
+        v = valid.reshape(-1).to(per.dtype)
+        if v.numel() == per.numel():
+            return (per * v).sum() / v.sum().clamp_min(1.0)
+    return per.mean()
+
+
+def _feature_distance(a: torch.Tensor, b: torch.Tensor, kind: str) -> torch.Tensor:
+    a, b = a.float(), b.float()
+    if kind == "auto":
+        kind = "mse" if a.shape[-1] == b.shape[-1] else "gram"
+    if kind in ("mse", "cosine") and a.shape[-1] != b.shape[-1]:
+        raise TrainingError(f"feature_loss='{kind}' braucht gleiche Breiten ({a.shape[-1]} vs. {b.shape[-1]}) – "
+                            "nutze 'gram'.")
+    if kind == "mse":
+        return (F.layer_norm(a, a.shape[-1:]) - F.layer_norm(b, b.shape[-1:])).square().mean()
+    if kind == "cosine":
+        return (1 - F.cosine_similarity(a, b, dim=-1)).mean()
+    if a.dim() == 2:  # [B, D] → Ähnlichkeiten zwischen Beispielen
+        a, b = a.unsqueeze(0), b.unsqueeze(0)
+    ga = F.normalize(a, dim=-1) @ F.normalize(a, dim=-1).transpose(-1, -2)
+    gb = F.normalize(b, dim=-1) @ F.normalize(b, dim=-1).transpose(-1, -2)
+    return (ga - gb).square().mean()
+
+
+def load_teacher(cfg: DistillationConfig, device: torch.device) -> nn.Module:
+    """Lehrer aus Komponente+Checkpoint, gespeichertem Projekt oder torch.export-Datei."""
+    if cfg.teacher_project:
+        from ..project import Project
+        teacher = Project.load(cfg.teacher_project).model
+    elif cfg.teacher_export:
+        teacher = torch.export.load(cfg.teacher_export).module()
+    elif cfg.teacher is not None:
+        teacher = cfg.teacher.build()
+        if cfg.teacher_checkpoint:
+            state = torch.load(cfg.teacher_checkpoint, map_location="cpu", weights_only=False)
+            teacher.load_state_dict(state.get("model", state) if isinstance(state, dict) else state)
+    else:
+        raise TrainingError("Distillation braucht einen Lehrer: args.teacher (+ teacher_checkpoint), "
+                            "teacher_project, teacher_export oder Project.distill(...).")
+    teacher.requires_grad_(False)
+    return teacher.to(device).eval()
 
 
 class Distillation(Paradigm):
     def setup(self, trainer):
-        if self.cfg.teacher is None:
-            raise TrainingError("Distillation braucht ein Lehrer-Modell (args.teacher).")
-        teacher = self.cfg.teacher.build()
-        if self.cfg.teacher_checkpoint:
-            state = torch.load(self.cfg.teacher_checkpoint, map_location="cpu", weights_only=False)
-            teacher.load_state_dict(state.get("model", state) if isinstance(state, dict) else state)
-        teacher.requires_grad_(False)
-        self.teacher = teacher.to(trainer.device).eval()
+        given = getattr(trainer, "teacher_model", None)
+        if given is not None:
+            given.requires_grad_(False)
+            self.teacher = given.to(trainer.device).eval()
+        else:
+            self.teacher = load_teacher(self.cfg, trainer.device)
+        self._pairs: list[tuple[nn.Module, nn.Module]] = []
+        self._feats: dict[str, list[torch.Tensor]] = {"s": [], "t": []}
+        self._capturing = False
+        if self.cfg.feature_weight > 0:
+            self._hook_features(trainer)
+
+    def _hook_features(self, trainer) -> None:
+        student = getattr(trainer.model, "_orig_mod", trainer.model)
+        sb = student.checkpointable_blocks() if hasattr(student, "checkpointable_blocks") else []
+        tb = self.teacher.checkpointable_blocks() if hasattr(self.teacher, "checkpointable_blocks") else []
+        if not sb or not tb:
+            raise TrainingError("feature_weight > 0 braucht Modelle mit Blöcken (checkpointable_blocks).")
+        for i, block in enumerate(sb):
+            j = min(len(tb) - 1, round((i + 1) * len(tb) / len(sb)) - 1)
+            self._pairs.append((block, tb[j]))
+
+        def capture(key):
+            def hook(module, args, output):
+                if self._capturing:  # nur während compute() aufzeichnen (nicht bei späterer Inferenz)
+                    self._feats[key].append(output[0] if isinstance(output, tuple) else output)
+            return hook
+
+        for s_block, t_block in self._pairs:
+            s_block.register_forward_hook(capture("s"))
+            t_block.register_forward_hook(capture("t"))
+
+    def _task(self, batch) -> str:
+        if self.cfg.task != "auto":
+            return self.cfg.task
+        if batch.get("targets") is not None:
+            return "supervised"
+        x = batch["inputs"]
+        return "causal_lm" if isinstance(x, torch.Tensor) and not x.is_floating_point() and x.dim() == 2 else "none"
 
     def compute(self, trainer, batch, train):
         c = self.cfg
         inputs, targets = batch["inputs"], batch.get("targets")
+        mask = batch.get("attention_mask")
+        task = self._task(batch)
+        self._feats = {"s": [], "t": []}
+        self._capturing = c.feature_weight > 0
         with trainer.autocast():
-            s = main_output(call_model(trainer.model, inputs))
-            with torch.no_grad():
-                t = main_output(call_model(self.teacher, inputs))
-            if c.kd_loss == "kl":
-                kd = F.kl_div(F.log_softmax(s.float() / c.temperature, -1), F.softmax(t.float() / c.temperature, -1),
-                              reduction="batchmean") * c.temperature ** 2
-            else:
-                kd = F.mse_loss(s.float(), t.float())
+            try:
+                s = main_output(call_model(trainer.model, inputs, attention_mask=mask))
+                with torch.no_grad():
+                    t = main_output(call_model(self.teacher, inputs, attention_mask=mask))
+            finally:
+                self._capturing = False
+            if s.shape[-1] != t.shape[-1] and c.kd_loss not in ("mse", "cosine"):
+                raise TrainingError(f"Schüler ({s.shape[-1]}) und Lehrer ({t.shape[-1]}) haben verschiedene "
+                                    "Ausgabegrößen.")
+            kd = _kd_divergence(s, t, c.kd_loss, c.temperature, mask if s.dim() == 3 else None)
             loss = c.alpha * kd
             m = {"distill": float(kd.detach())}
-            if targets is not None and c.alpha < 1:
-                hard = (sum(a.weight * fn(s, targets) for fn, a in trainer.losses) if trainer.losses
-                        else auto_loss(s, targets))
-                loss = loss + (1 - c.alpha) * hard
-                m["hard"] = float(hard.detach())
+            if c.feature_weight > 0 and self._feats["s"]:
+                feat = sum(_feature_distance(a, b.detach(), c.feature_loss)
+                           for a, b in zip(self._feats["s"], self._feats["t"])) / len(self._feats["s"])
+                loss = loss + c.feature_weight * feat
+                m["features"] = float(feat.detach())
+            if c.alpha < 1 and task != "none":
+                if task == "causal_lm":
+                    hard = F.cross_entropy(s[:, :-1].reshape(-1, s.shape[-1]).float(), inputs[:, 1:].reshape(-1),
+                                           ignore_index=-100)
+                elif targets is not None:
+                    hard = (sum(a.weight * fn(s, targets) for fn, a in trainer.losses) if trainer.losses
+                            else auto_loss(s, targets))
+                else:
+                    hard = None
+                if hard is not None:
+                    loss = loss + (1 - c.alpha) * hard
+                    m["hard"] = float(hard.detach())
+            if targets is not None:
                 acc = accuracy(s.detach(), targets)
                 if acc is not None:
                     m["accuracy"] = acc
+            elif task == "causal_lm":
+                m["accuracy"] = float((s[:, :-1].argmax(-1) == inputs[:, 1:]).float().mean())
+            m["agreement"] = float((s.detach().argmax(-1) == t.argmax(-1)).float().mean()) \
+                if s.shape[-1] == t.shape[-1] else float("nan")
         m["loss"] = float(loss.detach())
         return loss, m
 
@@ -799,8 +952,11 @@ R("autoencoder", lambda a: AutoencoderParadigm(a), config=AutoencoderParadigmCon
   tooltip=T("Rekonstruktionstraining (+ KL-Annealing).", "Unüberwacht.", "Autoencoder, VAEs."))
 R("contrastive", lambda a: Contrastive(a), config=ContrastiveConfig, aliases=("simclr",), level=Level.ADVANCED,
   tooltip=T("Kontrastives selbstüberwachtes Lernen.", "Repräsentationen ohne Labels.", "Vortraining, Embeddings."))
-R("distillation", lambda a: Distillation(a), config=DistillationConfig, aliases=("kd",), level=Level.ADVANCED,
-  tooltip=T("Wissensdestillation von einem Lehrer.", "Kleine Modelle mit großem Wissen.", "Kompression."))
+R("distillation", lambda a: Distillation(a), config=DistillationConfig, aliases=("kd", "lehrer_schueler"),
+  level=Level.ADVANCED, tooltip=T(
+      "Wissensdestillation: Schüler lernt Ausgaben (und optional innere Zustände) eines Lehrers.",
+      "Kleine Modelle mit großem Wissen; heilt komprimierte Modelle; Weiterlernen ohne Vergessen.",
+      "Kompression, Deployment auf kleinen Geräten, kontinuierliches Lernen."))
 R("gan", lambda a: GANParadigm(a), config=GANParadigmConfig, tags=("generativ",), tooltip=T(
     "Adversariales Training (Generator vs. Diskriminator).", "Generative Modelle.", "Modell 'gan'."))
 R("diffusion", lambda a: DiffusionParadigm(a), config=DiffusionParadigmConfig, tags=("generativ",), tooltip=T(

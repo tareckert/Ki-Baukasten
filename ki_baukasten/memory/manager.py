@@ -168,7 +168,7 @@ class MemoryManager:
     def apply_structure(self, model: nn.Module, training: bool = True) -> nn.Module:
         """Strukturelle Umbauten (Quantisierung, LoRA) – ohne Geräte-Platzierung."""
         c = self.cfg
-        if c.quantization in ("int8", "int4", "nf4") and not any(
+        if c.quantization in ("int8", "int4", "nf4", "pal4") and not any(
                 type(m).__name__ == "QuantLinear" for m in model.modules()):
             compute = None if c.quant_compute_dtype == "auto" else DTYPES[c.quant_compute_dtype]
             done = quantize_model(model, c.quantization, c.quant_group_size, c.quant_skip, c.quant_only, compute)

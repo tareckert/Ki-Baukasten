@@ -129,6 +129,7 @@ class MemoryConfig(BaseConfig):
         "int8": "eigene Gewichts-Quantisierung 8 Bit (alle Geräte; Basis eingefroren, LoRA trainierbar)",
         "int4": "eigene Gewichts-Quantisierung 4 Bit, gruppenweise (halber int8-Speicher)",
         "nf4": "4-Bit NormalFloat wie QLoRA (beste 4-Bit-Qualität für normalverteilte Gewichte)",
+        "pal4": "4-Bit-Palette: 16 per k-means gelernte Werte je Matrix (Apple-artige 'Palettization')",
         "fake_quant": "Gewichte im Forward auf n Bit runden (Quantization-Aware Training, voll trainierbar)",
         "torchao_int8": "int8 über das Paket torchao (optimierte Kernel, falls installiert)",
         "torchao_int4": "int4 über das Paket torchao (optimierte Kernel, falls installiert)",

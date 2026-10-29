@@ -38,6 +38,8 @@ import torch
 from torch import nn
 
 from .core import BaseConfig, ComponentParam, ConfigError, ConfigListParam, Level, NestedParam, Param, T
+from .analysis.targets import DeploymentConfig
+from .compress import CompressionConfig
 from .memory import MemoryConfig, MemoryManager, estimate_memory
 from .tensor import ModuleRuleConfig, ModuleSurgeon, TensorRuleConfig, TensorSurgeon
 from .training import Trainer, TrainingConfig
@@ -72,6 +74,8 @@ class ProjectConfig(BaseConfig):
         "Regeln für Eingriffe in einzelne Tensoren (Einfrieren, Pruning, Kopieren, eigene LR …).",
         "Feinste Kontrolle bis auf einzelne Gewichte – für alle, nur bestimmte oder genau einen (scope).",
         "Transfer-Learning, Kompression, Experimente."))
+    compression = NestedParam(CompressionConfig, group="Kompression", level=Level.ADVANCED)
+    deployment = NestedParam(DeploymentConfig, group="Kompression")
     auto_fit_dims = Param(True, tooltip=T(
         "Modellgrößen (Ein-/Ausgabe, Vokabular, Beobachtungen …) automatisch an Daten/Umgebung anpassen.",
         "Vorlagen passen dadurch ohne Handarbeit zu jedem Datensatz.", "Aus, wenn exakte Werte erzwungen werden sollen."),
@@ -106,6 +110,8 @@ class Project:
         self.notes: list[str] = []
         self._undo: list[dict] = []
         self._redo: list[dict] = []
+        self._teacher: nn.Module | None = None       # Lehrer für distillation (Project.distill)
+        self.last_compression: Any = None
 
     # ================================================================ Erzeugen
     @classmethod
@@ -390,10 +396,213 @@ class Project:
             val_data = val_data if val_data is not None else bundle.val
             if self.config.data.name == "anomaly":
                 val_data = None  # Anomalie-Testmenge hat Labels → separat mit anomaly_report() auswerten
-        self.trainer = Trainer(self.model, self.config.training, self.config.memory, self.surgeon)
+        self.trainer = Trainer(self.model, self.config.training, self.config.memory, self.surgeon,
+                               teacher=self._teacher)
         self.model = self.trainer.model
         self.history = self.trainer.fit(train_data, val_data)
+        d = self.config.deployment
+        if self.config.training.verbose and d.show_after_training:
+            try:
+                print()
+                print(self.deployment_overview())
+                if d.main_target:
+                    print()
+                    print(self.recommend_for(d.main_target))
+            except Exception as exc:  # noqa: BLE001 - Übersicht darf das Training nie scheitern lassen
+                print(f"  (Reduktions-Übersicht nicht verfügbar: {exc})")
         return self.history
+
+    # ================================================================ Zielsysteme
+    def _example_input(self) -> Any:
+        try:
+            bundle = self.data()
+            if isinstance(bundle.train, dict) and "inputs" in bundle.train:
+                return bundle.train["inputs"][:1].to(self._device())
+        except Exception:  # noqa: BLE001
+            pass
+        model = self._ensure_model()
+        return model.example_input(1) if hasattr(model, "example_input") else None
+
+    def _macs(self) -> int | None:
+        from .analysis.benchmark import count_macs
+
+        ex = self._example_input()
+        try:
+            return count_macs(self._ensure_model(), ex) if ex is not None else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _can_heal(self) -> bool:
+        return self.config.data.name not in ("none",) and self.config.training.paradigm.name != "reinforcement"
+
+    def recommend_for(self, target: str) -> Any:
+        """Reduktions-Empfehlung für ein Zielsystem (siehe ``analysis.targets.TARGETS``)."""
+        from .analysis.targets import recommend
+
+        return recommend(self._ensure_model(), target, self._macs(), self._can_heal())
+
+    def deployment_overview(self, targets: list[str] | None = None) -> str:
+        """Tabelle: passt das Modell auf die Zielsysteme – und wie wird es passend?"""
+        from .analysis.targets import overview
+
+        return overview(self._ensure_model(), targets or list(self.config.deployment.targets), self._macs(),
+                        self._can_heal())
+
+    def reduce_for(self, target: str, export: str | Path | None = None, allow_student: bool = True) -> "Project":
+        """Wendet die Empfehlung für ``target`` an: ggf. Schüler-Modell (Distillation), dann Kompression.
+
+        Returns:
+            Das reduzierte Projekt (``self`` oder – bei Schüler-Empfehlung – ein neues Schüler-Projekt).
+            Mit ``export`` wird zusätzlich im passenden Format exportiert.
+        """
+        rec = self.recommend_for(target)
+        project: Project = self
+        d = self.config.deployment
+        if rec.student and allow_student:
+            project = self.distill(width=rec.student["width"], depth=rec.student["depth"], steps=d.student_steps,
+                                   name=f"{self.config.name}_{target}")
+        steps = [dict(s) for s in rec.steps]
+        for s in steps:
+            if s["name"] == "heal":
+                if project is not self or d.heal_steps == 0:
+                    s["name"] = "skip"   # Schüler wurde bereits per Distillation trainiert
+                else:
+                    s["args"] = {"steps": d.heal_steps}
+        steps = [s for s in steps if s["name"] != "skip"]
+        if steps:
+            project.compress(steps)
+        if export is not None:
+            fmt = "onnx" if "ONNX" in rec.target.export.split("/")[0] and _has_onnx() else "export"
+            project.export(export, fmt)
+        return project
+
+    def _batches(self, data: Any, n: int, batch_size: int | None = None) -> list[dict]:
+        """Erste ``n`` Batches eines dict-Datensatzes (für Kalibrierung/Messung)."""
+        if data is None or n <= 0 or not isinstance(data, dict):
+            return []
+        bs = batch_size or self.config.training.batch_size
+        size = next(iter(data.values())).shape[0]
+        out = []
+        for i in range(0, min(size, n * bs), bs):
+            out.append({k: v[i:i + bs] for k, v in data.items() if isinstance(v, torch.Tensor)})
+        return out
+
+    def compress(self, steps: list | None = None, calibration_batches: int | None = None,
+                 eval_batches: int | None = None) -> Any:
+        """Modell eindampfen (Schritte aus ``compression.steps`` oder ``steps``) – mit Vorher/Nachher-Bericht.
+
+        Formänderungen werden als ``module_rules`` ins Projekt übernommen: ``save()``/``load()``
+        stellen das kleinere Modell exakt wieder her. Beispiel::
+
+            p.compress([{"name": "prune_ffn", "args": {"amount": 0.4}}, "heal", {"name": "quantize"}])
+        """
+        from .compress import run_compression
+
+        c = self.config.compression
+        steps = list(steps) if steps is not None else list(c.steps)
+        if not steps:
+            raise ConfigError("Keine Kompressions-Schritte – compression.steps setzen oder steps=[...] übergeben. "
+                              "Vorschläge für ein Zielgerät: Project.recommend_for('smartphone').")
+        model = self._ensure_model()
+        calib, evals = [], []
+        try:
+            bundle = self.data()
+            calib = self._batches(bundle.train, calibration_batches if calibration_batches is not None
+                                  else c.calibration_batches)
+            evals = self._batches(bundle.val if bundle.val is not None else bundle.train,
+                                  eval_batches if eval_batches is not None else c.eval_batches)
+        except Exception:  # noqa: BLE001 - ohne Daten: nur datenfreie Schritte möglich
+            pass
+        model, report, rules = run_compression(model, steps, self, calib, evals, c.measure_latency)
+        for r in rules:
+            self.config.module_rules.append(ModuleRuleConfig.from_dict(r))
+        self.model, self.trainer = model, None
+        self.last_compression = report
+        if self.config.training.verbose:
+            print(report)
+        return report
+
+    def distill(self, student: Any = None, width: float = 0.5, depth: float = 0.5, steps: int | None = None,
+                temperature: float = 2.0, alpha: float = 0.7, kd_loss: str = "kl", feature_weight: float = 0.0,
+                name: str | None = None) -> "Project":
+        """Lehrer-Schüler: trainiert ein (kleineres) Schüler-Projekt mit diesem Modell als Lehrer.
+
+        Args:
+            student: Modell-Spezifikation (Name/dict/Spec) oder ``Project``; ``None`` = automatisch
+                     verkleinert (``width``/``depth`` skalieren Breite und Tiefe).
+            steps:   Trainingsschritte (None = Einstellung des Projekts).
+
+        Returns:
+            Das trainierte Schüler-Projekt (eigene Konfiguration, speicher- und exportierbar).
+        """
+        from .training.continual import shrink_config
+
+        teacher = self._ensure_model()
+        teacher.eval()
+        if isinstance(student, Project):
+            sp = student
+        else:
+            cfg = self.config.copy()
+            cfg.model = student if student is not None else shrink_config(self.config.model, width, depth)
+            cfg.module_rules, cfg.tensor_rules = [], []
+            cfg.name = name or f"{self.config.name}_schueler"
+            sp = Project(cfg)
+            sp._bundle = self._bundle
+        args = {"temperature": temperature, "alpha": alpha, "kd_loss": kd_loss, "feature_weight": feature_weight}
+        sp.config.training.paradigm = {"name": "distillation", "args": args}
+        if steps is not None:
+            sp.config.training.max_steps = steps
+        sp._teacher = teacher
+        sp.train()
+        return sp
+
+    def continue_training(self, train_data: Any = None, val_data: Any = None, method: str = "lwf",
+                          strength: float = 0.5, old_data: Any = None, replay_fraction: float = 0.3,
+                          steps: int | None = None, lr: float | None = None, data: Any = None) -> list[dict]:
+        """Weiterlernen mit neuen Daten, ohne das Alte zu vergessen (``lwf`` | ``ewc`` | ``replay`` | ``none``).
+
+        Args:
+            train_data / data: neue Daten (dict) bzw. eine Datensatz-Spezifikation (z. B. ``{"name": "csv", ...}``).
+            strength: lwf = Anteil Lehrer-Verlust (0…1); ewc = Stärke des Strafterms.
+            old_data: alte Daten für ewc/replay (Standard: der konfigurierte Datensatz).
+        """
+        from .compress import calibration_loss
+        from .core import ComponentSpec
+        from .training.continual import METHODS, ewc_penalty, fisher_information, mix_replay
+
+        if method not in METHODS:
+            raise ConfigError(f"Unbekannte Methode '{method}'. Erlaubt: {', '.join(METHODS)}.")
+        model = self._ensure_model()
+        if data is not None:
+            bundle = ComponentSpec.from_value("dataset", data).build()
+            train_data, val_data = bundle.train, val_data if val_data is not None else bundle.val
+        if train_data is None:
+            raise ConfigError("continue_training braucht neue Daten (train_data=... oder data=...).")
+        old = old_data if old_data is not None else self.data().train
+        t = self.config.training.copy()
+        if steps is not None:
+            t.max_steps = steps
+        if lr is not None:
+            t.set("optimizer.lr", lr)
+        teacher = None
+        if method == "lwf":
+            import copy as _copy
+            teacher = _copy.deepcopy(getattr(model, "_orig_mod", model)).eval()
+            base = t.paradigm.name
+            task = "causal_lm" if base == "causal_lm" else "auto"
+            t.paradigm = {"name": "distillation", "args": {"alpha": float(min(1.0, max(0.0, strength))),
+                                                         "task": task, "temperature": 2.0}}
+        if method == "replay":
+            train_data = mix_replay(train_data, old, replay_fraction, seed=t.seed or 0)
+        trainer = Trainer(model, t, self.config.memory, self.surgeon, teacher=teacher)
+        if method == "ewc":
+            batches = self._batches(old, 8)
+            fisher = fisher_information(trainer.model, batches, calibration_loss)
+            trainer.penalties.append(ewc_penalty(trainer.model, fisher, strength * 100.0))
+        self.trainer, self.model = trainer, trainer.model
+        hist = trainer.fit(train_data, val_data)
+        self.history = self.history + hist
+        return hist
 
     def evaluate(self, data: Any = None) -> dict[str, float]:
         if self.trainer is None:
@@ -563,6 +772,9 @@ class Project:
                 # Quantisierte/LoRA-Modelle: gleiche Struktur herstellen, dann laden.
                 MemoryManager(p.config.memory).apply_structure(model, training=False)
             model.load_state_dict(state)
+            if p.config.memory.param_dtype != "float32":  # z. B. nach Kompressions-Schritt 'dtype'
+                from .memory.manager import DTYPES
+                model.to(DTYPES[p.config.memory.param_dtype])
         if (d / "verlauf.json").exists():
             p.history = json.loads((d / "verlauf.json").read_text(encoding="utf-8"))
         return p
@@ -570,6 +782,14 @@ class Project:
     def __repr__(self) -> str:
         return f"<Project {self.config.name!r}: model={self.config.model.name}, data={self.config.data.name}, " \
                f"paradigm={self.config.training.paradigm.name}>"
+
+
+def _has_onnx() -> bool:
+    try:
+        import onnx  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
 
 def components_overview(max_level: str | None = None) -> str:

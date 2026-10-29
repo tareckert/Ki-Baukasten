@@ -160,7 +160,7 @@ class DtypeConfig(BaseConfig):
 
 
 class QuantizeConfig(BaseConfig):
-    format = Param("int8", choices=["int8", "int4", "nf4"], tooltip=T(
+    format = Param("int8", choices=["int8", "int4", "nf4", "pal4"], tooltip=T(
         "Quantisierungsformat (eigene Implementierung).", "Speicher dieses Moduls verkleinern.", "int8."))
     group_size = Param(128, type=int, min=8, nullable=True, tooltip=T(
         "Gruppengröße (None = pro Kanal).", "Genauigkeit vs. Skalen-Speicher.", "128."))

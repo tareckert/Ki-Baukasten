@@ -41,7 +41,8 @@ Paketübersicht
 ``training``    Trainer, Paradigmen, Optimierer, Zeitpläne, Verluste, Callbacks, RL
 ``memory``      Präzision, Checkpointing, Streaming/Offloading, Quantisierung, LoRA, Speicherschätzung
 ``tensor``      Tensor- und Modul-Chirurgie, Geltungsbereiche
-``analysis``    Aufbau-Darstellung, Ratgeber, Export
+``compress``    Modelle eindampfen: Pruning, Low-Rank, Sparsity, Quantisierung, Heilen
+``analysis``    Aufbau-Darstellung, Ratgeber, Export, Messung
 ``data``        Datensätze (synthetisch + eigene Dateien)
 ``presets``     Vorlagen je Anwendungsgebiet, Speicherprofile
 ``project``     ``Project``-Fassade
@@ -55,7 +56,7 @@ __version__ = "1.1.0"
 from .core import (BaseConfig, BuildError, ComponentListParam, ComponentParam, ComponentSpec, ConfigError,
                    ConfigListParam, FreeConfig, KIBaukastenError, Level, NestedParam, Param, T, Tooltip,
                    TrainingError, all_registries, register, registry, select_indices)
-from . import components, models, training, memory, tensor, data, presets, analysis  # noqa: E402,F401  (Registries)
+from . import components, models, training, memory, tensor, compress, data, presets, analysis  # noqa: E402,F401
 from .memory import MemoryConfig, estimate_memory  # noqa: E402
 from .models import BaseModel, ModelConfig, build_model  # noqa: E402
 from .presets import DOMAINS, MEMORY_PROFILES, apply_memory_profile, get_preset, presets_by_domain  # noqa: E402

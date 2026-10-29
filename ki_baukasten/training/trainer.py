@@ -112,10 +112,15 @@ class Trainer:
         config:  ``TrainingConfig``.
         memory:  ``MemoryConfig`` (Gerät, Präzision, Checkpointing ...).
         surgeon: optionaler ``TensorSurgeon`` (Gradienten-Hooks, Overrides, Constraints).
+        teacher: optionales Lehrer-Modell für das Paradigma ``distillation`` (statt aus der Konfiguration).
+        callbacks: zusätzliche Callback-Objekte (zur Laufzeit, z. B. Pruning-Masken halten).
+
+    ``trainer.penalties`` ist eine Liste von Funktionen ``() → Tensor``, deren Werte zum
+    Verlust addiert werden (z. B. EWC beim Weiterlernen).
     """
 
     def __init__(self, model: nn.Module, config: TrainingConfig | None = None, memory: MemoryConfig | None = None,
-                 surgeon: Any = None):
+                 surgeon: Any = None, teacher: nn.Module | None = None, callbacks: list | None = None):
         self.cfg = (config or TrainingConfig()).validate()
         set_seed(self.cfg.seed, self.cfg.deterministic)
         self.mem = MemoryManager(memory)
@@ -125,6 +130,8 @@ class Trainer:
         self.surgeon = surgeon
         if surgeon is not None:
             surgeon.install_hooks()
+        self.teacher_model = teacher
+        self.penalties: list[Callable[[], torch.Tensor]] = []
         self.paradigm = self.cfg.paradigm.build()
         self.losses = build_losses(self.cfg.losses)
         self.scaler = self.mem.grad_scaler()
@@ -136,7 +143,7 @@ class Trainer:
         self._build_optimizers()
         self.schedulers: dict[str, Any] = {}
         self.ema = EMA(self.model, self.cfg.ema.decay) if self.cfg.ema.enabled else None
-        self.callbacks = [spec.build() for spec in self.cfg.callbacks]
+        self.callbacks = [spec.build() for spec in self.cfg.callbacks] + list(callbacks or [])
         self.global_step = 0
         self.epoch = 0
         self.total_steps = 0
@@ -271,6 +278,9 @@ class Trainer:
         reg = self._regularization_loss(self.group_params[key])
         if reg is not None:
             loss = loss + reg
+        if self.penalties and key == self.paradigm.primary_key:
+            for fn in self.penalties:
+                loss = loss + fn()
         if not torch.isfinite(loss.detach()):
             return self._handle_nan(key, "Verlust")
         scaled = loss / self.cfg.gradient_accumulation_steps

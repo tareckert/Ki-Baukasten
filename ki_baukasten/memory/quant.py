@@ -55,7 +55,21 @@ FORMATS = {
     "int8": "8 Bit symmetrisch (1 Byte/Gewicht)",
     "int4": "4 Bit symmetrisch (½ Byte/Gewicht)",
     "nf4": "4 Bit NormalFloat (½ Byte/Gewicht, QLoRA)",
+    "pal4": "4-Bit-Palette: 16 per k-means gelernte Werte je Matrix (½ Byte/Gewicht, Apple-'Palettization')",
 }
+
+
+def _kmeans_1d(values: torch.Tensor, k: int, iters: int = 12) -> torch.Tensor:
+    """Eindimensionales k-means (Lloyd) – Zuordnung per Sortierung/Bucketize, sehr schnell."""
+    sample = values if values.numel() <= 2 ** 20 else values[torch.randperm(values.numel())[: 2 ** 20]]
+    cent = torch.quantile(sample, torch.linspace(0, 1, k, device=sample.device))
+    for _ in range(iters):
+        cent = cent.sort().values
+        idx = torch.bucketize(sample, (cent[1:] + cent[:-1]) / 2)
+        sums = torch.zeros(k, device=sample.device).index_add_(0, idx, sample)
+        counts = torch.bincount(idx, minlength=k)
+        cent = torch.where(counts > 0, sums / counts.clamp_min(1), cent)
+    return cent.sort().values
 
 
 def _groups(w: torch.Tensor, group_size: int | None) -> tuple[torch.Tensor, int]:
@@ -84,6 +98,10 @@ def _unpack4(p: torch.Tensor, n: int) -> torch.Tensor:
 def quantize_weight(w: torch.Tensor, fmt: str, group_size: int | None) -> dict[str, torch.Tensor]:
     """Quantisiert eine Gewichtsmatrix ``[out, in]``; liefert die zu speichernden Tensoren."""
     w = w.detach().float()
+    if fmt == "pal4":
+        cent = _kmeans_1d(w.flatten(), 16)
+        idx = torch.bucketize(w.contiguous(), (cent[1:] + cent[:-1]) / 2)
+        return {"qweight": _pack4(idx), "scales": cent.view(1, 16).to(torch.float16), "pad": torch.tensor(0)}
     grouped, pad = _groups(w, group_size)
     absmax = grouped.abs().amax(-1, keepdim=True).clamp_min(1e-12)
     if fmt == "int8":
@@ -105,6 +123,8 @@ def quantize_weight(w: torch.Tensor, fmt: str, group_size: int | None) -> dict[s
 def dequantize_weight(qweight: torch.Tensor, scales: torch.Tensor, fmt: str, shape: tuple[int, int], pad: int,
                       dtype: torch.dtype) -> torch.Tensor:
     out_f, in_f = shape
+    if fmt == "pal4":
+        return scales.view(-1).to(dtype)[_unpack4(qweight, in_f).long()]
     g = (in_f + pad) // scales.shape[1]
     s = scales.to(dtype).unsqueeze(-1)
     if fmt == "int8":
