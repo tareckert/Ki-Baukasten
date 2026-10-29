@@ -117,15 +117,16 @@ class MemoryConfig(BaseConfig):
         "16 Bit halbiert den Speicher für Gewichte und Gradienten.",
         "Reines bf16-Training großer Modelle; sonst float32 + mixed_precision.",
     ))
-    mixed_precision = Param("none", choices={
+    mixed_precision = Param("auto", choices={
+        "auto": "automatisch je Gerät: bf16 ab NVIDIA Ampere, fp16 auf Volta/Turing, sonst aus",
         "none": "alles in param_dtype",
         "bf16": "Rechnen in bfloat16, Gewichte in param_dtype (robust, kein Loss-Scaling nötig)",
         "fp16": "Rechnen in float16 (mit automatischem Loss-Scaling)",
     }, group="Präzision", tooltip=T(
         "Gemischte Präzision (autocast).",
         "Halbiert Aktivierungsspeicher und beschleunigt auf Tensor-Core-GPUs deutlich.",
-        "GPU-Training: bf16 (Ampere+), fp16 (ältere GPUs).",
-    ))
+        "auto (wählt pro Gerät das Schnellste); fest: bf16 (Ampere+), fp16 (ältere GPUs), none (volle Präzision).",
+    ), off="none", on="auto")
     grad_scaler = Param("auto", choices={"auto": "an bei fp16", "on": "immer", "off": "nie"}, group="Präzision",
                         level=Level.EXPERT, tooltip=T(
         "Dynamisches Loss-Scaling.", "Verhindert Unterlauf kleiner fp16-Gradienten.", "auto."))
@@ -179,18 +180,22 @@ class MemoryConfig(BaseConfig):
                           group="Quantisierung", level=Level.EXPERT, tooltip=T(
         "Welche Schichten fake_quant betrifft.", "Faltungen sind empfindlicher.", "linear."))
     lora = NestedParam(LoRAConfig, group="Quantisierung", level=Level.ADVANCED)
-    channels_last = Param(False, group="Geschwindigkeit", level=Level.EXPERT, tooltip=T(
-        "Speicherlayout NHWC für Faltungsnetze.", "Schneller auf Tensor-Core-GPUs.", "CNN-Training auf GPU."))
+    channels_last = Param(None, type=bool, nullable=True, group="Geschwindigkeit", level=Level.EXPERT, tooltip=T(
+        "Speicherlayout NHWC für Faltungsnetze (None = automatisch: an bei Faltungsnetz + NVIDIA + 16 Bit).",
+        "Schneller auf Tensor-Core-GPUs.", "None lassen."), off=False, on=True)
     compile = Param(False, group="Geschwindigkeit", level=Level.ADVANCED, tooltip=T(
         "Modell mit torch.compile übersetzen.", "Oft 1.3–2× schneller nach Aufwärmzeit.", "Lange Trainings auf GPU."))
     compile_mode = Param("default", choices=["default", "reduce-overhead", "max-autotune"], group="Geschwindigkeit",
                          level=Level.EXPERT, tooltip=T("Modus von torch.compile.", "Mehr Optimierung = längeres Kompilieren.",
                                                        "default."))
-    cudnn_benchmark = Param(False, group="Geschwindigkeit", level=Level.ADVANCED, tooltip=T(
-        "cuDNN probiert für jede Eingabeform den schnellsten Faltungs-Algorithmus aus.",
+    cudnn_benchmark = Param(None, type=bool, nullable=True, group="Geschwindigkeit", level=Level.ADVANCED,
+                            off=False, on=True, tooltip=T(
+        "cuDNN probiert für jede Eingabeform den schnellsten Faltungs-Algorithmus aus (None = automatisch: an bei "
+        "Faltungsnetzen auf NVIDIA).",
         "Spürbar schnellere CNNs bei gleichbleibenden Bildgrößen.", "CNN-Training auf NVIDIA-GPUs.",
         "Bei ständig wechselnden Formen eher langsamer."))
-    matmul_precision = Param("highest", choices={
+    matmul_precision = Param("auto", choices={
+        "auto": "automatisch: TF32 ab NVIDIA Ampere, sonst volle Genauigkeit",
         "highest": "volle fp32-Genauigkeit", "high": "TF32 erlaubt (schneller auf Ampere+)",
         "medium": "bf16-Zwischenergebnisse erlaubt (am schnellsten)",
     }, group="Geschwindigkeit", level=Level.EXPERT, tooltip=T(

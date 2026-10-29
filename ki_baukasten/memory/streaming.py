@@ -342,6 +342,13 @@ def enable_block_streaming(model: nn.Module, blocks: list[nn.Module], device: to
     _move_rest(model, ids, device)
     states = []
     for i, b in enumerate(blocks):
+        if getattr(b, "_ki_streamed", False):
+            # schon ausgelagert (z. B. zweites train()): Zustand weiterverwenden – ein erneutes Auslagern würde die
+            # bereits auf die SSD verschobenen (hier leeren) Gewichte überschreiben
+            st = b._ki_stream
+            st.device, st.prefetch = device, prefetch
+            states.append(st)
+            continue
         if getattr(b, "_ki_checkpointed", False):
             b.__class__ = b.__class__.__mro__[1]  # Streaming rechnet ohnehin neu – Checkpointing entfällt
         b.to("cpu")

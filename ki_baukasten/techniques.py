@@ -529,6 +529,16 @@ CATALOG: list[Technique] = [
         "Modelle für int8-Geräte."), {"memory.quantization": "fake_quant"}, "Google, Qualcomm (TFLite, AIMET)",
         level=Level.ADVANCED),
 
+    _K("auto_lernrate", "Lernrate automatisch bestimmen (LR-Finder)", "automl", T(
+        "Vor dem Training einen Lernraten-Bereichstest fahren und die Empfehlung übernehmen.",
+        "Die Lernrate entscheidet am meisten über Erfolg und Tempo des Trainings.", "Neue Modelle/Daten."),
+        {"training.auto_lr": True}, "fastai lr_find, Lightning Tuner", applies=_data_paradigm),
+    _K("auto_batchgroesse", "Batchgröße an den GPU-Speicher anpassen", "tempo", T(
+        "Größte sicher passende Batchgröße wählen (Lernrate √-skaliert).",
+        "Nutzt die Hardware voll aus.", "GPU-Training (auf der CPU ohne Wirkung)."),
+        {"training.auto_batch_size": True}, "Lightning auto_scale_batch_size", also=("grosse_modelle",),
+        applies=_data_paradigm),
+
     # ------------------------------------------------------------------ Bewertung & Vertrauen
     _K("testmenge", "Testmenge zurückhalten (15 %)", "vertrauen", T(
         "Ein Teil der Daten wird nie fürs Training oder die Auswahl benutzt und erst am Ende geprüft (Project.test).",

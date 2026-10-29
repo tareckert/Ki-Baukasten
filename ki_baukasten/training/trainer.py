@@ -154,7 +154,7 @@ class Trainer:
         self.mem.device = self.dist.device
         self.device = self.mem.device
         self.model = self.mem.prepare_model(model, training=True)
-        self.model = self.dist.wrap(self.model, self.cfg.paradigm.name, self.mem.cfg.mixed_precision)
+        self.model = self.dist.wrap(self.model, self.cfg.paradigm.name, self.mem.precision)
         self.raw_model = model
         self.surgeon = surgeon
         if surgeon is not None:
@@ -204,6 +204,12 @@ class Trainer:
             if self.scaler is not None:
                 raise ConfigError("DP-SGD (training.privacy) ist nicht mit fp16-Loss-Scaling kombinierbar.")
             self._split = max(1, self.cfg.batch_size)   # jedes Beispiel einzeln rechnen (Gradient pro Beispiel)
+
+    @property
+    def _pin(self) -> bool:
+        """Gepinnter Speicher: ``training.pin_memory`` (None = automatisch an auf CUDA)."""
+        pin = self.cfg.pin_memory
+        return self.device.type == "cuda" if pin is None else bool(pin)
 
     @property
     def accumulation(self) -> int:
@@ -735,13 +741,13 @@ class Trainer:
                 sampler = _balanced_sampler(ds, c.seed or 0)
                 if sampler is None:
                     self.log("⚠ balance_classes: keine ganzzahligen Klassen-Ziele gefunden – ignoriert.", "warnung")
-            train_loader = make_loader(ds, c.batch_size, c.shuffle, c.drop_last, c.num_workers, c.pin_memory, sampler)
+            train_loader = make_loader(ds, c.batch_size, c.shuffle, c.drop_last, c.num_workers, self._pin, sampler)
         else:
             train_loader = train
         self.val_data = val                      # für Kalibrierung/Erklärungen nach dem Training
         val_loader = None
         if val is not None:
-            val_loader = make_loader(val, c.eval_batch_size or c.batch_size, False, False, c.num_workers, c.pin_memory)
+            val_loader = make_loader(val, c.eval_batch_size or c.batch_size, False, False, c.num_workers, self._pin)
         return train_loader, val_loader
 
     # ===================================================================== Training
@@ -792,7 +798,7 @@ class Trainer:
             if hasattr(getattr(train_loader, "sampler", None), "set_epoch"):
                 train_loader.sampler.set_epoch(epoch)
             for batch in train_loader:
-                batch = self._cast(to_device(batch, self.device, non_blocking=c.pin_memory))
+                batch = self._cast(to_device(batch, self.device, non_blocking=self._pin))
                 self._count(batch)
                 before = self.global_step
                 metrics = self._train_step(batch)

@@ -165,7 +165,13 @@ def estimate_memory(model: nn.Module, optimizer_name: str = "adamw", batch_size:
     if measure:
         try:
             ex = example if example is not None else model.example_input(probe_batch)  # type: ignore[operator]
-            dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}.get(memory.mixed_precision)
+            mp = memory.mixed_precision
+            if mp == "auto":
+                from .hardware import resolve
+
+                mp = resolve(memory, next(model.parameters()).device if n else torch.device("cpu"))[
+                    "mixed_precision"][0]
+            dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}.get(mp)
             act = _measure_activations(model, ex, dtype) / probe_batch * batch_size
             if memory.gradient_checkpointing or stream:
                 act *= 0.35  # grobe Erfahrungsgröße: nur Block-Eingänge bleiben gespeichert

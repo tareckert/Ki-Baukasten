@@ -153,13 +153,17 @@ class TransformerBlock(nn.Module):
         h = self.drop(h)
         if ls is not None:
             h = h * ls
-        return self.drop_path(h) * self.cfg.branch_scale
+        h = self.drop_path(h)
+        return h if self.cfg.branch_scale == 1.0 else h * self.cfg.branch_scale   # ×1 kostet nur Zeit
+
+    def _skip(self, x: torch.Tensor) -> torch.Tensor:
+        return x if self.cfg.skip_scale == 1.0 else x * self.cfg.skip_scale
 
     def _branch(self, x, fn, pre, post, ls):
         pos = self.cfg.norm_position
         h = fn(pre(x) if pos in ("pre", "sandwich") else x)
         h = self._finish_branch(post(h), ls)
-        out = x * self.cfg.skip_scale + h
+        out = self._skip(x) + h
         return pre(out) if pos == "post" else out
 
     def forward(self, x, key_padding_mask=None, positional=None, positions=None, causal=False,
@@ -173,7 +177,7 @@ class TransformerBlock(nn.Module):
         if self.cfg.parallel:
             pos = self.cfg.norm_position
             n = self.norm1(x) if pos in ("pre", "sandwich") else x
-            out = x * self.cfg.skip_scale + self._finish_branch(self.norm1_post(mix(n)), self.ls1) \
+            out = self._skip(x) + self._finish_branch(self.norm1_post(mix(n)), self.ls1) \
                 + self._finish_branch(self.norm2_post(self.ffn(n)), self.ls2)
             if self.cross is not None and memory is not None:
                 out = self._branch(out, lambda h: self.cross(h, kv=memory, key_padding_mask=memory_mask),

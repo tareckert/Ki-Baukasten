@@ -213,7 +213,7 @@ def advise(project: Any, batch_size: int | None = None, measure: bool = True) ->
             add(Advice("tf32", "tempo", 3, "TF32-Matrixmultiplikation erlauben",
                        "Ampere+-GPUs rechnen fp32-Matrizen mit TF32 mehrfach schneller bei kaum messbarem Fehler.",
                        "bis zu 3× schnellere Matmuls", {"memory.matmul_precision": "high"}))
-        if model_name == "cnn" and not mem.channels_last:
+        if model_name == "cnn" and mem.channels_last is False:
             add(Advice("channels_last", "tempo", 3, "Speicherlayout channels_last für Faltungen",
                        "Tensor-Core-Faltungen sind in NHWC schneller.", "10–30 % schneller",
                        {"memory.channels_last": True}))

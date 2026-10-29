@@ -784,8 +784,18 @@ class Project:
 
         ``hold_out_test=False``: keine Testmenge abteilen (z. B. wenn ``train_data`` schon ohne sie ist).
         """
+        fresh = self.model is None or self.trainer is None
         if self.model is None:
             self.build()
+        t = self.config.training
+        if fresh and train_data is None and t.paradigm.name != "reinforcement":
+            if t.auto_batch_size:
+                self._auto_batch_size()
+            if t.auto_lr:
+                result = self.find_lr()
+                if result.suggestion is not None:
+                    self.config.set("training.optimizer.lr", float(f"{result.suggestion:.3g}"))
+                    self._note(f"auto_lr: Lernrate {self.config.training.optimizer.args.lr:.3g} (LR-Finder)")
         info: dict = {}
         if train_data is None and self.config.training.paradigm.name != "reinforcement":
             bundle = self.data()
@@ -1275,6 +1285,43 @@ class Project:
         if apply and result.suggestion is not None:
             self.set("training.optimizer.lr", float(f"{result.suggestion:.3g}"))
         return result
+
+    def find_batch_size(self, max_batch: int = 4096, headroom: float = 0.85) -> int:
+        """Größte Batchgröße, die (geschätzt) sicher in den Gerätespeicher passt – nur auf GPUs; auf der CPU wird
+        die eingestellte Größe zurückgegeben (größere Batches bringen dort kaum Tempo)."""
+        from .memory.estimator import detect_budget
+        from .memory.manager import resolve_device
+
+        t = self.config.training
+        device = resolve_device(self.config.memory.device)
+        if device.type not in ("cuda", "mps"):
+            return t.batch_size
+        budget = (self.config.memory.memory_budget_gb or 0) * 2**30 or detect_budget(device)
+        report = self.memory_report(batch_size=1)
+        per_sample = report.activations_bytes
+        if not budget or not per_sample:
+            return t.batch_size
+        fixed = report.total_bytes - per_sample
+        limit = int((headroom * budget - fixed) // per_sample)
+        try:
+            limit = min(limit, max(1, len(next(iter(self.data().train.values()))) // 8))
+        except Exception:  # noqa: BLE001 - Datenumfang unbekannt
+            pass
+        best = 1
+        while best * 2 <= min(limit, max_batch):
+            best *= 2
+        return max(1, best)
+
+    def _auto_batch_size(self) -> None:
+        t = self.config.training
+        new = self.find_batch_size()
+        if new != t.batch_size and new > 0:
+            old = t.batch_size
+            self.config.set("training.batch_size", new)
+            lr = getattr(t.optimizer.args, "lr", None)
+            if lr is not None:                                  # √-Regel für adaptive Optimierer
+                self.config.set("training.optimizer.lr", float(f"{lr * (new / old) ** 0.5:.3g}"))
+            self._note(f"auto_batch_size: Batchgröße {old} → {new} (Lernrate √-skaliert)")
 
     def cross_validate(self, k: int = 5, steps: int | None = None, seed: int = 0) -> dict[str, Any]:
         """k-fache Kreuzvalidierung: k Modelle auf je k−1 Teilen trainieren, auf dem übrigen Teil messen.
@@ -1990,6 +2037,15 @@ class Project:
         if self._verbose():
             print(report)
         return path
+
+    def hardware_report(self) -> str:
+        """Erkanntes Rechengerät und die automatisch gewählten Einstellungen (Präzision, TF32, cuDNN, Layout …)."""
+        from .memory.hardware import detect, report_text, resolve
+        from .memory.manager import resolve_device
+
+        device = resolve_device(self.config.memory.device)
+        model = self.model if self.model is not None else None
+        return report_text(detect(device), resolve(self.config.memory, device, model))
 
     def memory_report(self, batch_size: int | None = None) -> Any:
         model = self._ensure_model()

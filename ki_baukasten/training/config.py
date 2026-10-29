@@ -353,6 +353,14 @@ class TrainingConfig(BaseConfig):
         "Bei unausgewogenen Daten ignoriert das Modell sonst seltene Klassen (Alternative zu balance_classes).",
         "Betrug, Diagnosen, seltene Fehler: ausgeglichen oder wurzel."), on="ausgeglichen")
 
+    auto_lr = Param(False, group="Optimierung", tooltip=T(
+        "Vor dem ersten Training die Lernrate per LR-Finder (Bereichstest) bestimmen und übernehmen.",
+        "Die Lernrate ist die wichtigste Einstellung – automatisch passend zu Modell und Daten.",
+        "Neue Modelle/Daten ohne Erfahrungswerte."), on=True)
+    auto_batch_size = Param(False, group="Umfang", tooltip=T(
+        "Auf GPUs die größte Batchgröße wählen, die sicher in den Gerätespeicher passt (Lernrate √-skaliert).",
+        "Nutzt die Hardware voll aus – gleiche Rechenzeit, mehr Daten je Schritt.", "GPU-Training; auf der CPU "
+        "ohne Wirkung."), on=True)
     resume_from = Param(None, type=str, nullable=True, group="Ablauf", tooltip=T(
         "Training aus einem Checkpoint fortsetzen (Pfad zu einer .pt-Datei oder 'auto' = neuester Checkpoint im "
         "Checkpoint-Ordner).", "Nach Abbruch, Stromausfall oder Zeitlimit weitermachen – mit Optimierer-, "
@@ -377,8 +385,9 @@ class TrainingConfig(BaseConfig):
         "Letzten unvollständigen Batch verwerfen.", "Gleich große Batches (wichtig für BatchNorm).", "BatchNorm: an."))
     num_workers = Param(0, min=0, group="Daten", level=Level.ADVANCED, tooltip=T(
         "Hintergrundprozesse zum Datenladen.", "Schneller bei aufwendigem Laden.", "0 (einfach) bis CPU-Kerne."))
-    pin_memory = Param(False, group="Daten", level=Level.EXPERT, tooltip=T(
-        "Gepinnter Speicher für schnellere GPU-Übertragung.", "Schneller bei CUDA.", "GPU-Training: an."))
+    pin_memory = Param(None, type=bool, nullable=True, group="Daten", level=Level.EXPERT, off=False, on=True,
+                       tooltip=T("Gepinnter Speicher für schnellere GPU-Übertragung (None = automatisch an auf CUDA).",
+                                 "Schneller bei CUDA.", "None lassen."))
     balance_classes = Param(False, group="Daten", level=Level.ADVANCED, tooltip=T(
         "Seltene Klassen häufiger ziehen (gewichtetes Sampling nach Klassenhäufigkeit).",
         "Bei unausgewogenen Daten lernt das Modell sonst vor allem die häufigen Klassen.",
