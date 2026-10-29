@@ -200,6 +200,29 @@ class AugmentationConfig(BaseConfig):
         "Robust gegen Tippfehler und Rauschen.", "0.05–0.1."), level=Level.ADVANCED, on=0.05)
 
 
+class AdversarialConfig(BaseConfig):
+    __title__ = "Adversariales Training (Robustheit)"
+    __tooltip__ = T(
+        "Trainiert zusätzlich auf gezielt gestörten Eingaben, die das Modell am stärksten täuschen (FGSM/PGD).",
+        "Winzige, unsichtbare Änderungen können ungeschützte Netze komplett täuschen – adversariales Training macht "
+        "sie robust (Madry et al. 2018). Wirkt auch als starke Regularisierung.",
+        "Sicherheitskritische Bild-/Sensormodelle, Betrugserkennung, Robustheit gegen Rauschen.",
+    )
+    method = Param("keine", choices={
+        "keine": "aus", "fgsm": "Fast Gradient Sign Method: ein Schritt (schnell)",
+        "pgd": "Projected Gradient Descent: mehrere Schritte (stärker, langsamer)"}, tooltip=T(
+        "Angriffsverfahren zum Erzeugen der Trainingsbeispiele.", "pgd ist der Standard für echte Robustheit.",
+        "Einstieg: fgsm; ernsthaft: pgd."), on="fgsm")
+    epsilon = Param(0.03, min=0.0, tooltip=T(
+        "Maximale Störung je Eingabewert (L∞).", "Größer = robuster, aber oft etwas ungenauer auf sauberen Daten.",
+        "Bilder in [0,1]: 8/255 ≈ 0.03; standardisierte Tabellen: 0.05–0.2."))
+    steps = Param(5, min=1, tooltip=T("PGD-Schritte.", "Mehr = stärkerer Angriff.", "3–10."), level=Level.ADVANCED)
+    step_size = Param(None, type=float, min=0.0, nullable=True, tooltip=T(
+        "PGD-Schrittweite (None = 2.5 · epsilon / steps).", "Feinheit der Suche.", "None."), level=Level.ADVANCED)
+    ratio = Param(0.5, min=0.0, max=1.0, tooltip=T(
+        "Anteil des adversarialen Verlusts (Rest: saubere Beispiele).", "Ausgleich Genauigkeit ↔ Robustheit.", "0.5."))
+
+
 class PrivacyConfig(BaseConfig):
     __title__ = "Datenschutz (DP-SGD)"
     __tooltip__ = T(
@@ -272,6 +295,7 @@ class TrainingConfig(BaseConfig):
     # --- Regularisierung & Stabilität ------------------------------------------
     regularization = NestedParam(RegularizationConfig, group="Regularisierung")
     augmentation = NestedParam(AugmentationConfig, group="Regularisierung")
+    adversarial = NestedParam(AdversarialConfig, group="Regularisierung", level=Level.ADVANCED)
     gradient_clipping = NestedParam(GradientClippingConfig, group="Stabilität")
     stability = NestedParam(StabilityConfig, group="Stabilität", level=Level.ADVANCED)
     optimizer_extras = NestedParam(OptimizerExtrasConfig, group="Optimierung", level=Level.ADVANCED)
@@ -320,6 +344,11 @@ class TrainingConfig(BaseConfig):
         "Klassengewichte im Standard-Klassifikationsverlust.",
         "Bei unausgewogenen Daten ignoriert das Modell sonst seltene Klassen (Alternative zu balance_classes).",
         "Betrug, Diagnosen, seltene Fehler: ausgeglichen oder wurzel."), on="ausgeglichen")
+
+    resume_from = Param(None, type=str, nullable=True, group="Ablauf", tooltip=T(
+        "Training aus einem Checkpoint fortsetzen (Pfad zu einer .pt-Datei oder 'auto' = neuester Checkpoint im "
+        "Checkpoint-Ordner).", "Nach Abbruch, Stromausfall oder Zeitlimit weitermachen – mit Optimierer-, "
+        "Zeitplan- und Schrittstand.", "Lange Läufe, Cluster mit Zeitslots."), on="auto")
 
     # --- Daten-Laden ------------------------------------------------------------
     validation_split = Param(0.1, min=0.0, max=0.9, group="Daten", tooltip=T(

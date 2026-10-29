@@ -142,7 +142,7 @@ def check_data(train: Any, val: Any = None, info: dict | None = None, n_params: 
     """Prüft Trainings- (und Validierungs-)Daten und liefert Befunde mit Abhilfen."""
     info = info or {}
     F: list[Finding] = []
-    x, y, _ = _tensors(train)
+    x, y, raw = _tensors(train)
     vx, vy, _ = _tensors(val) if val is not None else (None, None, None)
     stats: dict[str, Any] = {"n_train": int(x.shape[0]) if isinstance(x, torch.Tensor) else _len(train),
                              "n_val": int(vx.shape[0]) if isinstance(vx, torch.Tensor) else _len(val)}
@@ -257,8 +257,9 @@ def check_data(train: Any, val: Any = None, info: dict | None = None, n_params: 
         keys = _row_keys(x)
         dup = len(keys) - len(set(keys))
         stats["duplikate"] = dup
+        # Textfenster eines Sprachmodells wiederholen sich leicht (nicht aber Frage-Antwort-Paare)
+        windows = is_tokens and y is None and not (isinstance(raw, dict) and "loss_mask" in raw)
         if dup / len(keys) > 0.05:
-            windows = is_tokens and y is None            # Textfenster eines Sprachmodells wiederholen sich leicht
             F.append(Finding("duplikate", "warnung" if dup / len(keys) > 0.2 and not windows else "hinweis",
                              f"{dup} doppelte Trainingsbeispiele ({dup / len(keys):.0%}).",
                              "Mehr bzw. abwechslungsreicheren Text verwenden." if windows else
@@ -266,7 +267,7 @@ def check_data(train: Any, val: Any = None, info: dict | None = None, n_params: 
         if isinstance(vx, torch.Tensor) and vx.shape[1:] == x.shape[1:]:
             overlap = len(set(_row_keys(vx)) & set(keys))
             stats["ueberlappung"] = overlap
-            if overlap and not is_tokens:
+            if overlap and not windows:
                 F.append(Finding("ueberlappung", "warnung", f"{overlap} Validierungsbeispiele kommen auch im Training "
                                                             "vor – die Validierung ist geschönt.",
                                  "Duplikate vor dem Aufteilen entfernen; bei Zeitreihen zeitlich aufteilen."))

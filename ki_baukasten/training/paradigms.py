@@ -234,6 +234,19 @@ class Supervised(Paradigm):
                          self.cfg.task, self.cfg.label_smoothing, getattr(self, "_soft", False),
                          getattr(trainer, "class_weight", None))
 
+    def _adversarial_loss(self, trainer: Any, batch: dict, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Verlust auf FGSM/PGD-gestörten Eingaben (``training.adversarial``)."""
+        from ..analysis.robustness import attack
+
+        a = trainer.cfg.adversarial
+
+        def forward(x):
+            return call_model(trainer.model, x, attention_mask=batch.get("attention_mask"), lengths=batch.get("lengths"))
+
+        x_adv = attack(forward, lambda out, y: self.loss(trainer, out, y), inputs, targets, a.method, a.epsilon,
+                       a.steps, a.step_size, seed=trainer.global_step)
+        return self.loss(trainer, forward(x_adv), targets)
+
     def compute(self, trainer, batch, train):
         inputs, targets = batch["inputs"], batch.get("targets")
         if targets is None:
@@ -250,6 +263,10 @@ class Supervised(Paradigm):
             aux = trainer.model_aux_loss()
             if aux is not None:
                 loss = loss + aux
+            adv = trainer.cfg.adversarial
+            if train and adv.method != "keine" and isinstance(inputs, torch.Tensor) and inputs.is_floating_point() \
+                    and isinstance(targets, torch.Tensor):
+                loss = (1 - adv.ratio) * loss + adv.ratio * self._adversarial_loss(trainer, batch, inputs, targets)
         metrics = {"loss": float(loss.detach())}
         if not isinstance(targets, dict):
             pred = main_output(out).detach()
@@ -287,6 +304,8 @@ class CausalLM(Paradigm):
         if mask is not None:
             tgt[~mask[:, 1:].bool()] = -100
             mask = mask[:, :-1]
+        if batch.get("loss_mask") is not None:          # SFT: Verlust nur auf den Antworten
+            tgt[~batch["loss_mask"][:, 1:].bool()] = -100
         with trainer.autocast():
             logits = main_output(call_model(trainer.model, inp, attention_mask=mask))
             if trainer.losses:

@@ -27,10 +27,12 @@ pipeline            Kombination: Hintereinanderschaltung
 fusion              Kombination: multimodale Fusion
 mixture_of_models   Kombination: Router über ganze Modelle
 multitask           Kombination: gemeinsamer Rumpf, mehrere Köpfe
+unet                U-Net für Segmentierung (eine Klasse je Pixel)
 ==================  ==========================================================
 """
 
-from . import autoencoder, base, cnn, composite, external, generative, gnn, graph, mlp, rl_nets, rnn, transformer  # noqa: F401
+from . import (autoencoder, base, cnn, composite, external, generative, gnn, graph, mlp, rl_nets, rnn,  # noqa: F401
+               transformer, unet)
 from .autoencoder import Autoencoder, AutoencoderConfig
 from .base import MODELS, BaseModel, InitConfig, ModelConfig, build_model
 from .cnn import CNN, CNNConfig
@@ -43,6 +45,7 @@ from .mlp import MLP, MLPConfig
 from .rl_nets import ActorCritic, ActorCriticConfig, QNetwork, QNetworkConfig
 from .rnn import RecurrentConfig, RecurrentNet
 from .transformer import GenerationConfig, Transformer, TransformerBlockConfig, TransformerConfig
+from .unet import UNet, UNetConfig
 
 __all__ = [
     "MODELS", "BaseModel", "ModelConfig", "InitConfig", "build_model",
@@ -51,4 +54,5 @@ __all__ = [
     "Autoencoder", "AutoencoderConfig", "GAN", "GANConfig", "DiffusionModel", "DiffusionConfig",
     "GNN", "GNNConfig", "ActorCritic", "ActorCriticConfig", "QNetwork", "QNetworkConfig",
     "GraphModel", "GraphModelConfig", "Ensemble", "Pipeline", "Fusion", "MixtureOfModels", "MultiTask",
+    "UNet", "UNetConfig",
 ]

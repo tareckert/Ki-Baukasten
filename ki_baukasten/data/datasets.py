@@ -32,6 +32,8 @@ from ..core import BaseConfig, Level, Param, T, create_registry
 from .files import (CSVConfig, ImageFolderConfig, TextClassificationConfig, load_csv, load_image_folder,
                     load_text_classification)
 from .tokenizers import KINDS as TOKENIZERS, CharTokenizer, make_tokenizer  # noqa: F401 - CharTokenizer: Export
+from .domains import (AudioDataConfig, InstructionDataConfig, SegmentationDataConfig, load_audio,  # noqa: E402
+                      load_instructions, load_segmentation)
 
 DATASETS = create_registry(
     "dataset",
@@ -463,6 +465,17 @@ R("text_classification", load_text_classification, config=TextClassificationConf
 R("image_folder", load_image_folder, config=ImageFolderConfig, aliases=("bildordner",), tags=("vision", "eigene"),
   tooltip=T("Bilder aus ordner/<klasse>/*.png|jpg (Pillow), Größe angepasst und normiert.",
             "Eigene Bilddaten ohne Code.", "Bildklassifikation mit echten Fotos."))
+R("segmentation", load_segmentation, config=SegmentationDataConfig, aliases=("segmentierung",),
+  tags=("vision", "segmentierung"), tooltip=T(
+      "Bilder mit Masken (eine Klasse je Pixel): synthetische Formen oder eigene Ordner bilder/ + masken/.",
+      "Segmentierung ohne Code – für U-Net/CNN mit task='dense'.", "Medizin, Satellit, Qualitätskontrolle."))
+R("audio", load_audio, config=AudioDataConfig, aliases=("audio_klassifikation", "geraeusche"), tags=("audio",),
+  tooltip=T("Audio-Klassifikation aus WAV-Ordnern (oder synthetischen Tönen) als Log-Mel-Spektrogramm/Wellenform.",
+            "Sprachbefehle, Geräusche, Maschinenüberwachung – ohne Zusatzpakete.", "CNN auf Spektrogrammen."))
+R("instructions", load_instructions, config=InstructionDataConfig, aliases=("anweisungen", "sft", "chat"),
+  tags=("nlp",), tooltip=T(
+      "Frage→Antwort-Paare (JSONL/CSV oder Beispielaufgaben) für Instruction-Tuning; Verlust nur auf Antworten.",
+      "Aus einem Sprachmodell wird ein Assistent, der Anweisungen befolgt (SFT).", "Mit Project.ask(frage)."))
 R("tensor_file", _tensor_file, config=TensorFileConfig, aliases=("pt",), tags=("eigene",), tooltip=T(
     "Eigene torch.save-Datei mit Tensoren.", "Beliebige vorbereitete Daten.", "Echte Projekte."))
 R("none", lambda a: DatasetBundle(None), aliases=("keine",), tooltip=T(

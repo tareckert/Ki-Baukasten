@@ -50,7 +50,8 @@ PRESETS = create_registry(
 #: Anwendungsgebiete mit Beschreibung (Tags der Presets).
 DOMAINS: dict[str, str] = {
     "sprache": "Sprachmodelle, Textverständnis, Übersetzung",
-    "bild": "Bildklassifikation, Bildgenerierung",
+    "bild": "Bildklassifikation, Segmentierung, Bildgenerierung",
+    "audio": "Audio: Geräusche, Sprachbefehle, Maschinenklänge",
     "zeitreihen": "Prognosen, Sensordaten, Signale",
     "tabellen": "Tabellendaten: Klassifikation und Regression",
     "generativ": "Daten erzeugen: GAN, Diffusion, VAE",
@@ -101,6 +102,16 @@ def sprachmodell_mini(a=None) -> dict:
         {"name": "transformer", "args": {"d_model": 128, "n_layers": 4, "max_seq_len": 128, "block": _lm_block(4),
                                          "positional": "rope"}},
         _TEXT, copy.deepcopy(_LM_TRAIN))
+
+
+def sprachmodell_sft(a=None) -> dict:
+    return _project(
+        "sprachmodell_sft", "sprache",
+        "Instruction-Tuning (SFT): Sprachmodell lernt Fragen zu beantworten – Verlust nur auf den Antworten.",
+        {"name": "transformer", "args": {"d_model": 128, "n_layers": 4, "max_seq_len": 64, "block": _lm_block(4),
+                                         "positional": "rope"}},
+        {"name": "instructions", "args": {"seq_len": 64}},
+        {**copy.deepcopy(_LM_TRAIN), "epochs": 12, "batch_size": 64})
 
 
 def sprachmodell_moe(a=None) -> dict:
@@ -211,6 +222,27 @@ def bildklassifikation_cnn(a=None) -> dict:
         {"epochs": 8, "optimizer": {"name": "adamw", "args": {"lr": 3e-3, "weight_decay": 0.05}},
          "losses": [{"name": "cross_entropy", "args": {"label_smoothing": 0.1}}],
          "regularization": {"mixup_alpha": 0.2}})
+
+
+def segmentierung_unet(a=None) -> dict:
+    return _project(
+        "segmentierung_unet", "bild", "U-Net für Segmentierung (eine Klasse je Pixel) mit Dice+Kreuzentropie, IoU/Dice.",
+        {"name": "unet", "args": {"base_channels": 16, "depth": 3}},
+        {"name": "segmentation", "args": {"size": [32, 32], "n_samples": 600}},
+        {"epochs": 10, "batch_size": 16, "optimizer": {"name": "adamw", "args": {"lr": 2e-3, "weight_decay": 1e-4}},
+         "metrics": ["iou", "dice", "accuracy"],
+         "callbacks": [{"name": "early_stopping", "args": {"monitor": "val_iou", "patience": 4}}]})
+
+
+def audio_klassifikation(a=None) -> dict:
+    return _project(
+        "audio_klassifikation", "audio", "CNN auf Log-Mel-Spektrogrammen (Geräusche, Sprachbefehle).",
+        {"name": "cnn", "args": {"in_channels": 1, "stem": {"channels": 16}, "stages": [
+            {"channels": 16, "num_blocks": 1, "stride": 1}, {"channels": 32, "num_blocks": 1, "stride": 2},
+            {"channels": 64, "num_blocks": 1, "stride": 2}], "head_dropout": 0.2}},
+        {"name": "audio", "args": {"features": "spektrogramm"}},
+        {"epochs": 8, "optimizer": {"name": "adamw", "args": {"lr": 3e-3, "weight_decay": 0.05}},
+         "augmentation": {"random_erasing": 0.25}})
 
 
 def bildklassifikation_vit(a=None) -> dict:
@@ -498,8 +530,9 @@ def forschung_experimentell(a=None) -> dict:
 
 _ALL = [
     sprachmodell_mini, sprachmodell_moe, sprachmodell_mamba, sprachmodell_hybrid, sprachmodell_speichersparend,
-    sprachmodell_qlora, sprachmodell_ram_streaming, text_klassifikation, bert_vortraining, uebersetzung_seq2seq,
-    bildklassifikation_cnn, bildklassifikation_vit, bildklassifikation_mobil, vae_bilder,
+    sprachmodell_qlora, sprachmodell_ram_streaming, sprachmodell_sft, text_klassifikation, bert_vortraining,
+    uebersetzung_seq2seq, bildklassifikation_cnn, bildklassifikation_vit, bildklassifikation_mobil,
+    segmentierung_unet, audio_klassifikation, vae_bilder,
     zeitreihen_lstm, zeitreihen_transformer, sequenz_gedaechtnis_rnn,
     tabellen_klassifikation, tabellen_regression,
     gan_2d, diffusion_2d, graph_klassifikation, anomalie_autoencoder, reward_modell,

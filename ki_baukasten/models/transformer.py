@@ -218,6 +218,17 @@ class GenerationConfig(BaseConfig):
         "Verhindert Endlosschleifen.", "1.1–1.3 bei Wiederholungsproblemen."), level=Level.ADVANCED)
     eos_token_id = Param(None, type=int, tooltip=T(
         "Token, das die Generierung beendet.", "Stoppt, sobald alle Sequenzen es erzeugt haben.", "Wenn vorhanden."))
+    num_beams = Param(1, min=1, tooltip=T(
+        "Beam Search: so viele Kandidaten-Fortsetzungen parallel verfolgen (1 = aus).",
+        "Findet wahrscheinlichere Gesamtfolgen als Token-für-Token-Auswahl – besser für Übersetzung, "
+        "Zusammenfassung, Antworten mit fester Lösung.", "3–8; für kreative Texte lieber Sampling.",
+        "Rechnet ohne Cache (langsamer); temperature/top_k/top_p werden ignoriert."), on=4)
+    length_penalty = Param(1.0, tooltip=T(
+        "Beam Search: Bewertung = log-Wahrscheinlichkeit / Länge^length_penalty.",
+        "> 1 bevorzugt längere, < 1 kürzere Ausgaben.", "1.0."), level=Level.ADVANCED)
+    no_repeat_ngram_size = Param(0, min=0, tooltip=T(
+        "Kein n-Gramm dieser Länge darf sich wiederholen (0 = aus).", "Verhindert Wiederholungsschleifen zuverlässig.",
+        "3 bei Wiederholungen."), level=Level.ADVANCED, on=3)
     use_cache = Param(True, tooltip=T(
         "KV-/Zustands-Cache verwenden (nur neue Tokens berechnen).",
         "Pro Token nur ein Schritt statt kompletter Neuberechnung – oft 5–50× schneller.",
@@ -229,6 +240,19 @@ class GenerationConfig(BaseConfig):
         "Spitzenbedarf der Attention sinkt von Länge² auf Stück × Länge – lange Kontexte passen auch auf kleine "
         "Geräte. Das Ergebnis ist identisch.",
         "Lange Prompts, wenig Speicher.", "256–2048; nur mit Cache und ohne attention_mask."))
+
+
+def _ban_repeats(logits: torch.Tensor, ids: torch.Tensor, n: int) -> torch.Tensor:
+    """Verbietet Tokens, die ein schon vorhandenes n-Gramm wiederholen würden."""
+    if n <= 0 or ids.shape[1] < n:
+        return logits
+    logits = logits.clone()
+    for row, seq in enumerate(ids.tolist()):
+        prefix = tuple(seq[len(seq) - n + 1:]) if n > 1 else ()
+        banned = {seq[i + n - 1] for i in range(len(seq) - n + 1) if tuple(seq[i:i + n - 1]) == prefix}
+        if banned:
+            logits[row, list(banned)] = float("-inf")
+    return logits
 
 
 def _filter_logits(logits: torch.Tensor, g: GenerationConfig) -> torch.Tensor:
@@ -617,6 +641,8 @@ class Transformer(BaseModel):
         if c.architecture != "decoder_only" or c.input_type != "tokens" or c.pooling != "none":
             raise ValueError("generate() erfordert decoder_only, input_type='tokens' und pooling='none'.")
         g = (generation or GenerationConfig()).replace(**overrides)
+        if g.num_beams > 1:
+            return self._beam_search(input_ids, g, attention_mask)
         was_training = self.training
         self.eval()
         ids = input_ids
@@ -646,6 +672,7 @@ class Transformer(BaseModel):
                 prev = torch.gather(logits, 1, ids)
                 prev = torch.where(prev > 0, prev / g.repetition_penalty, prev * g.repetition_penalty)
                 logits = logits.scatter(1, ids, prev)
+            logits = _ban_repeats(logits, ids, g.no_repeat_ngram_size)
             if g.temperature == 0:
                 nxt = logits.argmax(-1, keepdim=True)
             else:
@@ -668,6 +695,51 @@ class Transformer(BaseModel):
                     logits = self(nxt, cache=cache)[:, -1, :].float()
         self.train(was_training)
         return ids
+
+    @torch.no_grad()
+    def _beam_search(self, input_ids: torch.Tensor, g: GenerationConfig,
+                     attention_mask: torch.Tensor | None = None) -> torch.Tensor:
+        """Beam Search: je Eingabe ``num_beams`` Fortsetzungen, am Ende die beste (längennormiert)."""
+        was_training = self.training
+        self.eval()
+        b, k, limit = input_ids.shape[0], g.num_beams, self.config.max_seq_len
+        start = input_ids.shape[1]
+        seqs = input_ids.repeat_interleave(k, 0)
+        mask = attention_mask.repeat_interleave(k, 0) if attention_mask is not None else None
+        scores = torch.full((b, k), float("-inf"), device=seqs.device)
+        scores[:, 0] = 0.0
+        done = torch.zeros(b * k, dtype=torch.bool, device=seqs.device)
+        eos = g.eos_token_id
+        for _ in range(g.max_new_tokens):
+            m = mask[:, -limit:] if mask is not None else None
+            logp = self(seqs[:, -limit:], attention_mask=m)[:, -1, :].float().log_softmax(-1)
+            logp = _ban_repeats(logp, seqs, g.no_repeat_ngram_size)
+            if eos is not None and done.any():           # fertige Strahlen: nur noch EOS, Bewertung bleibt
+                logp[done] = float("-inf")
+                logp[done, eos] = 0.0
+            vocab = logp.shape[-1]
+            total = (scores.reshape(-1, 1) + logp).reshape(b, k * vocab)
+            best, flat = total.topk(k, -1)
+            beam, token = flat // vocab, flat % vocab
+            rows = (torch.arange(b, device=seqs.device)[:, None] * k + beam).reshape(-1)
+            seqs = torch.cat([seqs[rows], token.reshape(-1, 1)], 1)
+            if mask is not None:
+                mask = torch.cat([mask[rows], torch.ones_like(mask[:, :1])], 1)
+            scores = best
+            if eos is not None:
+                done = done[rows] | (token.reshape(-1) == eos)
+                if bool(done.all()):
+                    break
+        lengths = torch.full((b * k,), seqs.shape[1] - start, device=seqs.device, dtype=torch.float)
+        if eos is not None:
+            gen = seqs[:, start:]
+            first = torch.where((gen == eos).any(1), (gen == eos).float().argmax(1) + 1, torch.full_like(lengths, 0)
+                                .long() + gen.shape[1])
+            lengths = first.float()
+        norm = scores.reshape(-1) / lengths.clamp_min(1) ** g.length_penalty
+        pick = norm.reshape(b, k).argmax(-1) + torch.arange(b, device=seqs.device) * k
+        self.train(was_training)
+        return seqs[pick]
 
     def example_input(self, batch_size: int = 2) -> Any:
         c = self.config

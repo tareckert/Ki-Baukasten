@@ -39,6 +39,7 @@ from torch import nn
 
 from .core import BaseConfig, ComponentParam, ConfigError, ConfigListParam, Level, NestedParam, Param, T
 from .analysis.goals import GoalsConfig
+from .analysis.inference import InferenceConfig
 from .analysis.targets import DeploymentConfig
 from .compress import CompressionConfig
 from .memory import MemoryConfig, MemoryManager, estimate_memory
@@ -79,6 +80,7 @@ class ProjectConfig(BaseConfig):
         "Transfer-Learning, Kompression, Experimente."))
     compression = NestedParam(CompressionConfig, group="Kompression", level=Level.ADVANCED)
     deployment = NestedParam(DeploymentConfig, group="Kompression")
+    inference = NestedParam(InferenceConfig, group="Einsatz")
     workflow = NestedParam(WorkflowConfig, group="Ablauf")
     auto_fit_dims = Param(True, tooltip=T(
         "Modellgrößen (Ein-/Ausgabe, Vokabular, Beobachtungen …) automatisch an Daten/Umgebung anpassen.",
@@ -87,6 +89,15 @@ class ProjectConfig(BaseConfig):
     output_dir = Param("ausgaben", tooltip=T(
         "Basisordner für Ausgaben (Checkpoints, Protokolle, gespeicherte Projekte).", "Ordnung.", "ausgaben."),
         level=Level.ADVANCED)
+
+
+#: Bereiche, deren Änderung ein trainiertes Modell nicht ungültig macht.
+_KEEP_MODEL = {"inference", "deployment", "goals", "workflow", "compression", "name", "description", "domain",
+               "output_dir"}
+
+
+def _changed_tops(a: dict, b: dict) -> list[str]:
+    return [k for k in set(a) | set(b) if a.get(k) != b.get(k)]
 
 
 # (Info-Schlüssel des Datensatzes, Modellparameter, Modus)
@@ -269,7 +280,7 @@ class Project:
         except Exception:
             self._undo.pop()  # fehlgeschlagene Änderung nicht in den Verlauf
             raise
-        self._invalidate()
+        self._invalidate([path])
         return self
 
     def find(self, pattern: str) -> list[str]:
@@ -305,7 +316,7 @@ class Project:
         self._snapshot()
         for path in paths:
             self.config.set(path, value)
-        self._invalidate()
+        self._invalidate(paths)
         return paths
 
     # ------------------------------------------------------------ Schalter (An / Aus / Eigen)
@@ -351,7 +362,7 @@ class Project:
         self._snapshot()
         self.config = trial
         self._switch_memory = memory
-        self._invalidate()
+        self._invalidate(changed)
         return changed
 
     def turn_on(self, pattern: str, **kw: Any) -> list[str]:
@@ -395,7 +406,7 @@ class Project:
         if changed:
             self._snapshot()
             self.config = trial
-            self._invalidate()
+            self._invalidate(changed)
         self._technique_memory = memory
         return changed
 
@@ -484,7 +495,7 @@ class Project:
         except Exception:
             self.config = ProjectConfig.from_dict(self._undo.pop())  # alles oder nichts
             raise
-        self._invalidate()
+        self._invalidate(list(changes))
         return self
 
     # ------------------------------------------------------------ Verlauf (Rückgängig/Wiederholen)
@@ -503,7 +514,7 @@ class Project:
             self.config = ProjectConfig.from_dict(self._undo.pop())
             done = True
         if done:
-            self._invalidate()
+            self._invalidate(_changed_tops(self._redo[-1], self.config.to_dict()))
         return done
 
     def redo(self, steps: int = 1) -> bool:
@@ -516,7 +527,7 @@ class Project:
             self.config = ProjectConfig.from_dict(self._redo.pop())
             done = True
         if done:
-            self._invalidate()
+            self._invalidate(_changed_tops(self._undo[-1], self.config.to_dict()))
         return done
 
     def diff(self, other: "Project | ProjectConfig | str | dict") -> list[tuple[str, Any, Any]]:
@@ -562,7 +573,19 @@ class Project:
         self._invalidate()
         return self
 
-    def _invalidate(self) -> None:
+    def _invalidate(self, paths: list[str] | None = None) -> None:
+        """Nach Änderungen: Modell/Trainer verwerfen – aber nur, wenn die geänderten Einstellungen sie betreffen.
+
+        Einstellungen zu Vorhersage, Zielsystemen, Zielen, Ablauf, Kompression und Beschreibung lassen ein
+        trainiertes Modell unangetastet; Daten-Änderungen laden die Daten neu.
+        """
+        tops = None if paths is None else {str(p).split(".", 1)[0].split("[", 1)[0] for p in paths}
+        if tops is None or "data" in tops:
+            self._bundle = None
+            self.test_data = None
+            self._test_split = None
+        if tops is not None and not (tops - _KEEP_MODEL):
+            return
         self.model = None
         self.surgeon = None
         self.trainer = None
@@ -616,9 +639,7 @@ class Project:
                         changed += self.technique(key, "an")
                     except ConfigError:
                         continue
-        if any(p.startswith("data.") for p in changed):
-            self._bundle = None
-        self._invalidate()
+        self._invalidate([c.split(" ", 1)[0] for c in changed])
         return changed
 
     def drift_report(self, new_data: Any, reference: Any = None, with_model: bool = True) -> Any:
@@ -722,8 +743,11 @@ class Project:
         return model
 
     # ================================================================ Training
-    def train(self, train_data: Any = None, val_data: Any = None) -> list[dict]:
-        """Trainiert (baut vorher, falls nötig). Ohne Daten wird der konfigurierte Datensatz genutzt."""
+    def train(self, train_data: Any = None, val_data: Any = None, hold_out_test: bool = True) -> list[dict]:
+        """Trainiert (baut vorher, falls nötig). Ohne Daten wird der konfigurierte Datensatz genutzt.
+
+        ``hold_out_test=False``: keine Testmenge abteilen (z. B. wenn ``train_data`` schon ohne sie ist).
+        """
         if self.model is None:
             self.build()
         info: dict = {}
@@ -736,7 +760,8 @@ class Project:
                 self.test_data = bundle.test
             if self.config.data.name == "anomaly":
                 val_data = None  # Anomalie-Testmenge hat Labels → separat mit anomaly_report() auswerten
-        train_data = self._hold_out_test(train_data)
+        if hold_out_test:
+            train_data = self._hold_out_test(train_data)
         self._fit_warning()
         self.trainer = Trainer(self.model, self.config.training, self.config.memory, self.surgeon,
                                teacher=self._teacher, log_backends=self._loggers, run_name=self.config.name,
@@ -746,6 +771,11 @@ class Project:
         self.trainer.target_inverse = target_inverse(info.get("target_transform"))
         self.model = self.trainer.module
         self.history = self.trainer.fit(train_data, val_data)
+        if self.config.inference.auto_calibrate and self.trainer.val_data is not None:
+            try:
+                self.calibrate()
+            except ConfigError as exc:
+                self._note(f"Kalibrierung übersprungen: {exc}")
         d = self.config.deployment
         if self._verbose() and d.show_after_training:
             try:
@@ -1219,6 +1249,345 @@ class Project:
             data = bundle.val if bundle.val is not None else bundle.train
         return self.trainer.evaluate(data)
 
+    # ================================================================ Vertrauen
+    def _eval_data(self, data: Any = None, prefer_test: bool = False) -> Any:
+        if data is not None:
+            return data
+        candidates = [self.test_data] if prefer_test else []
+        candidates += [getattr(self.trainer, "val_data", None), self.data().val if self.config.data.name != "none"
+                       else None]
+        for c in candidates:
+            if c is not None:
+                return c
+        raise ConfigError("Keine Validierungsdaten – erst trainieren (train) oder Daten übergeben.")
+
+    @torch.no_grad()
+    def _outputs(self, data: Any, limit: int = 20000) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """(Ausgaben, Ziele, Eingaben) über einen Datensatz im Eval-Modus."""
+        from .training.data_utils import make_loader
+        from .training.paradigms import main_output
+
+        model = self._ensure_model()
+        was = model.training
+        model.eval()
+        device = self._device()
+        outs, targets, inputs, n = [], [], [], 0
+        try:
+            for batch in make_loader(data, self.config.training.eval_batch_size or self.config.training.batch_size,
+                                     False):
+                batch = to_device(batch, device)
+                if "targets" not in batch:
+                    raise ConfigError("Die Daten haben keine Ziele ('targets').")
+                out = main_output(call_model(model, batch["inputs"], attention_mask=batch.get("attention_mask"),
+                                             lengths=batch.get("lengths")))
+                outs.append(out.float().cpu())
+                targets.append(batch["targets"].cpu())
+                inputs.append(batch["inputs"].cpu() if isinstance(batch["inputs"], torch.Tensor) else None)
+                n += out.shape[0]
+                if n >= limit:
+                    break
+        finally:
+            model.train(was)
+        x = torch.cat(inputs) if all(i is not None for i in inputs) else None
+        return torch.cat(outs), torch.cat(targets), x
+
+    def _is_classification(self, out: torch.Tensor, target: torch.Tensor | None = None) -> bool:
+        task = str((self._bundle.info or {}).get("task", "")) if self._bundle is not None else ""
+        if task in ("classification", "regression"):
+            return task == "classification"
+        if target is not None:
+            return not target.is_floating_point() and out.dim() == target.dim() + 1
+        return out.dim() == 2 and out.shape[-1] > 1
+
+    def calibrate(self, data: Any = None) -> dict[str, Any]:
+        """Stellt Temperatur, Schwelle und Conformal-Grenze auf Validierungsdaten ein (``project.inference``).
+
+        Ergebnis: Kalibrierungsfehler (ECE) vorher/nachher, Temperatur, Schwelle, Conformal-Abdeckung.
+        """
+        from .analysis.inference import (best_threshold, conformal_quantile, conformal_scores, fit_temperature)
+        from .training.metrics import METRICS, target_inverse
+
+        from .training.paradigms import is_segmentation
+
+        ic = self.config.inference
+        out, target, _ = self._outputs(self._eval_data(data))
+        if is_segmentation(out, target):                 # je Pixel kalibrieren
+            out, target = out.permute(0, 2, 3, 1).reshape(-1, out.shape[1]), target.reshape(-1)
+        result: dict[str, Any] = {}
+        self._snapshot()
+        if self._is_classification(out, target) and out.dim() == 2:
+            ece = METRICS.get("ece").factory(METRICS.get("ece").config_cls())
+            result["ece_vorher"] = ece(out, target)
+            t = fit_temperature(out, target)
+            ic.temperature = t
+            scaled = out / t
+            result.update(temperatur=t, ece_nachher=ece(scaled, target))
+            if ic.optimize_threshold != "keine" and out.shape[1] == 2:
+                ic.threshold = best_threshold(scaled.softmax(-1)[:, 1], target, ic.optimize_threshold)
+                result["schwelle"] = ic.threshold
+            if ic.conformal_alpha:
+                ic.conformal_q = conformal_quantile(conformal_scores(scaled, target, True), ic.conformal_alpha)
+                result["conformal_q"] = ic.conformal_q
+        else:
+            inverse = target_inverse((self._bundle.info or {}).get("target_transform") if self._bundle else None)
+            pred, tgt = inverse(out, target) if inverse else (out, target)
+            if ic.conformal_alpha:
+                ic.conformal_q = conformal_quantile(conformal_scores(pred, tgt, False), ic.conformal_alpha)
+                result["intervall_halbbreite"] = ic.conformal_q
+        if self._verbose():
+            print("  Kalibrierung: " + "  ".join(f"{k}={v:.4g}" for k, v in result.items()))
+        return result
+
+    def _forward_fn(self) -> Any:
+        from .training.paradigms import main_output
+
+        model = self._ensure_model()
+        device = self._device()
+        return lambda x: main_output(call_model(model, x.to(device) if isinstance(x, torch.Tensor) else x)).float()
+
+    @torch.no_grad()
+    def _samples(self, inputs: torch.Tensor) -> torch.Tensor:
+        """Ausgaben ``[S, N, …]`` (S = 1 ohne Unsicherheitsschätzung)."""
+        from .analysis.inference import sample_outputs
+
+        ic = self.config.inference
+        model = self._ensure_model()
+        was = model.training
+        model.eval()
+        try:
+            if ic.uncertainty == "keine":
+                return self._forward_fn()(inputs).unsqueeze(0).cpu()
+            return sample_outputs(model, self._forward_fn(), inputs, ic.uncertainty, ic.samples, ic.tta_transforms,
+                                  ic.tta_noise).cpu()
+        finally:
+            model.train(was)
+
+    def predict_proba(self, inputs: torch.Tensor) -> torch.Tensor:
+        """Kalibrierte Klassenwahrscheinlichkeiten ``[N, K]`` (Temperatur, MC-Dropout/TTA laut ``inference``)."""
+        s = self._samples(inputs)
+        return (s / self.config.inference.temperature).softmax(-1).mean(0)
+
+    def predict_labels(self, inputs: torch.Tensor, names: bool = True) -> list:
+        """Lesbare Vorhersagen: Klassennamen (mit Schwelle und Enthaltung ``'unsicher'``) bzw. Zahlen in echten
+        Einheiten (Rückrechnung der Ziel-Skalierung)."""
+        return self.predict_with_uncertainty(inputs, names)["vorhersage"]
+
+    def predict_with_uncertainty(self, inputs: torch.Tensor, names: bool = True) -> dict[str, Any]:
+        """Vorhersage + Sicherheit: Wahrscheinlichkeit, Entropie, Streuung (MC-Dropout/TTA), Conformal-Menge
+        bzw. -Intervall – gemäß ``project.inference``."""
+        from .analysis.inference import entropy, prediction_sets
+        from .training.metrics import target_inverse
+
+        ic = self.config.inference
+        s = self._samples(inputs)
+        info = self.data().info if self.config.data.name != "none" else {}
+        label_names = info.get("label_names") if names else None
+        if info.get("task") == "segmentation" and s.dim() == 5:      # [S, N, C, H, W] → Klassenkarte je Pixel
+            probs = (s / ic.temperature).softmax(2).mean(0)
+            conf, idx = probs.max(1)
+            out = {"vorhersage": idx, "wahrscheinlichkeit": conf, "wahrscheinlichkeiten": probs,
+                   "klassen": label_names, "entropie": entropy(probs.movedim(1, -1))}
+            if ic.abstain_below is not None:
+                out["unsicher"] = conf < ic.abstain_below
+            return out
+        if self._is_classification(s[0]):
+            probs = (s / ic.temperature).softmax(-1)
+            mean = probs.mean(0)
+            conf, idx = mean.max(-1)
+            if ic.threshold is not None and mean.shape[-1] == 2:
+                idx = (mean[:, 1] >= ic.threshold).long()
+                conf = mean.gather(1, idx[:, None]).squeeze(1)
+            labels: list = [label_names[i] if label_names and i < len(label_names) else i for i in idx.tolist()]
+            if ic.abstain_below is not None:
+                labels = [lab if float(c) >= ic.abstain_below else "unsicher" for lab, c in zip(labels, conf)]
+            out = {"vorhersage": labels, "wahrscheinlichkeit": conf, "wahrscheinlichkeiten": mean,
+                   "entropie": entropy(mean)}
+            if s.shape[0] > 1:
+                out["streuung"] = probs.std(0).gather(1, idx[:, None]).squeeze(1)
+            if ic.conformal_q is not None:
+                sets = prediction_sets(mean, ic.conformal_q)
+                out["menge"] = [[label_names[i] if label_names and i < len(label_names) else i for i in m]
+                                for m in sets]
+            return out
+        inverse = target_inverse(info.get("target_transform"))
+        values = s.mean(0)
+        spread = s.std(0) if s.shape[0] > 1 else None
+        if inverse is not None:
+            values = inverse(values, values)[0]
+            if spread is not None:
+                spread = (inverse(s, s)[0]).std(0)
+        flat = values.reshape(values.shape[0], -1)
+        out = {"vorhersage": [float(v[0]) if v.numel() == 1 else v.tolist() for v in flat], "werte": values}
+        if spread is not None:
+            out["streuung"] = spread
+        if ic.conformal_q is not None:
+            out["intervall"] = (values - ic.conformal_q, values + ic.conformal_q)
+        return out
+
+    def explain_prediction(self, inputs: torch.Tensor, target: Any = None, method: str = "auto",
+                           index: int = 0) -> Any:
+        """Warum diese Vorhersage? Wichtigkeit jedes Merkmals/Tokens/Bildbereichs für das Beispiel ``index``.
+
+        ``method``: auto | gradient | integrated_gradients | occlusion. ``target``: Klasse (Index oder Name).
+        """
+        from .analysis.explain import METHODS, Explanation, gradient_x_input, integrated_gradients, occlusion
+
+        if method not in METHODS:
+            raise ConfigError(f"Unbekannte Methode '{method}'. Erlaubt: {', '.join(METHODS)}.")
+        x = inputs[index:index + 1] if inputs.dim() > 1 else inputs.unsqueeze(0)
+        info = self.data().info if self.config.data.name != "none" else {}
+        label_names = info.get("label_names") or []
+        if isinstance(target, str):
+            if target not in label_names:
+                raise ConfigError(f"Klasse '{target}' unbekannt. Klassen: {label_names}.")
+            target = label_names.index(target)
+        tokens = not x.is_floating_point()
+        if method == "auto":
+            method = "occlusion" if tokens else ("integrated_gradients" if x.dim() == 2 else "gradient")
+        model = self._ensure_model()
+        was = model.training
+        model.eval()
+        forward = self._forward_fn()
+        try:
+            fn = {"gradient": gradient_x_input, "integrated_gradients": integrated_gradients,
+                  "occlusion": occlusion}[method]
+            attr = fn(forward, x.to(self._device()), target).cpu()
+            with torch.no_grad():
+                out = forward(x)
+        finally:
+            model.train(was)
+        if tokens:
+            tok = info.get("tokenizer")
+            ids = x[0].tolist()
+            names = [f"{i}:{tok.itos[t] if tok is not None and t < len(tok.itos) else t}" for i, t in enumerate(ids)]
+        else:
+            names = list(info.get("features") or [])
+        pred_idx = int(out[0].argmax()) if out.dim() == 2 and out.shape[-1] > 1 else None
+        shown = (label_names[pred_idx] if pred_idx is not None and pred_idx < len(label_names) else pred_idx) \
+            if pred_idx is not None else [round(v, 4) for v in out[0].reshape(-1).tolist()][:4]
+        tgt_name = (label_names[target] if isinstance(target, int) and target < len(label_names) else target)
+        return Explanation(method, attr, names, shown, tgt_name)
+
+    def feature_importance(self, data: Any = None, metric: str | None = None, repeats: int = 3) -> Any:
+        """Globale Merkmals-Wichtigkeit per Permutation auf Validierungsdaten (welche Spalten zählen wirklich?)."""
+        from .analysis.explain import permutation_importance
+        from .core import ComponentSpec
+        from .training.metrics import direction
+
+        out, target, x = self._outputs(self._eval_data(data))
+        if x is None or not x.is_floating_point() or x.dim() != 2:
+            raise ConfigError("feature_importance braucht Tabellen-Eingaben [N, Merkmale] – für Bilder/Texte "
+                              "explain_prediction(…) verwenden.")
+        cls = self._is_classification(out, target)
+        metric = metric or ("balanced_accuracy" if cls else "mae")
+        fn = ComponentSpec.from_value("metric", metric).build()
+        forward = self._forward_fn()
+        model = self._ensure_model()
+        was = model.training
+        model.eval()
+        try:
+            with torch.no_grad():
+                imp = permutation_importance(lambda xx: fn(forward(xx).cpu(), target), x, direction(metric) == "max",
+                                             (self.data().info or {}).get("features"), repeats, metric=metric)
+        finally:
+            model.train(was)
+        return imp
+
+    def fairness_report(self, groups: Any, data: Any = None, positive_class: int = 1) -> Any:
+        """Fairness je Gruppe (Genauigkeit, Positiv-Rate, TPR/FPR, Disparate Impact).
+
+        ``groups``: Gruppe je Beispiel (Liste/Tensor) oder Name einer Merkmalsspalte (CSV, z. B. ``'geschlecht'``).
+        Ohne ``data``: Testmenge, sonst Validierung.
+        """
+        from .analysis.fairness import fairness_report, groups_from_features
+
+        out, target, x = self._outputs(self._eval_data(data, prefer_test=True))
+        if not self._is_classification(out, target):
+            raise ConfigError("Der Fairness-Bericht ist für Klassifikation gedacht.")
+        names = None
+        if isinstance(groups, str):
+            if x is None or x.dim() != 2:
+                raise ConfigError("Gruppen als Spaltenname gehen nur bei Tabellen-Daten.")
+            groups, names = groups_from_features(x, list((self.data().info or {}).get("features") or []), groups)
+        pred = out.argmax(-1)
+        ic = self.config.inference
+        if ic.threshold is not None and out.shape[-1] == 2:
+            pred = ((out / ic.temperature).softmax(-1)[:, 1] >= ic.threshold).long()
+        return fairness_report(pred, target, groups, positive_class, names)
+
+    def robustness_report(self, data: Any = None, epsilons: list[float] | None = None, metric: str | None = None,
+                          methods: tuple[str, ...] = ("rauschen", "fgsm", "pgd"), limit: int = 512) -> Any:
+        """Wie stark leidet die Qualität unter Rauschen und gezielten Angriffen (FGSM/PGD)?
+
+        ``epsilons``: Störstärken relativ zur Standardabweichung der Eingaben (Standard 0.01, 0.05, 0.1).
+        """
+        from .analysis.robustness import robustness_report
+        from .core import ComponentSpec
+        from .training.paradigms import auto_loss
+
+        out, target, x = self._outputs(self._eval_data(data), limit)
+        if x is None or not x.is_floating_point():
+            raise ConfigError("Robustheitsprüfung braucht Zahlen-Eingaben (Tabellen, Bilder, Signale).")
+        cls = self._is_classification(out, target)
+        metric = metric or ("accuracy" if cls else "mae")
+        fn = ComponentSpec.from_value("metric", metric).build()
+        forward = self._forward_fn()
+        model = self._ensure_model()
+        was = model.training
+        model.eval()
+        device = self._device()
+        try:
+            return robustness_report(lambda xx: forward(xx).cpu(), lambda o, y: auto_loss(o, y),
+                                     lambda o, y: fn(o, y), x.to(device), target,
+                                     epsilons or [0.01, 0.05, 0.1], metric, methods)
+        finally:
+            model.train(was)
+
+    def select_for_labeling(self, pool: Any, n: int = 20, strategy: str = "unsicherheit") -> Any:
+        """Active Learning: welche unbeschrifteten Beispiele sollten Menschen als Nächstes beschriften?
+
+        ``pool``: Eingaben (Tensor) oder dict mit ``inputs``. Strategien: unsicherheit, marge, entropie, vielfalt,
+        zufall. Mit ``inference.uncertainty = 'mc_dropout'`` fließt auch die Modell-Unsicherheit ein.
+        """
+        from .workflow.active import STRATEGIES, Selection, select
+
+        if strategy not in STRATEGIES:
+            raise ConfigError(f"Unbekannte Strategie '{strategy}'. Erlaubt: {', '.join(STRATEGIES)}.")
+        x = pool["inputs"] if isinstance(pool, dict) else pool
+        probs = self.predict_proba(x)
+        idx, scores = select(probs, n, strategy, features=probs, seed=self.config.training.seed or 0)
+        names = (self.data().info or {}).get("label_names") if self.config.data.name != "none" else None
+        preds = [names[i] if names and i < len(names) else i for i in probs[idx].argmax(-1).tolist()]
+        return Selection(strategy, idx, scores, preds)
+
+    def pseudo_label(self, unlabeled: Any, threshold: float = 0.95, rounds: int = 1) -> dict[str, Any]:
+        """Semi-überwachtes Lernen (Self-Training): sichere Vorhersagen auf unbeschrifteten Daten als Labels
+        übernehmen und mittrainieren – ``rounds`` Runden. Erst normal trainieren, dann aufrufen.
+        """
+        from torch.utils.data import ConcatDataset
+
+        from .training.data_utils import DictDataset, as_dataset
+        from .workflow.active import pseudo_labels
+
+        if self.trainer is None:
+            raise ConfigError("Erst mit den beschrifteten Daten trainieren (train), dann pseudo_label().")
+        x = unlabeled["inputs"] if isinstance(unlabeled, dict) else unlabeled
+        labeled = self._hold_out_test(self.data().train)
+        val = self.trainer.val_data
+        report: dict[str, Any] = {"runden": []}
+        for r in range(rounds):
+            mask, labels = pseudo_labels(self.predict_proba(x), threshold)
+            n = int(mask.sum())
+            if n == 0:
+                self._note(f"Pseudo-Labeling Runde {r + 1}: keine Vorhersage über der Schwelle {threshold}.")
+                break
+            extra = DictDataset({"inputs": x[mask].cpu(), "targets": labels[mask].cpu()})
+            self.train(ConcatDataset([as_dataset(labeled), extra]), val, hold_out_test=False)
+            metrics = self.trainer.evaluate(val) if val is not None else {}
+            report["runden"].append({"runde": r + 1, "uebernommen": n, "anteil": n / len(x), **metrics})
+            self._note(f"Pseudo-Labeling Runde {r + 1}: {n} von {len(x)} Beispielen übernommen.")
+        return report
+
     # ================================================================ Benutzen
     def _ensure_model(self) -> nn.Module:
         if self.model is None:
@@ -1271,7 +1640,10 @@ class Project:
     def generate(self, prompt: str | torch.Tensor, **generation: Any) -> Any:
         """Text-/Token-Generierung (Sprachmodelle). Mit Zeichen-Tokenizer des Datensatzes auch für Text."""
         model = self._ensure_model()
-        tok = self.data().info.get("tokenizer") if self.config.data.name != "none" else None
+        info = self.data().info if self.config.data.name != "none" else {}
+        tok = info.get("tokenizer")
+        if info.get("eos_token_id") is not None:
+            generation.setdefault("eos_token_id", info["eos_token_id"])
         if isinstance(prompt, str):
             if tok is None:
                 raise ConfigError("Für Text-Prompts wird ein Tokenizer im Datensatz benötigt (z. B. Datensatz 'text').")
@@ -1279,6 +1651,25 @@ class Project:
             out = model.generate(ids, **generation)
             return tok.decode(out[0].tolist())
         return model.generate(prompt.to(self._device()), **generation)
+
+    def ask(self, question: str, **generation: Any) -> str:
+        """Frage an ein Instruction-Modell (Datensatz ``instructions``): gleiche Vorlage wie im Training, Antwort
+        bis zum Ende-Zeichen. Standard: gierige Auswahl (``temperature=0``)."""
+        info = self.data().info if self.config.data.name != "none" else {}
+        template, tok = info.get("prompt_template"), info.get("tokenizer")
+        if template is None or tok is None:
+            raise ConfigError("ask() braucht einen Datensatz mit Vorlage (data = 'instructions').")
+        prompt = template.format(prompt=question)
+        generation.setdefault("temperature", 0.0)
+        generation.setdefault("max_new_tokens", 48)
+        n = len(tok.encode(prompt))
+        model = self._ensure_model()
+        if info.get("eos_token_id") is not None:
+            generation.setdefault("eos_token_id", info["eos_token_id"])
+        ids = torch.tensor([tok.encode(prompt)], device=self._device())
+        out = model.generate(ids, **generation)[0, n:].tolist()
+        text = tok.decode(out)
+        return text.split(info.get("eos_text", "\x00"), 1)[0].strip()
 
     def sample(self, n: int = 16, **kwargs: Any) -> torch.Tensor:
         """Neue Daten erzeugen (GAN, Diffusion, VAE/VQ-VAE)."""

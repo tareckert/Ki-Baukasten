@@ -177,6 +177,8 @@ class Trainer:
         self._collector: Any = None              # sammelt Vorhersagen während evaluate() (Metriken)
         self.class_weight: torch.Tensor | None = None
         self._warned_metrics: set[str] = set()
+        self.val_data: Any = None
+        self._resumed = False
         #: optional ``f(pred, target) -> (pred, target)``: Regressionsziele vor den Metriken zurückrechnen
         #: (z. B. CSV mit ``target_scaling`` → Fehler in echten Einheiten).
         self.target_inverse: Callable | None = None
@@ -674,6 +676,7 @@ class Trainer:
             train_loader = make_loader(ds, c.batch_size, c.shuffle, c.drop_last, c.num_workers, c.pin_memory, sampler)
         else:
             train_loader = train
+        self.val_data = val                      # für Kalibrierung/Erklärungen nach dem Training
         val_loader = None
         if val is not None:
             val_loader = make_loader(val, c.eval_batch_size or c.batch_size, False, False, c.num_workers, c.pin_memory)
@@ -700,6 +703,14 @@ class Trainer:
         self.total_steps = c.max_steps or c.epochs * steps_per_epoch
         if not self.schedulers:
             self._build_schedulers(self.total_steps)
+        if c.resume_from and not self._resumed:
+            self._resumed = True
+            path = self._resume_path(c.resume_from)
+            if path is None:
+                self.log("ℹ resume_from: kein Checkpoint gefunden – Training startet neu.", "warnung")
+            else:
+                self.load_checkpoint(path)
+                self.log(f"↻ Fortgesetzt aus {path} (Schritt {self.global_step}, Epoche {self.epoch}).")
         n_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         self.logger.start(self.run_name, self.run_config if self.run_config is not None else
                           {"training": c.to_dict(), "memory": self.mem.cfg.to_dict()})
@@ -912,6 +923,18 @@ class Trainer:
         }
         torch.save(state, path)
         return path
+
+    def _resume_path(self, value: str) -> Path | None:
+        """``auto`` = neuester Checkpoint in den Ordnern der Checkpoint-Callbacks (sonst ``checkpoints``)."""
+        if value != "auto":
+            path = Path(value)
+            if not path.exists():
+                raise TrainingError(f"resume_from: Datei '{value}' nicht gefunden.")
+            return path
+        dirs = {Path(getattr(getattr(cb, "a", None), "directory", "")) for cb in self.callbacks
+                if hasattr(getattr(cb, "a", None), "directory")} or {Path("checkpoints")}
+        found = [f for d in dirs if d.is_dir() for f in d.glob("*.pt")]
+        return max(found, key=lambda f: f.stat().st_mtime) if found else None
 
     def load_checkpoint(self, path: str | Path, model_only: bool = False) -> dict:
         state = torch.load(path, map_location=self.device, weights_only=False)
