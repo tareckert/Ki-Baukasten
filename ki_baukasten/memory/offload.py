@@ -15,9 +15,8 @@ Ablauf pro Block (Forward)
 
 Grenzen (ehrlich dokumentiert)
 ------------------------------
-* Gedacht für **Inferenz** und **eingefrorene** Blöcke. Für trainierbare
-  Gewichte müssten Gradienten auf dem Gerät auflaufen – dafür sind
-  Gradient-Checkpointing und Aktivierungs-Offload das richtige Werkzeug.
+* Gedacht für **Inferenz** und **eingefrorene** Blöcke. Für das **Training**
+  ausgelagerter Blöcke gibt es den Modus ``stream`` (``memory.streaming``).
 * Der Festplattenmodus nutzt ``torch.load(mmap=True)`` – das Betriebssystem
   lädt nur, was gebraucht wird.
 """
@@ -31,8 +30,28 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from ..core import ConfigError
+from ..core import ConfigError, select_indices
 from .config import OffloadConfig
+
+
+def select_offload_blocks(model: nn.Module, cfg: OffloadConfig) -> list[tuple[str, nn.Module]]:
+    """Auszulagernde Blöcke nach ``targets`` (``auto`` + ``layers`` oder Regex auf Modulnamen)."""
+    named = dict(model.named_modules())
+    if cfg.targets == "auto":
+        blocks = model.checkpointable_blocks() if hasattr(model, "checkpointable_blocks") else []
+        if not blocks:
+            raise ConfigError("Offload 'auto': Modell meldet keine Blöcke – bitte 'targets' als Regex angeben.",
+                              "memory.offload.targets")
+        chosen = {id(blocks[i]) for i in select_indices(cfg.layers, len(blocks))}
+        return [(n, m) for n, m in named.items() if id(m) in chosen]
+    rx = re.compile(cfg.targets)
+    result: list[tuple[str, nn.Module]] = []
+    for name, module in named.items():
+        if name and rx.fullmatch(name) and not any(name.startswith(c + ".") for c, _ in result):
+            result.append((name, module))
+    if not result:
+        raise ConfigError(f"Offload: kein Modul passt auf '{cfg.targets}'.", "memory.offload.targets")
+    return result
 
 
 class OffloadManager:
@@ -47,21 +66,7 @@ class OffloadManager:
 
     # ------------------------------------------------------------ Auswahl
     def _select(self) -> list[tuple[str, nn.Module]]:
-        named = dict(self.model.named_modules())
-        if self.cfg.targets == "auto":
-            blocks = self.model.checkpointable_blocks() if hasattr(self.model, "checkpointable_blocks") else []
-            if not blocks:
-                raise ConfigError("Offload 'auto': Modell meldet keine Blöcke – bitte 'targets' als Regex angeben.")
-            ids = {id(b) for b in blocks}
-            return [(n, m) for n, m in named.items() if id(m) in ids]
-        rx = re.compile(self.cfg.targets)
-        chosen: list[tuple[str, nn.Module]] = []
-        for name, module in named.items():
-            if name and rx.fullmatch(name) and not any(name.startswith(c + ".") for c, _ in chosen):
-                chosen.append((name, module))
-        if not chosen:
-            raise ConfigError(f"Offload: kein Modul passt auf '{self.cfg.targets}'.")
-        return chosen
+        return select_offload_blocks(self.model, self.cfg)
 
     # ------------------------------------------------------------ Einrichten
     def attach(self) -> nn.Module:

@@ -18,10 +18,11 @@ Aktivierungen          ∝ Batch · Sequenz · Breite · Tiefe        ``mixed_pr
                                                                  Batch + Akkumulation
 =====================  ========================================  =============================
 
-Für **Inferenz** sehr großer Modelle (größer als der GPU-Speicher) gibt es
-**Layer-Swapping** (``offload``): Blöcke liegen im CPU-RAM oder auf der
-Festplatte und werden nur für ihre eigene Berechnung auf das Rechengerät
-geladen.
+Für sehr große Modelle (größer als der GPU-Speicher) gibt es **Auslagerung**
+(``offload``): Blöcke liegen im CPU-RAM oder auf der Festplatte und werden nur
+für ihre eigene Berechnung auf das Rechengerät geladen – ``cpu``/``disk`` für
+Inferenz, ``stream`` auch für das **Training** (Gewichte, Gradienten und
+Optimierer-Zustände der Blöcke bleiben im RAM).
 """
 
 from __future__ import annotations
@@ -45,18 +46,32 @@ class OffloadConfig(BaseConfig):
     )
     mode = Param("none", choices={
         "none": "alles bleibt auf dem Rechengerät",
-        "cpu": "Blöcke liegen im CPU-RAM, werden pro Forward auf das Gerät geladen",
-        "disk": "Blöcke liegen auf der Festplatte (Memory-Map), werden pro Forward geladen",
+        "cpu": "Blöcke liegen im CPU-RAM, werden pro Forward auf das Gerät geladen (Inferenz/eingefroren)",
+        "disk": "Blöcke liegen auf der Festplatte (Memory-Map), werden pro Forward geladen (Inferenz/eingefroren)",
+        "stream": "TRAINIERBAR: Gewichte, Gradienten und Optimierer-Zustände im RAM, Blöcke werden in "
+                  "Forward und Backward gestreamt",
     }, tooltip=T(
         "Auslagerungsmodus.",
-        "Tauscht Geschwindigkeit gegen Speicher: disk spart am meisten, ist aber am langsamsten.",
-        "Nur für Inferenz bzw. eingefrorene Blöcke (Gradienten bräuchten die Gewichte auf dem Gerät).",
+        "Tauscht Geschwindigkeit gegen Speicher: disk spart am meisten, ist aber am langsamsten; stream erlaubt "
+        "Training von Modellen, deren Gewichte + Optimierer nicht auf die GPU passen.",
+        "Inferenz großer Modelle: cpu/disk. Training großer Modelle auf kleiner GPU: stream.",
+        "stream rechnet jeden Block im Backward neu (wie Checkpointing) und überträgt die Gewichte zweimal pro "
+        "Schritt – typischerweise 1.3–3× langsamer.",
     ))
     targets = Param("auto", tooltip=T(
         "Welche Module ausgelagert werden: 'auto' = Hauptblöcke des Modells, sonst Regex auf Modulnamen.",
         "Kleine Teile (Embeddings, Kopf) bleiben dauerhaft auf dem Gerät.",
         "Meist 'auto'; z. B. 'blocks\\.(1[0-9]|2[0-9])' für nur hintere Blöcke.",
     ), level=Level.ADVANCED)
+    layers = Param("*", tooltip=T(
+        "Welche der automatisch gefundenen Blöcke ausgelagert werden (Selektor wie bei layer_overrides).",
+        "Feiner Kompromiss: nur so viele Blöcke auslagern, wie nötig – der Rest rechnet ohne Übertragung.",
+        "'*' = alle, '0:12' = die ersten 12, '::2' = jeder zweite. Nur mit targets='auto'.",
+    ), level=Level.ADVANCED)
+    prefetch = Param(False, tooltip=T(
+        "Nächsten Block auf einem eigenen CUDA-Stream vorladen, während der aktuelle rechnet (nur stream + CUDA).",
+        "Versteckt Übertragungszeit hinter Rechenzeit.", "Experimentell; bei Problemen ausschalten.",
+    ), level=Level.EXPERIMENTAL)
     directory = Param("offload_cache", tooltip=T(
         "Ordner für ausgelagerte Gewichte (disk).", "Schnelle SSD empfohlen.", "Lokale SSD."))
     pin_memory = Param(True, tooltip=T(

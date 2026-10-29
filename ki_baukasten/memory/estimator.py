@@ -31,6 +31,7 @@ from .config import MemoryConfig
 _OPT_STATES = {  # zusätzliche fp32-Kopien je trainierbarem Parameter
     "adam": 2, "adamw": 2, "nadam": 2, "radam": 2, "adamax": 2, "adadelta": 2,
     "sgd": 1, "rmsprop": 1, "adagrad": 1, "lion": 1, "muon": 1, "adafactor": 0.1,
+    "adamw8bit": 0.5, "adam8bit": 0.5,  # 2 Zustände à 1 Byte (+ Skalen)
 }
 _BYTES = {"float32": 4, "float16": 2, "bfloat16": 2, "float64": 8}
 
@@ -55,6 +56,7 @@ class MemoryReport:
     batch_size: int
     budget_bytes: float | None
     recommendations: list[str] = field(default_factory=list)
+    ram_bytes: float = 0.0  # durch Streaming/Offload in den CPU-RAM verlagert (nicht im Gesamtwert enthalten)
 
     @property
     def total_bytes(self) -> float:
@@ -77,6 +79,8 @@ class MemoryReport:
             "  ─────────────────────────────",
             f"  Gesamt (ca.):         {_fmt(self.total_bytes)}",
         ]
+        if self.ram_bytes:
+            lines.append(f"  Zusätzlich im RAM:    {_fmt(self.ram_bytes)} (ausgelagerte Blöcke, nicht im Gesamtwert)")
         if self.budget_bytes is not None:
             verdict = "passt ✓" if self.fits() else "passt NICHT ✗"
             lines.append(f"  Budget:               {_fmt(self.budget_bytes)} → {verdict}")
@@ -138,9 +142,24 @@ def estimate_memory(model: nn.Module, optimizer_name: str = "adamw", batch_size:
     n = sum(p.numel() for p in model.parameters())
     nt = sum(p.numel() for p in model.parameters() if p.requires_grad)
     b = _BYTES[memory.param_dtype]
-    weights = n * b
-    grads = nt * b
-    opt = nt * 4 * _OPT_STATES.get(optimizer_name, 2)
+    k = _OPT_STATES.get(optimizer_name, 2)
+    # Ausgelagerte Blöcke: Gewichte (+ bei 'stream' Gradienten und Optimierer-Zustände) liegen im RAM;
+    # auf dem Gerät ist jeweils nur der gerade rechnende Block (Kopie + Gradient).
+    off_n = off_t = largest = 0
+    if memory.offload.mode != "none":
+        try:
+            from .offload import select_offload_blocks
+            blocks = [m for _, m in select_offload_blocks(model, memory.offload)]
+            off_n = sum(p.numel() for blk in blocks for p in blk.parameters())
+            off_t = sum(p.numel() for blk in blocks for p in blk.parameters() if p.requires_grad)
+            largest = max((sum(p.numel() for p in blk.parameters()) for blk in blocks), default=0)
+        except Exception:  # Auswahl ungültig → Schätzung ohne Auslagerung
+            off_n = off_t = largest = 0
+    stream = memory.offload.mode == "stream"
+    weights = (n - off_n + largest) * b
+    grads = (nt - (off_t if stream else 0) + (largest if stream and off_t else 0)) * b
+    opt = (nt - (off_t if stream else 0)) * 4 * k
+    ram = off_n * b + (off_t * (b + 4 * k) if stream else 0)
     ema_b = n * 4 if ema else 0.0
     act = None
     if measure:
@@ -148,30 +167,35 @@ def estimate_memory(model: nn.Module, optimizer_name: str = "adamw", batch_size:
             ex = example if example is not None else model.example_input(probe_batch)  # type: ignore[operator]
             dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}.get(memory.mixed_precision)
             act = _measure_activations(model, ex, dtype) / probe_batch * batch_size
-            if memory.gradient_checkpointing:
+            if memory.gradient_checkpointing or stream:
                 act *= 0.35  # grobe Erfahrungsgröße: nur Block-Eingänge bleiben gespeichert
         except Exception:  # Messung ist optional – nie das Training verhindern
             act = None
     device = next(model.parameters()).device if n else torch.device("cpu")
     budget = memory.memory_budget_gb * 1024 ** 3 if memory.memory_budget_gb else detect_budget(device)
-    report = MemoryReport(n, nt, weights, grads, opt, ema_b, act, batch_size, budget)
+    report = MemoryReport(n, nt, weights, grads, opt, ema_b, act, batch_size, budget, ram_bytes=ram)
     if budget is not None and report.total_bytes > budget:
         recs = report.recommendations
         if memory.mixed_precision == "none":
             recs.append("memory.mixed_precision = 'bf16' (halbiert Aktivierungen; fp16 auf älteren GPUs)")
-        if act and not memory.gradient_checkpointing:
+        if act and not memory.gradient_checkpointing and not stream:
             recs.append("memory.gradient_checkpointing = true (spart oft 60–80 % Aktivierungsspeicher)")
         if act and act > 0.3 * budget:
             recs.append(f"training.batch_size verkleinern und training.gradient_accumulation_steps erhöhen "
                         f"(gleiche effektive Batchgröße {batch_size})")
-        if _OPT_STATES.get(optimizer_name, 2) >= 2:
-            recs.append("training.optimizer = 'lion' oder 'adafactor' (weniger Optimierer-Zustände)")
+        if k >= 2:
+            recs.append("training.optimizer = 'adamw8bit' (Adam-Zustände in 8 Bit, ¼ Speicher), 'lion' oder "
+                        "'adafactor'")
         if memory.param_dtype == "float32":
             recs.append("memory.param_dtype = 'bfloat16' (halbiert Gewichte + Gradienten; reines bf16-Training)")
+        if weights + grads + opt > 0.5 * budget and not stream:
+            recs.append("memory.offload.mode = 'stream' (Gewichte, Gradienten und Optimierer-Zustände der Blöcke "
+                        "trainierbar im CPU-RAM)")
         if nt < n * 0.5:
-            recs.append("eingefrorene Blöcke per memory.offload.mode = 'cpu' auslagern")
+            recs.append("eingefrorene Blöcke per memory.offload.mode = 'cpu' auslagern bzw. quantisieren "
+                        "(memory.quantization = 'int8'/'int4' → QLoRA mit memory.lora)")
         else:
-            recs.append("Teile einfrieren (tensor_rules mit op 'freeze') – spart Gradienten und Optimierer-Zustände")
+            recs.append("Teile einfrieren (tensor_rules mit op 'freeze') oder nur LoRA-Adapter trainieren (memory.lora)")
         if not memory.activation_offload:
             recs.append("memory.activation_offload = true (Aktivierungen im CPU-RAM)")
     return report

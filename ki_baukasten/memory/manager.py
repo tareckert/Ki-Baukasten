@@ -9,7 +9,7 @@ Reihenfolge in ``prepare_model``
 1. Datentyp der Gewichte (``param_dtype``)
 2. Fake-Quantisierung (Quantization-Aware Training)
 3. Gradient-Checkpointing der gewählten Blöcke
-4. Platzierung: Offloading/Swapping **oder** komplett auf das Gerät
+4. Platzierung: Streaming (trainierbar), Offloading/Swapping **oder** komplett auf das Gerät
 5. Speicherlayout ``channels_last``
 6. ``torch.compile``
 
@@ -30,7 +30,8 @@ from torch.utils.checkpoint import checkpoint
 
 from ..core import ConfigError, select_indices
 from .config import MemoryConfig
-from .offload import OffloadManager
+from .offload import OffloadManager, select_offload_blocks
+from .streaming import enable_block_streaming
 
 DTYPES = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16, "float64": torch.float64}
 
@@ -148,6 +149,7 @@ class MemoryManager:
         self.cfg = (cfg or MemoryConfig()).validate()
         self.device = resolve_device(self.cfg.device)
         self.offloader: OffloadManager | None = None
+        self.streams: list = []
         c = self.cfg
         if c.cpu_threads:
             torch.set_num_threads(c.cpu_threads)
@@ -171,14 +173,18 @@ class MemoryManager:
                 return quantize_dynamic_int8(model)
         if c.gradient_checkpointing:
             enable_gradient_checkpointing(model, c.checkpoint_layers)
-        if c.offload.mode != "none":
+        if c.offload.mode == "stream":
+            blocks = [m for _, m in select_offload_blocks(model, c.offload)]
+            self.streams = enable_block_streaming(model, blocks, self.device, c.offload.pin_memory, c.offload.prefetch)
+        elif c.offload.mode != "none":
             self.offloader = OffloadManager(model, c.offload, self.device)
             self.offloader.attach()
             if training and self.offloader.trainable_offloaded():
                 raise ConfigError(
-                    "Offloading/Swapping ist nur für Inferenz oder eingefrorene Blöcke möglich, "
+                    f"Offload-Modus '{c.offload.mode}' ist nur für Inferenz oder eingefrorene Blöcke, "
                     f"trainierbar sind aber: {self.offloader.trainable_offloaded()[:3]} … "
-                    "→ Blöcke einfrieren (Tensor-Chirurgie 'freeze') oder gradient_checkpointing/activation_offload nutzen.",
+                    "→ memory.offload.mode='stream' (trainierbares Auslagern in den RAM) verwenden "
+                    "oder die Blöcke einfrieren.",
                     "memory.offload.mode",
                 )
         else:

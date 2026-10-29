@@ -35,8 +35,49 @@ def test_offload_inference_exact(mode, tmp_path):
 
 
 def test_offload_training_is_rejected():
-    with pytest.raises(Exception, match="Offloading"):
+    with pytest.raises(Exception, match="stream"):
         Trainer(build_model(SPEC), TrainingConfig(verbose=False), MemoryConfig(offload={"mode": "cpu"}))
+
+
+@pytest.mark.parametrize("spec", [
+    {"name": "transformer", "args": {"vocab_size": 40, "d_model": 32, "n_layers": 3,
+                                     "block": {"dropout": 0.2, "mixer": {"name": "attention", "dropout": 0.1}}}},
+    "cnn", "ssm",
+])
+def test_block_streaming_gradients_exact(spec):
+    from ki_baukasten.memory import enable_block_streaming
+    torch.manual_seed(0)
+    m1 = build_model(spec)
+    m2 = copy.deepcopy(m1)
+    keys = list(m1.state_dict())
+    states = enable_block_streaming(m2, m2.checkpointable_blocks(), torch.device("cpu"))
+    assert list(m2.state_dict()) == keys
+    x = m1.example_input(3)
+    torch.manual_seed(1)
+    m1(x).float().square().mean().backward()
+    torch.manual_seed(1)
+    m2(x).float().square().mean().backward()
+    for (n, a), b in zip(m1.named_parameters(), m2.parameters()):
+        if a.grad is None:  # ungenutzter Parameter
+            assert b.grad is None or not b.grad.any(), n
+        else:
+            assert torch.allclose(a.grad, b.grad, atol=1e-5), n
+    for a, b in zip(m1.buffers(), m2.buffers()):  # BatchNorm-Statistiken genau einmal aktualisiert
+        assert torch.allclose(a.float(), b.float())
+    assert all(s.transfers == 2 for s in states)  # Forward + Backward
+
+
+def test_block_streaming_training_matches_normal():
+    data = {"inputs": torch.randint(0, 40, (32, 10))}
+    results = []
+    for mem in [MemoryConfig(), MemoryConfig(offload={"mode": "stream", "layers": "0:2"}, gradient_checkpointing=True)]:
+        torch.manual_seed(0)
+        model = build_model(SPEC)
+        tr = Trainer(model, TrainingConfig(paradigm="causal_lm", epochs=1, verbose=False, seed=0), mem)
+        tr.fit(data)
+        results.append([p.detach().clone() for p in tr.model.parameters()])
+    for a, b in zip(*results):
+        assert torch.allclose(a, b, atol=1e-5)
 
 
 @pytest.mark.parametrize("mem", [
