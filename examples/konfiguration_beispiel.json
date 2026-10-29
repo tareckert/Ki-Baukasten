@@ -1,0 +1,25 @@
+{
+  "_kommentar": "Beispiel einer Konfigurationsdatei. Schlüssel mit '_' sind Kommentare. Nur Abweichungen vom Standard nötig.",
+  "name": "bild_ki_aus_datei",
+  "domain": "bild",
+  "model": {"name": "cnn", "args": {
+    "stem": {"channels": 16},
+    "stages": [
+      {"channels": 16, "num_blocks": 1, "stride": 1},
+      {"channels": 32, "num_blocks": 2, "stride": 2, "block_type": "inverted_residual", "se_ratio": 4.0},
+      {"channels": 64, "num_blocks": 1, "stride": 2, "block_type": "convnext", "norm": "layernorm", "activation": "gelu"}
+    ],
+    "block_overrides": {"-1": {"drop_path": 0.1}}
+  }},
+  "data": {"name": "shapes", "args": {"n_samples": 1200}},
+  "training": {
+    "epochs": 6,
+    "optimizer": {"name": "adamw", "args": {"lr": 0.003}},
+    "scheduler": {"name": "one_cycle"},
+    "losses": [{"name": "cross_entropy", "args": {"label_smoothing": 0.1}}],
+    "callbacks": [{"name": "early_stopping", "args": {"patience": 3}}]
+  },
+  "tensor_rules": [
+    {"label": "Stem einfrieren (nur zur Demonstration)", "target": "^stem\\.", "op": "freeze"}
+  ]
+}
