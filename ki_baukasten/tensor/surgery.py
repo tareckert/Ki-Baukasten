@@ -49,7 +49,7 @@ import torch
 from torch import nn
 
 from ..components.initializers import apply_initializer
-from ..core import (BaseConfig, ComponentParam, ConfigError, Level, Param, T, create_registry)
+from ..core import BaseConfig, ComponentParam, ConfigError, Level, Param, T, create_registry, format_number
 
 TENSOR_OPS = create_registry(
     "tensor_op",
@@ -540,8 +540,11 @@ class TensorSurgeon:
         rx = re.compile(rule.target)
         ex = re.compile(rule.exclude) if rule.exclude else None
         found = []
-        for name, p in self.model.named_parameters(remove_duplicate=True):
-            if not rx.search(name) or (ex and ex.search(name)):
+        seen: set[int] = set()
+        # remove_duplicate=False: geteilte Gewichte (Weight Tying) sind unter JEDEM ihrer Namen auswählbar,
+        # werden aber pro Regel nur einmal behandelt.
+        for name, p in self.model.named_parameters(remove_duplicate=False):
+            if id(p) in seen or not rx.search(name) or (ex and ex.search(name)):
                 continue
             if rule.module_type and owners.get(name) != rule.module_type:
                 continue
@@ -552,6 +555,7 @@ class TensorSurgeon:
                 continue
             if rule.ndim is not None and p.dim() != rule.ndim:
                 continue
+            seen.add(id(p))
             found.append((name, p))
         return found
 
@@ -674,7 +678,7 @@ class TensorSurgeon:
         frozen = sum(p.numel() for p in self.model.parameters() if not p.requires_grad)
         total = sum(p.numel() for p in self.model.parameters())
         lines = [f"Tensor-Chirurgie: {len(self.rules)} Regeln, {len(self.bindings)} Bindungen; eingefroren "
-                 + f"{frozen:,}/{total:,}".replace(",", ".") + " Parameter"]
+                 + f"{format_number(frozen)}/{format_number(total)} Parameter"]
         for b in self.bindings[:30]:
             lines.append(f"  {b.rule.op.name:<13} {b.name}" + (f"[{b.rule.index}]" if b.index is not None else ""))
         if len(self.bindings) > 30:

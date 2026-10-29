@@ -39,7 +39,7 @@ from typing import Any, Callable, Iterator
 import torch
 from torch import nn
 
-from ..core import ConfigError, TrainingError
+from ..core import ConfigError, TrainingError, format_number
 from ..memory import MemoryConfig, MemoryManager
 from .config import TrainingConfig
 from .data_utils import (CurriculumSampler, as_dataset, difficulty_of, make_loader, split_dataset, to_device)
@@ -426,8 +426,8 @@ class Trainer:
         if not self.schedulers:
             self._build_schedulers(self.total_steps)
         n_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        self.log(f"▶ Training: Paradigma '{c.paradigm.name}', {n_params:,} trainierbare Parameter, "
-                 f"{self.total_steps} Schritte, Gerät {self.device}".replace(",", "."))
+        self.log(f"▶ Training: Paradigma '{c.paradigm.name}', {format_number(n_params)} trainierbare Parameter, "
+                 f"{self.total_steps} Schritte, Gerät {self.device}")
         for cb in self.callbacks:
             cb.on_train_start(self)
         start = time.time()

@@ -43,7 +43,6 @@ from typing import Any
 
 import torch
 from torch import nn
-import torch.nn.functional as F
 
 from ..components.attention import AttentionConfig, MultiHeadAttention
 from ..components.layers import LAYERS, DropPath

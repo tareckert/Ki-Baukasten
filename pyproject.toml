@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ki-baukasten"
+version = "1.0.0"
+description = "Baukasten, um KIs und KI-Systeme bis ins kleinste Detail zu konfigurieren, zu kombinieren und zu trainieren – mit Tooltips zu jeder Einstellung."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["torch>=2.3"]
+
+[project.optional-dependencies]
+yaml = ["pyyaml>=6"]
+rl = ["gymnasium>=0.29"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+ki-baukasten = "ki_baukasten.ui.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ki_baukasten*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

@@ -25,7 +25,6 @@ von den jeweiligen Modell-Modulen in die ``layer``-Registry eingetragen.
 
 from __future__ import annotations
 
-import math
 from typing import Any, Callable, Sequence
 
 import torch

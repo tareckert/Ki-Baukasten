@@ -33,7 +33,7 @@ from typing import Any, Callable, Iterable
 
 from .config import BaseConfig, ConfigError, Param
 from .registry import Component, registry
-from .tooltip import Level, Tooltip, T
+from .tooltip import Level, Tooltip
 
 
 class ComponentSpec:

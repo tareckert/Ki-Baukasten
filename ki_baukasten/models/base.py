@@ -33,7 +33,7 @@ import torch
 from torch import nn
 
 from ..components.initializers import apply_initializer
-from ..core import BaseConfig, ComponentParam, Level, NestedParam, Param, T, create_registry
+from ..core import BaseConfig, ComponentParam, Level, NestedParam, Param, T, create_registry, format_number
 
 MODELS = create_registry(
     "model",
@@ -188,8 +188,8 @@ class BaseModel(nn.Module):
 
     def summary(self, max_depth: int = 2, width: int = 100) -> str:
         """Tabellarische Übersicht der Module bis ``max_depth`` mit Parameterzahlen."""
-        lines = [f"{type(self).__name__}: {self.num_parameters():,} Parameter "
-                 f"({self.num_parameters(True):,} trainierbar)".replace(",", ".")]
+        lines = [f"{type(self).__name__}: {format_number(self.num_parameters())} Parameter "
+                 f"({format_number(self.num_parameters(True))} trainierbar)"]
         lines.append(f"{'Modul':<52} {'Typ':<26} {'Parameter':>14}")
         lines.append("-" * min(width, 94))
         for name, module in self.named_modules():
@@ -198,7 +198,7 @@ class BaseModel(nn.Module):
                 continue
             n = sum(p.numel() for p in module.parameters())
             shown = ("  " * (depth - 1) + name.split(".")[-1])[:51]
-            lines.append(f"{shown:<52} {type(module).__name__[:25]:<26} {n:>14,}".replace(",", "."))
+            lines.append(f"{shown:<52} {type(module).__name__[:25]:<26} {format_number(n):>14}")
         return "\n".join(lines)
 
     def parameter_table(self) -> Iterator[tuple[str, tuple[int, ...], int, bool]]:

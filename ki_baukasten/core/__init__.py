@@ -36,6 +36,7 @@ from .errors import (
 )
 from .registry import Component, Registry, all_registries, create_registry, register, registry
 from .selectors import matches, resolve_layer_config, select_indices, validate_overrides
+from .text import format_number
 from .tooltip import Level, T, Tooltip
 
 __all__ = [
@@ -43,6 +44,6 @@ __all__ = [
     "ComponentSpec", "EmptyConfig", "FreeConfig", "ParamRef", "flatten_dict",
     "Component", "Registry", "registry", "create_registry", "register", "all_registries",
     "Level", "T", "Tooltip",
-    "matches", "select_indices", "resolve_layer_config", "validate_overrides",
+    "format_number", "matches", "select_indices", "resolve_layer_config", "validate_overrides",
     "KIBaukastenError", "ConfigError", "UnknownParameterError", "RegistryError", "BuildError", "TrainingError",
 ]

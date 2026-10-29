@@ -51,6 +51,8 @@ except ImportError as exc:  # pragma: no cover - abhängig von der Python-Instal
 from ..core import BaseConfig, ConfigError, Level
 from ..core.config import _is_spec
 
+#: Markierung in der Protokoll-Warteschlange: "Hintergrundaufgabe fertig" (Tk darf nur im Hauptthread angefasst werden).
+_DONE = object()
 _LEVELS = [("Basis", "basic"), ("Fortgeschritten", "advanced"), ("Experte", "expert"), ("Experimentell", "experimental")]
 _NONE = "(keine)"
 
@@ -137,7 +139,7 @@ class BaukastenGUI(tk.Tk):
         ttk.Label(bar, text="Vorlage:").pack(side="left")
         self.preset_var = tk.StringVar(value=self.project.config.name)
         presets = registry("preset").names()
-        cb = ttk.Combobox(bar, textvariable=self.preset_var, values=presets, width=30, state="readonly")
+        cb = ttk.Combobox(bar, textvariable=self.preset_var, values=presets, width=28, state="readonly")
         cb.pack(side="left", padx=4)
         cb.bind("<<ComboboxSelected>>", lambda e: self.load_preset(self.preset_var.get()))
         HoverTip(cb, lambda: registry("preset").get(self.preset_var.get()).tooltip.format()
@@ -156,7 +158,8 @@ class BaukastenGUI(tk.Tk):
         se.pack(side="left", padx=(12, 2))
         se.bind("<Return>", lambda e: self.search())
         ttk.Button(bar, text="Suchen", command=self.search).pack(side="left")
-        ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=6)
+        bar = ttk.Frame(self, padding=(4, 0, 4, 4))  # zweite Zeile: Aktionen
+        bar.pack(fill="x")
         self.action_buttons = []
         for text, cmd, tip in (
             ("Prüfen", self.validate, "Alle Einstellungen und Abhängigkeiten prüfen."),
@@ -168,6 +171,8 @@ class BaukastenGUI(tk.Tk):
             b.pack(side="left", padx=2)
             HoverTip(b, lambda t=tip: t)
             self.action_buttons.append(b)
+        ttk.Label(bar, text="Tipp: Maus über einen Einstellungsnamen = Kurzerklärung · '?' = alle Details und Optionen",
+                  foreground="#666").pack(side="left", padx=12)
 
         outer = ttk.PanedWindow(self, orient="vertical")
         outer.pack(fill="both", expand=True)
@@ -220,10 +225,14 @@ class BaukastenGUI(tk.Tk):
         self.explain_text.delete("1.0", "end")
         self.explain_text.insert("1.0", text)
 
-    def _poll_log(self) -> None:
+    def _poll_log(self) -> None:  # läuft im Hauptthread (Tk-after-Schleife)
         try:
             while True:
-                self.log_write(self.log_queue.get_nowait())
+                item = self.log_queue.get_nowait()
+                if item is _DONE:
+                    self._done()
+                else:
+                    self.log_write(item)
         except queue.Empty:
             pass
         self.after(100, self._poll_log)
@@ -541,7 +550,7 @@ class BaukastenGUI(tk.Tk):
                 print(traceback.format_exc())
             finally:
                 sys.stdout, sys.stderr = old_out, old_err
-                self.after(0, self._done)
+                self.log_queue.put(_DONE)  # Hauptthread übernimmt (siehe _poll_log)
 
         threading.Thread(target=worker, daemon=True).start()
 

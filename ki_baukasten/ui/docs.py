@@ -45,7 +45,10 @@ def config_table(cfg: BaseConfig, prefix: str = "") -> list[str]:
             default = f"{len(ref.value)} Elemente"
         else:
             default = f"`{_esc(repr(ref.value))[:60]}`"
-        lines.append(f"| `{ref.path}` | {_esc(p.type_label())} | {default} | {_esc(p.constraint_label())[:160]} | "
+        rules = _esc(p.constraint_label())
+        if len(rules) > 160:  # lange Auswahllisten an einer Optionsgrenze kürzen
+            rules = rules[:160].rsplit(" \\| ", 1)[0] + " \\| …"
+        lines.append(f"| `{ref.path}` | {_esc(p.type_label())} | {default} | {rules} | "
                      f"{ref.level.label} | {_tooltip_cell(p.tooltip)} |")
     return lines
 

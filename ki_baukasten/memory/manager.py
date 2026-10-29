@@ -120,9 +120,21 @@ def apply_fake_quant(model: nn.Module, bits: int, include_conv: bool) -> int:
 
 
 def quantize_dynamic_int8(model: nn.Module) -> nn.Module:
-    """Dynamische int8-Quantisierung linearer Schichten (CPU-Inferenz)."""
+    """Dynamische int8-Quantisierung linearer Schichten (CPU-Inferenz).
+
+    Nutzt ``torch.ao.quantization.quantize_dynamic``. PyTorch kündigt an, diese
+    API zugunsten des Pakets ``torchao`` zu entfernen – ist sie nicht mehr
+    vorhanden, gibt es einen verständlichen Hinweis statt eines kryptischen Fehlers.
+    """
+    quant = getattr(getattr(torch, "ao", None), "quantization", None)
+    if quant is None or not hasattr(quant, "quantize_dynamic"):
+        raise ImportError("dynamic_int8 benötigt torch.ao.quantization (in dieser PyTorch-Version nicht vorhanden). "
+                          "Alternative: 'pip install torchao' und dessen quantize_-API, oder quantization='fake_quant'.")
     model = model.cpu().eval()
-    return torch.ao.quantization.quantize_dynamic(model, {nn.Linear}, dtype=torch.qint8)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        warnings.simplefilter("ignore", UserWarning)
+        return quant.quantize_dynamic(model, {nn.Linear}, dtype=torch.qint8)
 
 
 # ===========================================================================

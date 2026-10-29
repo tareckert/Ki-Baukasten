@@ -42,7 +42,7 @@ from .memory import MemoryConfig, MemoryManager, estimate_memory
 from .tensor import TensorRuleConfig, TensorSurgeon
 from .training import Trainer, TrainingConfig
 from .training.data_utils import to_device
-from .training.paradigms import call_model, main_output
+from .training.paradigms import call_model
 
 
 class ProjectConfig(BaseConfig):

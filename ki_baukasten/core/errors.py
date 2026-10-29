@@ -84,8 +84,8 @@ def suggest(name: str, candidates: Iterable[str], n: int = 3) -> str:
     """Liefert die ähnlichsten Kandidaten als lesbaren Text (für "Meinten Sie ...?").
 
     Nutzt ``difflib`` (Standardbibliothek) mit einer moderaten Ähnlichkeits-
-    schwelle von 0.55 – niedrig genug für typische Tippfehler, hoch genug,
+    schwelle von 0.6 – niedrig genug für typische Tippfehler, hoch genug,
     um keinen Unsinn vorzuschlagen.
     """
-    matches = difflib.get_close_matches(name, list(candidates), n=n, cutoff=0.55)
+    matches = difflib.get_close_matches(name, list(candidates), n=n, cutoff=0.6)
     return " / ".join(f"'{m}'" for m in matches)

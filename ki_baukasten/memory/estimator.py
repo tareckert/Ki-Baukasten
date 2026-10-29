@@ -25,6 +25,7 @@ from typing import Any
 import torch
 from torch import nn
 
+from ..core import format_number
 from .config import MemoryConfig
 
 _OPT_STATES = {  # zusätzliche fp32-Kopien je trainierbarem Parameter
@@ -37,7 +38,7 @@ _BYTES = {"float32": 4, "float16": 2, "bfloat16": 2, "float64": 8}
 def _fmt(n: float) -> str:
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if abs(n) < 1024 or unit == "TB":
-            return f"{n:,.1f} {unit}".replace(",", ".")
+            return f"{format_number(n, 1)} {unit}"
         n /= 1024
     return f"{n} B"
 
@@ -66,14 +67,14 @@ class MemoryReport:
     def __str__(self) -> str:
         lines = [
             "Speicherschätzung (Training)",
-            f"  Parameter:            {self.parameters:,} ({self.trainable:,} trainierbar)".replace(",", "."),
+            f"  Parameter:            {format_number(self.parameters)} ({format_number(self.trainable)} trainierbar)",
             f"  Gewichte:             {_fmt(self.weights_bytes)}",
             f"  Gradienten:           {_fmt(self.gradients_bytes)}",
             f"  Optimierer-Zustände:  {_fmt(self.optimizer_bytes)}",
             f"  EMA-Kopie:            {_fmt(self.ema_bytes)}",
             f"  Aktivierungen:        {_fmt(self.activations_bytes) if self.activations_bytes is not None else 'nicht gemessen'}"
             f"  (Batch {self.batch_size})",
-            f"  ─────────────────────────────",
+            "  ─────────────────────────────",
             f"  Gesamt (ca.):         {_fmt(self.total_bytes)}",
         ]
         if self.budget_bytes is not None:

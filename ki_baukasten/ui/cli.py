@@ -159,6 +159,8 @@ def cmd_speicher(a: argparse.Namespace) -> None:
 
 
 def cmd_tensoren(a: argparse.Namespace) -> None:
+    from ..core import format_number
+
     p = _project(a.quelle, a.setze)
     cfg_rules = list(p.config.tensor_rules)
     p.config.tensor_rules = []
@@ -167,7 +169,7 @@ def cmd_tensoren(a: argparse.Namespace) -> None:
     for name, shape, n, trainable in model.parameter_table():
         if a.filter and a.filter not in name:
             continue
-        print(f"{name:<64} {str(shape):<20} {n:>10,}".replace(",", ".") + ("" if trainable else "  (eingefroren)"))
+        print(f"{name:<64} {str(shape):<20} {format_number(n):>10}" + ("" if trainable else "  (eingefroren)"))
     if cfg_rules:
         from ..tensor import TensorSurgeon
 
