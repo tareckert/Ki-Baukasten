@@ -140,9 +140,9 @@ def log_mel_spectrogram(wave_: torch.Tensor, sample_rate: int, n_fft: int = 256,
     return (mel + 1e-6).log().reshape(*wave_.shape[:-1], n_mels, -1)
 
 
-def read_wav(path: str | Path, sample_rate: int) -> torch.Tensor:
-    """16-Bit-PCM-WAV (mono/stereo) lesen und auf ``sample_rate`` umrechnen – nur Standardbibliothek."""
-    with wave.open(str(path), "rb") as f:
+def read_wav(path: Any, sample_rate: int) -> torch.Tensor:
+    """16-Bit-PCM-WAV (mono/stereo; Pfad oder Datei-Objekt) lesen und auf ``sample_rate`` umrechnen."""
+    with wave.open(path if hasattr(path, "read") else str(path), "rb") as f:
         sr, ch, width, n = f.getframerate(), f.getnchannels(), f.getsampwidth(), f.getnframes()
         raw = f.readframes(n)
     if width != 2:
@@ -232,12 +232,13 @@ def load_audio(a: AudioDataConfig) -> Any:
         x = log_mel_spectrogram(x, a.sample_rate, a.n_fft, a.hop, a.n_mels).unsqueeze(1)
         m, s = x[train_idx].mean(), x[train_idx].std().clamp_min(1e-6)
         x = (x - m) / s
-        info = {"in_channels": 1, "input_size": list(x.shape[-2:])}
+        info = {"in_channels": 1, "input_size": list(x.shape[-2:]),
+                "audio": {"mean": float(m), "std": float(s), "n_fft": a.n_fft, "hop": a.hop, "n_mels": a.n_mels}}
     else:
         x = x.unsqueeze(1)
         info = {"in_channels": 1, "input_size": [n]}
     info.update({"output_dim": len(classes), "label_names": classes, "task": "classification",
-                 "sample_rate": a.sample_rate, "audio_features": a.features})
+                 "sample_rate": a.sample_rate, "audio_features": a.features, "duration": a.duration})
     pick = (lambda idx: {"inputs": x[idx], "targets": y[idx]})
     return DatasetBundle(pick(train_idx), pick(val_idx) if val_idx else None, info)
 

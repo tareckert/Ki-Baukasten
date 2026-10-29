@@ -134,6 +134,11 @@ class Project:
         self.test_data: Any = None                   # zurückgehaltene Testmenge (training.test_split / data.test)
         self._test_split: tuple | None = None        # (Original-Trainingsdaten, Rest ohne Testmenge)
         self.last_data_report: Any = None            # letzte Datenprüfung (data_check)
+        self.last_test: dict[str, float] = {}        # letzte Ergebnisse für die Modellkarte
+        self.last_calibration: dict[str, Any] = {}
+        self.last_fairness: Any = None
+        self.last_robustness: Any = None
+        self._artifacts: dict[str, Any] | None = None  # gespeicherte Vorverarbeitung (Project.load)
 
     # ================================================================ Erzeugen
     @classmethod
@@ -597,6 +602,16 @@ class Project:
             self._bundle = self.config.data.build()
         return self._bundle
 
+    def _info(self) -> dict[str, Any]:
+        """Zusatzinfos der Daten (Tokenizer, Klassen, Vorverarbeitung …) – nach ``load`` auch ohne die Daten."""
+        if self._bundle is not None:
+            return self._bundle.info or {}
+        if self._artifacts is not None:
+            return self._artifacts
+        if self.config.data.name == "none":
+            return {}
+        return self.data().info or {}
+
     def data_check(self, train_data: Any = None, val_data: Any = None) -> Any:
         """Prüft die Daten vor dem Training (Klassen, Lecks, Duplikate, Skalen, NaN, Texte …) → ``DataReport``.
 
@@ -824,6 +839,7 @@ class Project:
         result = self.trainer.evaluate(data, prefix="test_")
         if self._verbose("eval"):
             print("  Test: " + "  ".join(f"{k}={v:.4g}" for k, v in result.items()))
+        self.last_test = dict(result)
         return result
 
     def _fit_warning(self) -> None:
@@ -1254,11 +1270,16 @@ class Project:
         if data is not None:
             return data
         candidates = [self.test_data] if prefer_test else []
-        candidates += [getattr(self.trainer, "val_data", None), self.data().val if self.config.data.name != "none"
-                       else None]
+        candidates.append(getattr(self.trainer, "val_data", None))
         for c in candidates:
             if c is not None:
                 return c
+        try:
+            val = self.data().val if self.config.data.name != "none" else None
+        except (OSError, ValueError):                 # z. B. nach load() ohne die Original-Daten
+            val = None
+        if val is not None:
+            return val
         raise ConfigError("Keine Validierungsdaten – erst trainieren (train) oder Daten übergeben.")
 
     @torch.no_grad()
@@ -1292,7 +1313,7 @@ class Project:
         return torch.cat(outs), torch.cat(targets), x
 
     def _is_classification(self, out: torch.Tensor, target: torch.Tensor | None = None) -> bool:
-        task = str((self._bundle.info or {}).get("task", "")) if self._bundle is not None else ""
+        task = str(self._info().get("task", ""))
         if task in ("classification", "regression"):
             return task == "classification"
         if target is not None:
@@ -1329,13 +1350,14 @@ class Project:
                 ic.conformal_q = conformal_quantile(conformal_scores(scaled, target, True), ic.conformal_alpha)
                 result["conformal_q"] = ic.conformal_q
         else:
-            inverse = target_inverse((self._bundle.info or {}).get("target_transform") if self._bundle else None)
+            inverse = target_inverse(self._info().get("target_transform"))
             pred, tgt = inverse(out, target) if inverse else (out, target)
             if ic.conformal_alpha:
                 ic.conformal_q = conformal_quantile(conformal_scores(pred, tgt, False), ic.conformal_alpha)
                 result["intervall_halbbreite"] = ic.conformal_q
         if self._verbose():
             print("  Kalibrierung: " + "  ".join(f"{k}={v:.4g}" for k, v in result.items()))
+        self.last_calibration = dict(result)
         return result
 
     def _forward_fn(self) -> Any:
@@ -1343,7 +1365,13 @@ class Project:
 
         model = self._ensure_model()
         device = self._device()
-        return lambda x: main_output(call_model(model, x.to(device) if isinstance(x, torch.Tensor) else x)).float()
+        def forward(x: Any) -> torch.Tensor:
+            if isinstance(x, dict):                     # z. B. Texte: {"inputs", "attention_mask"}
+                x = to_device(x, device)
+                return main_output(call_model(model, x["inputs"], attention_mask=x.get("attention_mask"))).float()
+            return main_output(call_model(model, x.to(device) if isinstance(x, torch.Tensor) else x)).float()
+
+        return forward
 
     @torch.no_grad()
     def _samples(self, inputs: torch.Tensor) -> torch.Tensor:
@@ -1380,7 +1408,7 @@ class Project:
 
         ic = self.config.inference
         s = self._samples(inputs)
-        info = self.data().info if self.config.data.name != "none" else {}
+        info = self._info()
         label_names = info.get("label_names") if names else None
         if info.get("task") == "segmentation" and s.dim() == 5:      # [S, N, C, H, W] → Klassenkarte je Pixel
             probs = (s / ic.temperature).softmax(2).mean(0)
@@ -1435,7 +1463,7 @@ class Project:
         if method not in METHODS:
             raise ConfigError(f"Unbekannte Methode '{method}'. Erlaubt: {', '.join(METHODS)}.")
         x = inputs[index:index + 1] if inputs.dim() > 1 else inputs.unsqueeze(0)
-        info = self.data().info if self.config.data.name != "none" else {}
+        info = self._info()
         label_names = info.get("label_names") or []
         if isinstance(target, str):
             if target not in label_names:
@@ -1488,7 +1516,7 @@ class Project:
         try:
             with torch.no_grad():
                 imp = permutation_importance(lambda xx: fn(forward(xx).cpu(), target), x, direction(metric) == "max",
-                                             (self.data().info or {}).get("features"), repeats, metric=metric)
+                                             self._info().get("features"), repeats, metric=metric)
         finally:
             model.train(was)
         return imp
@@ -1508,12 +1536,13 @@ class Project:
         if isinstance(groups, str):
             if x is None or x.dim() != 2:
                 raise ConfigError("Gruppen als Spaltenname gehen nur bei Tabellen-Daten.")
-            groups, names = groups_from_features(x, list((self.data().info or {}).get("features") or []), groups)
+            groups, names = groups_from_features(x, list(self._info().get("features") or []), groups)
         pred = out.argmax(-1)
         ic = self.config.inference
         if ic.threshold is not None and out.shape[-1] == 2:
             pred = ((out / ic.temperature).softmax(-1)[:, 1] >= ic.threshold).long()
-        return fairness_report(pred, target, groups, positive_class, names)
+        self.last_fairness = fairness_report(pred, target, groups, positive_class, names)
+        return self.last_fairness
 
     def robustness_report(self, data: Any = None, epsilons: list[float] | None = None, metric: str | None = None,
                           methods: tuple[str, ...] = ("rauschen", "fgsm", "pgd"), limit: int = 512) -> Any:
@@ -1537,9 +1566,10 @@ class Project:
         model.eval()
         device = self._device()
         try:
-            return robustness_report(lambda xx: forward(xx).cpu(), lambda o, y: auto_loss(o, y),
-                                     lambda o, y: fn(o, y), x.to(device), target,
-                                     epsilons or [0.01, 0.05, 0.1], metric, methods)
+            self.last_robustness = robustness_report(lambda xx: forward(xx).cpu(), lambda o, y: auto_loss(o, y),
+                                                     lambda o, y: fn(o, y), x.to(device), target,
+                                                     epsilons or [0.01, 0.05, 0.1], metric, methods)
+            return self.last_robustness
         finally:
             model.train(was)
 
@@ -1556,7 +1586,7 @@ class Project:
         x = pool["inputs"] if isinstance(pool, dict) else pool
         probs = self.predict_proba(x)
         idx, scores = select(probs, n, strategy, features=probs, seed=self.config.training.seed or 0)
-        names = (self.data().info or {}).get("label_names") if self.config.data.name != "none" else None
+        names = self._info().get("label_names")
         preds = [names[i] if names and i < len(names) else i for i in probs[idx].argmax(-1).tolist()]
         return Selection(strategy, idx, scores, preds)
 
@@ -1587,6 +1617,41 @@ class Project:
             report["runden"].append({"runde": r + 1, "uebernommen": n, "anteil": n / len(x), **metrics})
             self._note(f"Pseudo-Labeling Runde {r + 1}: {n} von {len(x)} Beispielen übernommen.")
         return report
+
+    def predict_raw(self, records: Any) -> dict[str, Any]:
+        """Vorhersage aus **Rohdaten** – vorverarbeitet genau wie im Training (auch nach ``load`` ohne die Daten):
+
+        Tabellen: Zeilen als dicts ``{spalte: wert}`` (oder Listen in Spaltenreihenfolge); Texte: Strings;
+        Bilder/Audio: Dateipfade oder ``bytes``; sonst Tensoren. Ergebnis wie ``predict_with_uncertainty``.
+        """
+        from .data.artifacts import kind_of, prepare_raw
+
+        info = self._info()
+        kind = kind_of(info)
+        if kind in ("anweisung", "sprachmodell"):
+            raise ConfigError("Für Sprachmodelle ask(frage) bzw. generate(prompt) verwenden.")
+        try:
+            x = prepare_raw(info, records)
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
+        return self.predict_with_uncertainty(x)
+
+    def model_card(self, path: str | Path | None = None) -> str:
+        """Modellkarte (Markdown): Zweck, Modell, Daten, Training, Ergebnisse (Validierung, Test, Kalibrierung,
+        Fairness, Robustheit), Grenzen, Nutzung, Umgebung. Mit ``path`` zusätzlich als Datei."""
+        from .analysis.modelcard import model_card
+
+        text = model_card(self)
+        if path is not None:
+            Path(path).write_text(text, encoding="utf-8")
+        return text
+
+    def serve(self, host: str | None = None, port: int | None = None, api_key: str | None = None) -> None:
+        """HTTP-Server starten (``deployment.server``): /vorhersage, /frage, /generieren, /info – siehe ui.serve."""
+        from .ui.serve import serve
+
+        self._ensure_model()
+        serve(self, host=host, port=port, api_key=api_key)
 
     # ================================================================ Benutzen
     def _ensure_model(self) -> nn.Module:
@@ -1640,7 +1705,7 @@ class Project:
     def generate(self, prompt: str | torch.Tensor, **generation: Any) -> Any:
         """Text-/Token-Generierung (Sprachmodelle). Mit Zeichen-Tokenizer des Datensatzes auch für Text."""
         model = self._ensure_model()
-        info = self.data().info if self.config.data.name != "none" else {}
+        info = self._info()
         tok = info.get("tokenizer")
         if info.get("eos_token_id") is not None:
             generation.setdefault("eos_token_id", info["eos_token_id"])
@@ -1655,7 +1720,7 @@ class Project:
     def ask(self, question: str, **generation: Any) -> str:
         """Frage an ein Instruction-Modell (Datensatz ``instructions``): gleiche Vorlage wie im Training, Antwort
         bis zum Ende-Zeichen. Standard: gierige Auswahl (``temperature=0``)."""
-        info = self.data().info if self.config.data.name != "none" else {}
+        info = self._info()
         template, tok = info.get("prompt_template"), info.get("tokenizer")
         if template is None or tok is None:
             raise ConfigError("ask() braucht einen Datensatz mit Vorlage (data = 'instructions').")
@@ -1789,6 +1854,20 @@ class Project:
             torch.save(state, d / "modell.pt")
         (d / "verlauf.json").write_text(json.dumps(self.history, ensure_ascii=False, indent=1, default=str),
                                         encoding="utf-8")
+        from .analysis.modelcard import environment_info
+        from .data.artifacts import export_artifacts
+
+        try:
+            artifacts = export_artifacts(self._info())
+        except Exception:  # noqa: BLE001 - ohne ladbare Daten gibt es eben keine Vorverarbeitung
+            artifacts = {}
+        if artifacts:
+            (d / "vorverarbeitung.json").write_text(json.dumps(artifacts, ensure_ascii=False, default=str),
+                                                    encoding="utf-8")
+        if self.config.deployment.model_card:
+            (d / "umgebung.json").write_text(json.dumps(environment_info(), ensure_ascii=False, indent=1),
+                                             encoding="utf-8")
+            (d / "MODELLKARTE.md").write_text(self.model_card(), encoding="utf-8")
         return d
 
     @classmethod
@@ -1815,6 +1894,10 @@ class Project:
                 model.to(DTYPES[p.config.memory.param_dtype])
         if (d / "verlauf.json").exists():
             p.history = json.loads((d / "verlauf.json").read_text(encoding="utf-8"))
+        if (d / "vorverarbeitung.json").exists():
+            from .data.artifacts import import_artifacts
+
+            p._artifacts = import_artifacts(json.loads((d / "vorverarbeitung.json").read_text(encoding="utf-8")))
         return p
 
     def __repr__(self) -> str:

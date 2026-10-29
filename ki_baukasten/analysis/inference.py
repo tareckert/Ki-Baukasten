@@ -108,7 +108,7 @@ def fit_temperature(logits: torch.Tensor, targets: torch.Tensor, steps: int = 10
 
     opt.step(closure)
     t = float(log_t.detach().exp())
-    return t if math.isfinite(t) and 0.01 < t < 100 else 1.0
+    return min(max(t, 0.05), 20.0) if math.isfinite(t) else 1.0      # perfekt getrennte Daten: T → 0 begrenzen
 
 
 def best_threshold(p_pos: torch.Tensor, targets: torch.Tensor, criterion: str = "f1") -> float:

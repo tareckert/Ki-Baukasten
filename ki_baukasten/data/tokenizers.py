@@ -46,6 +46,13 @@ class _Base:
     def __len__(self) -> int:
         return self.vocab_size
 
+    def to_dict(self) -> dict[str, Any]:
+        """Gelernter Zustand als JSON-fähiges dict (zum Speichern mit dem Modell)."""
+        return {"kind": self.kind, "itos": list(self.itos)}
+
+    def _restore(self, d: dict[str, Any]) -> None:
+        pass
+
     def __repr__(self) -> str:
         return f"<{type(self).__name__} {self.kind}: {self.vocab_size} Tokens>"
 
@@ -63,6 +70,9 @@ class CharTokenizer(_Base):
 
     def encode(self, text: str) -> list[int]:
         return [self.stoi.get(c, UNK) for c in text]
+
+    def _restore(self, d: dict[str, Any]) -> None:
+        self.chars = self.itos[2:]
 
 
 class WordTokenizer(_Base):
@@ -83,6 +93,12 @@ class WordTokenizer(_Base):
 
     def encode(self, text: str) -> list[int]:
         return [self.stoi.get(w, UNK) for w in self._split(text)]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**super().to_dict(), "lowercase": self.lowercase}
+
+    def _restore(self, d: dict[str, Any]) -> None:
+        self.lowercase = bool(d.get("lowercase", True))
 
     def decode(self, ids: Any) -> str:
         words = [self.itos[int(i)] for i in ids if 0 < int(i) < len(self.itos)]   # <unk> bleibt sichtbar
@@ -157,6 +173,28 @@ class BPETokenizer(_Base):
 
     def decode(self, ids: Any) -> str:
         return super().decode(ids).replace(_SPACE, " ")
+
+    def to_dict(self) -> dict[str, Any]:
+        order = sorted(self.merges, key=self.merges.get)
+        return {**super().to_dict(), "merges": [list(m) for m in order]}
+
+    def _restore(self, d: dict[str, Any]) -> None:
+        self.merges = {(a, b): i for i, (a, b) in enumerate(d.get("merges", []))}
+        self._cache = {}
+
+
+_CLASSES = {"zeichen": CharTokenizer, "wort": WordTokenizer, "bpe": BPETokenizer}
+
+
+def tokenizer_from_dict(d: dict[str, Any]) -> Any:
+    """Gespeicherten Tokenizer (``to_dict``) ohne erneutes Training wiederherstellen."""
+    cls = _CLASSES[d["kind"]]
+    tok = cls.__new__(cls)
+    _Base.__init__(tok)
+    tok.itos = list(d["itos"])
+    tok._finish()
+    tok._restore(d)
+    return tok
 
 
 KINDS = {"zeichen": "jedes Zeichen ein Token", "wort": "Wörter und Satzzeichen",

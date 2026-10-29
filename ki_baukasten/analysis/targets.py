@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 from torch import nn
 
-from ..core import BaseConfig, Level, Param, T, format_number
+from ..core import BaseConfig, Level, NestedParam, Param, T, format_number
 
 
 @dataclass(frozen=True)
@@ -65,6 +65,26 @@ TARGETS: dict[str, TargetProfile] = {p.key: p for p in [
                   "Download-Größe zählt: < 100 MB anstreben."),
 ]}
 
+class ServeConfig(BaseConfig):
+    __title__ = "HTTP-Server (Bereitstellung)"
+    __tooltip__ = T(
+        "Kleiner eingebauter Web-Server: Vorhersagen per HTTP/JSON (nur Standardbibliothek).",
+        "Die KI ohne weiteren Code in Apps, Webseiten oder andere Programme einbinden.",
+        "python -m ki_baukasten bereitstellen <projektordner>; für große Lasten: Export + eigener Server.",
+    )
+    host = Param("127.0.0.1", tooltip=T(
+        "Adresse ('127.0.0.1' = nur dieser Rechner, '0.0.0.0' = im Netzwerk erreichbar).",
+        "Sicherheit: standardmäßig nicht von außen erreichbar.", "127.0.0.1; im Netz nur mit api_key."))
+    port = Param(8000, min=1, max=65535, tooltip=T("Port.", "Adresse http://host:port.", "8000."))
+    api_key = Param(None, type=str, nullable=True, tooltip=T(
+        "Schlüssel, der im Kopf 'X-API-Key' mitgeschickt werden muss (None = keiner).",
+        "Schützt den Server vor fremden Anfragen.", "Pflicht, wenn host = 0.0.0.0."))
+    max_batch = Param(256, min=1, tooltip=T(
+        "Höchstens so viele Beispiele je Anfrage.", "Schützt Speicher und Antwortzeit.", "64–1024."))
+    max_body_mb = Param(16.0, min=0.1, tooltip=T(
+        "Maximale Größe einer Anfrage in MB.", "Schutz vor zu großen Anfragen.", "16."), level=Level.ADVANCED)
+
+
 class DeploymentConfig(BaseConfig):
     __title__ = "Zielsysteme (Deployment)"
     __tooltip__ = T(
@@ -86,6 +106,11 @@ class DeploymentConfig(BaseConfig):
     heal_steps = Param(300, min=0, tooltip=T(
         "Heil-Schritte (Distillation vom Original) in reduce_for.", "Mehr = bessere Qualität nach dem Verkleinern.",
         "100–1000."), level=Level.ADVANCED)
+    model_card = Param(True, tooltip=T(
+        "Beim Speichern eine Modellkarte (MODELLKARTE.md) und Umgebungsdaten (umgebung.json) ablegen.",
+        "Dokumentation von Zweck, Daten, Ergebnissen, Grenzen und Versionen – für Nachvollziehbarkeit und Vorgaben.",
+        "an."))
+    server = NestedParam(ServeConfig, level=Level.ADVANCED)
     student_steps = Param(None, type=int, min=1, nullable=True, tooltip=T(
         "Trainingsschritte eines empfohlenen Schüler-Modells (None = wie training).", "Distillation.", "None."),
         level=Level.ADVANCED)

@@ -115,6 +115,23 @@ class TabularPreprocessor:
             self.columns.append(col)
         return self
 
+    def to_dict(self) -> dict[str, Any]:
+        """Gelernter Zustand als JSON-fähiges dict (zum Speichern mit dem Modell)."""
+        return {"scaling": self.scaling, "missing": self.missing, "encoding": self.encoding,
+                "max_categories": self.max_categories, "indicator": self.indicator, "forced": sorted(self.forced),
+                "columns": [{**c, "scale": list(c["scale"])} if "scale" in c else dict(c) for c in self.columns]}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "TabularPreprocessor":
+        prep = cls(d["scaling"], d["missing"], d["encoding"], d["max_categories"], d["indicator"], d["forced"])
+        prep.columns = [{**c, "scale": tuple(c["scale"])} if "scale" in c else dict(c) for c in d["columns"]]
+        return prep
+
+    @property
+    def input_columns(self) -> list[str]:
+        """Spalten, die neue Zeilen enthalten müssen (in dieser Reihenfolge)."""
+        return [c["name"] for c in self.columns]
+
     @property
     def feature_names(self) -> list[str]:
         names = []
