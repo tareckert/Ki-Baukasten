@@ -325,9 +325,12 @@ class TransformerConfig(ModelConfig):
         "Positionskodierung.", "Gibt dem Modell Reihenfolge-Information.", "rope (Text), learned (ViT), sinusoidal."))
     embedding_dropout = Param(0.0, min=0.0, max=1.0, group="Regularisierung", tooltip=T(
         "Dropout nach dem Embedding.", "Regularisiert Eingaberepräsentationen.", "Kleine Datensätze."))
-    embedding_scale = Param(False, level=Level.EXPERT, group="Positionen", tooltip=T(
-        "Embeddings mit √d_model multiplizieren.", "Balanciert Embedding- gegen Positionsgröße (Original-Transformer).",
-        "Sinusoidale Positionen, Gemma."))
+    embedding_scale = Param(None, type=bool, level=Level.EXPERT, group="Positionen", tooltip=T(
+        "Embeddings mit √d_model multiplizieren (None = automatisch: an bei 'sinusoidal').",
+        "Balanciert Token- gegen Positionssignal: ohne Skalierung gehen kleine Token-Embeddings im festen "
+        "Sinus-Signal (Amplitude 1) unter (Original-Transformer skaliert deshalb).",
+        "Sinusoidale Positionen, Gemma.",
+    ))
     embedding_norm = ComponentParam("normalization", None, level=Level.EXPERT, group="Positionen", tooltip=T(
         "Normalisierung direkt nach dem Embedding.", "Stabilisiert sehr große Vokabulare (BLOOM).", "Selten."))
     tie_embeddings = Param(True, level=Level.ADVANCED, group="Ausgabe", tooltip=T(
@@ -483,7 +486,8 @@ class Transformer(BaseModel):
             h = embed(x).flatten(2).transpose(1, 2)
         else:
             h = embed(x)
-        if c.embedding_scale:
+        scale = c.embedding_scale if c.embedding_scale is not None else c.positional.name == "sinusoidal"
+        if scale:
             h = h * (c.d_model ** 0.5)
         if self.prefix is not None and with_prefix:
             h = torch.cat([self.prefix.expand(h.shape[0], -1, -1).to(h.dtype), h], dim=1)

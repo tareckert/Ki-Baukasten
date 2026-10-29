@@ -56,6 +56,7 @@ import copy
 import enum
 import json
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -759,6 +760,10 @@ class BaseConfig:
                 sub_args = value.args.to_dict(only_changed=True)
                 if sub_args:
                     out[name] = {"name": value.name, "args": sub_args}
+            elif _is_spec(value):
+                # Andere Komponente als Standard: Name + nur die von *ihren* Standards abweichenden Argumente
+                # (beim Laden startet ein Komponentenwechsel per dict bei deren Standardwerten).
+                out[name] = value.to_dict(only_changed=True)
             elif _to_plain(value) != _to_plain(default):
                 out[name] = _to_plain(value)
         return out
@@ -991,10 +996,14 @@ class BaseConfig:
     def describe(self, max_level: Level | str | None = None, tooltips: bool = True,
                  only_changed: bool = False, width: int = 100) -> str:
         """Lesbarer Baum aller Einstellungen (optional mit Kurz-Tooltips)."""
-        changed = set(flatten_dict(self.to_dict(only_changed=True)).keys()) if only_changed else None
+        changed = None
+        if only_changed:
+            # Gespeicherte Pfade enthalten ".args"/".name" der Komponenten, walk()-Pfade nicht → angleichen.
+            changed = {re.sub(r"\.(args|name)(?=\.|$)", "", k) for k in flatten_dict(self.to_dict(only_changed=True))}
         lines = [f"{self.title()}" + (f" – {self.__tooltip__.short()}" if self.__tooltip__ else "")]
         for ref in self.walk(max_level=max_level):
-            if changed is not None and not any(c == ref.path or c.startswith(ref.path + ".") for c in changed):
+            if changed is not None and not any(c == ref.path or c.startswith(ref.path + ".")
+                                               or ref.path.startswith(c + ".") for c in changed):
                 continue
             indent = "  " * (ref.depth + 1)
             value = ref.value

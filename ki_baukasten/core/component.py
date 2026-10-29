@@ -132,9 +132,15 @@ class ComponentSpec:
         self.args = self._make_args(self.component, value)
 
     def merge(self, mapping: Mapping[str, Any], path: str | None = None) -> "ComponentSpec":
-        """Mischt ein dict ein: ``{"name": ...}`` wechselt, Rest/``args`` aktualisiert."""
+        """Mischt ein dict ein: ``{"name": ...}`` wechselt, Rest/``args`` aktualisiert.
+
+        Beim Wechsel über ein dict (z. B. beim Laden einer Datei) starten die
+        Argumente bei den Standardwerten der *neuen* Komponente – es gelten nur
+        die im dict angegebenen Werte. (Interaktives Umschalten per
+        ``set("x.name", ...)`` behält dagegen kompatible Werte, siehe ``switch``.)
+        """
         if "name" in mapping and str(mapping["name"]).lower() != self.name:
-            self.switch(mapping["name"])
+            self.switch(mapping["name"], keep_compatible=False)
         args = mapping.get("args")
         flat = {k: v for k, v in mapping.items() if k not in ("name", "args")}
         if args:

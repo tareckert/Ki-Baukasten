@@ -98,6 +98,8 @@ class Level(str, enum.Enum):
 
 
 _LEVEL_ORDER = [Level.BASIC, Level.ADVANCED, Level.EXPERT, Level.EXPERIMENTAL]
+_ABBREVIATIONS = {"z.", "b.", "bzw.", "ca.", "evtl.", "ggf.", "inkl.", "u.", "d.", "h.", "vgl.", "nr.", "max.", "min.",
+                  "z.b.", "d.h.", "u.a.", "usw.", "etc.", "bspw.", "sog.", "ggü.", "e.g.", "i.e.", "vs."}
 _LEVEL_LABELS = {
     Level.BASIC: "Basis",
     Level.ADVANCED: "Fortgeschritten",
@@ -121,11 +123,17 @@ class Tooltip:
 
     # ------------------------------------------------------------------ Ausgabe
     def short(self) -> str:
-        """Erster Satz von ``what`` – für Listen und kompakte Anzeigen."""
-        text = self.what.strip()
-        for sep in (". ", "? ", "! "):
-            if sep in text:
-                return text.split(sep, 1)[0] + sep.strip()
+        """Erster Satz von ``what`` – für Listen und kompakte Anzeigen.
+
+        Abkürzungen wie "z. B.", "bzw." oder "ca." beenden keinen Satz.
+        """
+        text = " ".join(self.what.split())
+        for i, ch in enumerate(text):
+            if ch in ".?!" and (i + 1 == len(text) or text[i + 1] == " "):
+                word = text[: i + 1].rsplit(" ", 1)[-1].lstrip("([{\"'„")
+                if ch == "." and (word.lower() in _ABBREVIATIONS or (len(word) == 2 and word[0].isalpha())):
+                    continue
+                return text[: i + 1]
         return text
 
     def format(self, indent: str = "", width: int = 92) -> str:

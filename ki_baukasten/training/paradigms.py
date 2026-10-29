@@ -369,6 +369,14 @@ class AutoencoderParadigmConfig(BaseConfig):
         "bce": "binäre Kreuzentropie (Daten in [0, 1], Ausgabe mit sigmoid)",
         "l1": "absoluter Fehler (robust)",
     }, tooltip=T("Rekonstruktionsverlust.", "Passend zum Datentyp.", "Bilder in [0,1]: bce; sonst mse."))
+    reduction = Param("auto", choices={
+        "auto": "VAE: Summe je Beispiel (korrekte ELBO), sonst Mittelwert",
+        "mean": "Mittelwert über alle Elemente",
+        "sum": "Summe je Beispiel, gemittelt über den Batch",
+    }, tooltip=T(
+        "Reduktion des Rekonstruktionsverlusts.",
+        "Beim VAE muss die Rekonstruktion je Beispiel summiert werden, sonst erdrückt der KL-Term sie "
+        "(Posterior Collapse: Latentraum wird ignoriert).", "auto."), level=Level.ADVANCED)
     kl_schedule = Param("linear", choices={
         "constant": "β sofort voll", "linear": "β linear von 0 hochfahren (KL-Annealing)",
         "cyclical": "β zyklisch 0 → voll (Fu et al. 2019)",
@@ -389,11 +397,15 @@ class AutoencoderParadigm(Paradigm):
             rec = out["reconstruction"]
             kind = self.cfg.reconstruction_loss
             if kind == "bce":
-                r = F.binary_cross_entropy(rec.float().clamp(1e-6, 1 - 1e-6), target.float())
+                per = F.binary_cross_entropy(rec.float().clamp(1e-6, 1 - 1e-6), target.float(), reduction="none")
             elif kind == "l1":
-                r = F.l1_loss(rec.float(), target.float())
+                per = (rec.float() - target.float()).abs()
             else:
-                r = F.mse_loss(rec.float(), target.float())
+                per = (rec.float() - target.float()).square()
+            red = self.cfg.reduction
+            if red == "auto":
+                red = "sum" if "kl" in out else "mean"
+            r = per.flatten(1).sum(1).mean() if red == "sum" else per.mean()
             loss = r
             metrics = {"reconstruction": float(r.detach())}
             if "kl" in out:
