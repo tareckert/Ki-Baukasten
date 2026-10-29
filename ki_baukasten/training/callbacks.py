@@ -61,9 +61,13 @@ class Callback:
     def on_train_end(self, trainer: Any) -> None: ...
 
 
-def _better(value: float, best: float | None, mode: str, delta: float) -> bool:
+def _better(value: float, best: float | None, mode: str, delta: float, monitor: str = "") -> bool:
     if best is None or math.isnan(best):
         return True
+    if mode == "auto":
+        from .metrics import direction
+
+        mode = direction(monitor)
     return value < best - delta if mode == "min" else value > best + delta
 
 
@@ -73,9 +77,11 @@ def _better(value: float, best: float | None, mode: str, delta: float) -> bool:
 
 class MonitorConfig(BaseConfig):
     monitor = Param("val_loss", tooltip=T(
-        "Beobachtete Metrik (z. B. val_loss, val_accuracy).", "Kriterium für 'besser'.", "val_loss."))
-    mode = Param("min", choices=["min", "max"], tooltip=T(
-        "min: kleiner ist besser (Verluste); max: größer ist besser (Genauigkeit).", "Richtung.", "Passend zur Metrik."))
+        "Beobachtete Metrik (z. B. val_loss, val_accuracy, val_f1, val_rmse – siehe training.metrics).",
+        "Kriterium für 'besser'.", "val_loss; unausgewogene Klassen: val_f1."))
+    mode = Param("auto", choices={"auto": "aus dem Metriknamen ableiten (Verlust/Fehler: min, Genauigkeit/F1: max)",
+                                  "min": "kleiner ist besser", "max": "größer ist besser"}, tooltip=T(
+        "Richtung der Verbesserung.", "Falsche Richtung = Abbruch genau beim besten Modell.", "auto."))
 
 
 class EarlyStoppingConfig(MonitorConfig):
@@ -159,7 +165,7 @@ class EarlyStopping(Callback):
         if self.a.monitor not in metrics:
             return
         value = float(metrics[self.a.monitor])
-        if _better(value, self.best, self.a.mode, self.a.min_delta):
+        if _better(value, self.best, self.a.mode, self.a.min_delta, self.a.monitor):
             self.best, self.bad = value, 0
             if self.a.restore_best:
                 self.best_state = copy.deepcopy(trainer.model.state_dict())
@@ -183,7 +189,7 @@ class Checkpoint(Callback):
         value = metrics.get(self.a.monitor)
         if value is None:
             return
-        improved = _better(float(value), self.best, self.a.mode, 0.0)
+        improved = _better(float(value), self.best, self.a.mode, 0.0, self.a.monitor)
         if improved:
             self.best = float(value)
             trainer.save_checkpoint(Path(self.a.directory) / "beste.pt")

@@ -50,9 +50,11 @@ class SearchConfig(BaseConfig):
         "Trainingsschritte pro Versuch (pbt: pro Runde).", "Kurze Versuche sparen Zeit, sind aber verrauschter.",
         "50–500."))
     metric = Param("val_loss", tooltip=T(
-        "Zielgröße (aus der Validierung, sonst Trainingsverlust).", "Was optimiert wird.", "val_loss, val_accuracy."))
-    mode = Param("min", choices=["min", "max"], tooltip=T(
-        "min: kleiner ist besser; max: größer ist besser.", "Richtung.", "Passend zur Metrik."))
+        "Zielgröße (aus der Validierung, sonst Trainingsverlust).", "Was optimiert wird.",
+        "val_loss, val_accuracy, val_f1, val_rmse (alle Metriken aus training.metrics)."))
+    mode = Param("auto", choices={"auto": "aus dem Metriknamen ableiten (Verlust/Fehler: min, Genauigkeit/F1: max)",
+                                  "min": "kleiner ist besser", "max": "größer ist besser"}, tooltip=T(
+        "Richtung der Verbesserung.", "Falsche Richtung = die Suche optimiert das Schlechteste.", "auto."))
     seed = Param(0, min=0, tooltip=T("Zufalls-Seed der Suche.", "Reproduzierbar.", "0."), level=Level.ADVANCED)
     apply_best = Param(True, tooltip=T(
         "Beste Einstellungen danach ins Projekt übernehmen.", "Direkt weiterarbeiten.", "an."))

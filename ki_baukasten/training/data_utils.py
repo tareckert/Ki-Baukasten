@@ -82,15 +82,55 @@ def as_dataset(data: Any) -> Dataset:
     )
 
 
-def split_dataset(ds: Dataset, fraction: float, seed: int | None) -> tuple[Dataset, Dataset | None]:
-    """Teilt zufällig einen Validierungsanteil ab."""
+def split_dataset(ds: Dataset, fraction: float, seed: int | None, strategy: str = "zufall"
+                  ) -> tuple[Dataset, Dataset | None]:
+    """Teilt einen Validierungsanteil ab: ``zufall`` | ``stratifiziert`` (Klassenanteile gleich) | ``zeitlich``
+    (die letzten Beispiele – keine Zukunftsinformation im Training)."""
+    from ..data.files import split_indices
+
     n = len(ds)  # type: ignore[arg-type]
-    n_val = int(round(n * fraction))
-    if fraction <= 0 or n_val == 0 or n_val >= n:
+    if strategy == "zufall":
+        n_val = int(round(n * fraction))
+        if fraction <= 0 or n_val == 0 or n_val >= n:
+            return ds, None
+        g = torch.Generator().manual_seed(seed if seed is not None else 0)
+        perm = torch.randperm(n, generator=g).tolist()
+        return Subset(ds, perm[n_val:]), Subset(ds, perm[:n_val])
+    labels = class_labels(ds) if strategy == "stratifiziert" else None
+    train, val = split_indices(n, fraction, strategy, labels.tolist() if labels is not None else None,
+                               seed if seed is not None else 0)
+    if not val:
         return ds, None
-    g = torch.Generator().manual_seed(seed if seed is not None else 0)
-    perm = torch.randperm(n, generator=g).tolist()
-    return Subset(ds, perm[n_val:]), Subset(ds, perm[:n_val])
+    return Subset(ds, train), Subset(ds, val)
+
+
+def class_labels(ds: Any) -> torch.Tensor | None:
+    """Ganzzahlige Klassen-Ziele eines (Teil-)Datensatzes oder ``None``."""
+    if isinstance(ds, Subset):
+        inner = class_labels(ds.dataset)
+        return inner[list(ds.indices)] if inner is not None else None
+    data = getattr(ds, "data", None) if isinstance(ds, DictDataset) else None
+    targets = data.get("targets") if isinstance(data, dict) else None
+    if not isinstance(targets, torch.Tensor) or targets.is_floating_point() or targets.dim() != 1:
+        return None
+    return targets
+
+
+def class_weight_tensor(ds: Any, mode: str) -> torch.Tensor | None:
+    """Klassengewichte aus den Häufigkeiten: ``ausgeglichen`` = N / (K · n_k), ``wurzel`` = deren Wurzel (milder)."""
+    if mode in (None, "keine"):
+        return None
+    labels = class_labels(ds)
+    if labels is None:
+        return None
+    labels = labels[labels >= 0].long()
+    counts = torch.bincount(labels).float()
+    present = counts > 0
+    weights = torch.ones_like(counts)
+    weights[present] = len(labels) / (int(present.sum()) * counts[present])
+    if mode == "wurzel":
+        weights = weights.sqrt()
+    return weights
 
 
 def to_device(obj: Any, device: torch.device, non_blocking: bool = False) -> Any:

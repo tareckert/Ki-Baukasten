@@ -301,10 +301,40 @@ class TrainingConfig(BaseConfig):
     deterministic = Param(False, group="Ablauf", level=Level.EXPERT, tooltip=T(
         "Deterministische Algorithmen erzwingen.", "Bitgenaue Reproduzierbarkeit, oft langsamer.", "Debugging."))
 
+    # --- Bewertung ----------------------------------------------------------------
+    metrics = ComponentListParam("metric", group="Bewertung", tooltip=T(
+        "Metriken für Validierung und Test (leer = automatische Auswahl je Aufgabe, siehe auto_metrics).",
+        "Der Verlust allein sagt wenig: bei seltenen Klassen f1/balanced_accuracy, bei Prognosen mae/rmse, bei "
+        "Risiken ece (Kalibrierung), bei Übersetzung bleu.",
+        "Klassifikation: ['f1', 'auroc']; Regression: ['mae', 'r2']; Early Stopping mit monitor='val_f1'."))
+    auto_metrics = Param(True, group="Bewertung", tooltip=T(
+        "Ohne eigene Liste passende Metriken automatisch berechnen (Klassifikation: accuracy, balanced_accuracy, f1, "
+        "auroc, ece; Regression: mae, rmse, r2; Sprache: perplexity, token_accuracy …).",
+        "Man sieht sofort, ob das Modell wirklich gut ist.", "an (kostet nur etwas Rechenzeit in der Evaluierung)."))
+    metric_max_samples = Param(5000, min=1, group="Bewertung", level=Level.ADVANCED, tooltip=T(
+        "Höchstens so viele Beispiele für die Metriken sammeln.", "Begrenzt Speicher bei großen Validierungsmengen.",
+        "1000–20000."))
+    class_weights = Param("keine", group="Bewertung", choices={
+        "keine": "alle Klassen gleich", "ausgeglichen": "Gewicht N / (K · n_Klasse) – seltene Klassen zählen mehr",
+        "wurzel": "Wurzel davon – milder, oft stabiler"}, tooltip=T(
+        "Klassengewichte im Standard-Klassifikationsverlust.",
+        "Bei unausgewogenen Daten ignoriert das Modell sonst seltene Klassen (Alternative zu balance_classes).",
+        "Betrug, Diagnosen, seltene Fehler: ausgeglichen oder wurzel."), on="ausgeglichen")
+
     # --- Daten-Laden ------------------------------------------------------------
     validation_split = Param(0.1, min=0.0, max=0.9, group="Daten", tooltip=T(
         "Anteil der Trainingsdaten als Validierung (wenn keine eigenen Validierungsdaten übergeben werden).",
         "Misst Generalisierung während des Trainings.", "0.1–0.2."))
+    validation_strategy = Param("zufall", group="Daten", choices={
+        "zufall": "zufällige Auswahl", "stratifiziert": "Klassenanteile in Training und Validierung gleich",
+        "zeitlich": "die letzten Beispiele als Validierung (Zeitreihen: keine Zukunft im Training)"}, tooltip=T(
+        "Wie Validierungs- und Testdaten abgeteilt werden.",
+        "Falsche Aufteilung führt zu geschönten Ergebnissen (z. B. Zukunftsdaten im Training bei Zeitreihen).",
+        "Klassifikation: stratifiziert; Zeitreihen/Prognosen: zeitlich."))
+    test_split = Param(0.0, min=0.0, max=0.5, group="Daten", tooltip=T(
+        "Anteil, der als Testmenge ganz zurückgehalten wird (0 = keine).",
+        "Validierung steuert das Training (Early Stopping, Suche) und ist dadurch leicht geschönt – nur eine nie "
+        "benutzte Testmenge zeigt die echte Qualität (Project.test()).", "0.1–0.2 bei genug Daten."), on=0.15)
     shuffle = Param(True, group="Daten", tooltip=T("Daten jede Epoche mischen.", "Verhindert Reihenfolge-Effekte.", "an."))
     drop_last = Param(False, group="Daten", level=Level.ADVANCED, tooltip=T(
         "Letzten unvollständigen Batch verwerfen.", "Gleich große Batches (wichtig für BatchNorm).", "BatchNorm: an."))

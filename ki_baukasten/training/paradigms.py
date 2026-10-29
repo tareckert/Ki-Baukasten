@@ -115,19 +115,33 @@ def _select(obj: Any, key: str | None) -> Any:
     return obj[key]
 
 
+def is_segmentation(pred: Any, target: Any) -> bool:
+    """Logits ``[N, C, H, W]`` gegen Klassenmasken ``[N, H, W]`` (Kanäle vorne, wie bei Bildern)."""
+    return (isinstance(pred, torch.Tensor) and isinstance(target, torch.Tensor) and pred.dim() == 4
+            and target.dim() == 3 and not target.is_floating_point() and pred.shape[2:] == target.shape[1:])
+
+
 def auto_loss(pred: torch.Tensor, target: torch.Tensor, task: str = "auto", label_smoothing: float = 0.0,
-              soft: bool = False) -> torch.Tensor:
+              soft: bool = False, weight: torch.Tensor | None = None) -> torch.Tensor:
     """Wählt einen sinnvollen Standardverlust anhand von Aufgabe und Datentypen.
 
     ``soft=True``: Ziele sind Wahrscheinlichkeiten (z. B. nach Mixup/CutMix) → Kreuzentropie mit weichen Zielen.
+    ``weight``: Klassengewichte für die Kreuzentropie (``training.class_weights``).
     """
+    if weight is not None:
+        weight = weight.to(pred.device, torch.float32)
+        if weight.numel() != pred.shape[1 if is_segmentation(pred, target) else -1]:
+            weight = None
     if soft and target.shape == pred.shape:
         return F.cross_entropy(pred.float().reshape(-1, pred.shape[-1]), target.float().reshape(-1, pred.shape[-1]),
+                               weight=weight, label_smoothing=label_smoothing)
+    if is_segmentation(pred, target) and task in ("auto", "classification"):
+        return F.cross_entropy(pred.float(), target.long(), weight=weight, ignore_index=-100,
                                label_smoothing=label_smoothing)
     if task == "classification" or (task == "auto" and not target.is_floating_point()
                                     and pred.dim() == target.dim() + 1):
         logits = pred.reshape(-1, pred.shape[-1])
-        return F.cross_entropy(logits.float(), target.reshape(-1).long(), ignore_index=-100,
+        return F.cross_entropy(logits.float(), target.reshape(-1).long(), weight=weight, ignore_index=-100,
                                label_smoothing=label_smoothing)
     if task == "multilabel":
         return F.binary_cross_entropy_with_logits(pred.float(), target.float().reshape(pred.shape))
@@ -146,7 +160,8 @@ def accuracy(pred: torch.Tensor, target: torch.Tensor, ignore_index: int = -100)
     valid = target != ignore_index
     if valid.sum() == 0:
         return None
-    return float((pred.argmax(-1)[valid] == target[valid]).float().mean())
+    guess = pred.argmax(1) if is_segmentation(pred, target) else pred.argmax(-1)
+    return float((guess[valid] == target[valid]).float().mean())
 
 
 class Paradigm:
@@ -198,6 +213,9 @@ class SupervisedConfig(BaseConfig):
         "Klassifikation: 0.05–0.1."))
 
 
+_TASK_KIND = {"classification": "klassifikation", "regression": "regression", "multilabel": "multilabel"}
+
+
 class Supervised(Paradigm):
     """Eingabe → Vorhersage ↔ Ziel. Unterstützt dict-Ausgaben/Ziele (Multi-Task)."""
 
@@ -213,7 +231,8 @@ class Supervised(Paradigm):
                 raise TrainingError("Ausgabe und Ziele haben keine gemeinsamen Schlüssel.")
             return sum(auto_loss(out[k], targets[k], self.cfg.task, self.cfg.label_smoothing) for k in keys)
         return auto_loss(main_output(out), targets if not isinstance(targets, dict) else main_output(targets),
-                         self.cfg.task, self.cfg.label_smoothing, getattr(self, "_soft", False))
+                         self.cfg.task, self.cfg.label_smoothing, getattr(self, "_soft", False),
+                         getattr(trainer, "class_weight", None))
 
     def compute(self, trainer, batch, train):
         inputs, targets = batch["inputs"], batch.get("targets")
@@ -233,9 +252,12 @@ class Supervised(Paradigm):
                 loss = loss + aux
         metrics = {"loss": float(loss.detach())}
         if not isinstance(targets, dict):
-            acc = accuracy(main_output(out).detach(), targets if not targets.is_floating_point() else targets)
+            pred = main_output(out).detach()
+            acc = accuracy(pred, targets)
             if acc is not None:
                 metrics["accuracy"] = acc
+            if not train:
+                trainer.collect(pred, targets, _TASK_KIND.get(self.cfg.task, "auto"))
         return loss, metrics
 
 
@@ -278,6 +300,8 @@ class CausalLM(Paradigm):
             if aux is not None:
                 loss = loss + aux
         lv = float(loss.detach())
+        if not train:
+            trainer.collect(logits.detach(), tgt, "sprache")
         return loss, {"loss": lv, "perplexity": math.exp(min(lv, 30)), "accuracy": accuracy(logits.detach(), tgt) or 0.0}
 
 
@@ -329,6 +353,8 @@ class MaskedLM(Paradigm):
             aux = trainer.model_aux_loss()
             if aux is not None:
                 loss = loss + aux
+        if not train:
+            trainer.collect(logits.detach(), tgt, "sprache")
         return loss, {"loss": float(loss.detach()), "accuracy": accuracy(logits.detach(), tgt) or 0.0}
 
 
@@ -371,6 +397,11 @@ class Seq2Seq(Paradigm):
         m = {"loss": float(loss.detach())}
         if acc is not None:
             m["accuracy"] = acc
+        if not train:
+            if tgt.is_floating_point():
+                trainer.collect(out.detach(), tgt, "regression")
+            else:
+                trainer.collect(out.detach(), labels, "seq2seq")
         return loss, m
 
 
@@ -687,6 +718,8 @@ class Distillation(Paradigm):
                 acc = accuracy(s.detach(), targets)
                 if acc is not None:
                     m["accuracy"] = acc
+                if not train and isinstance(targets, torch.Tensor):
+                    trainer.collect(s.detach(), targets)
             elif task == "causal_lm":
                 m["accuracy"] = float((s[:, :-1].argmax(-1) == inputs[:, 1:]).float().mean())
             m["agreement"] = float((s.detach().argmax(-1) == t.argmax(-1)).float().mean()) \

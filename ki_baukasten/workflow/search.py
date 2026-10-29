@@ -199,6 +199,11 @@ def evaluate_params(project: Any, params: dict[str, Any], steps: int, metric: st
 def run_search(project: Any, cfg: Any = None, progress: bool = True) -> SearchResult:
     """Führt die in ``cfg`` (``SearchConfig``, Standard: ``workflow.search``) beschriebene Suche aus."""
     s = cfg if cfg is not None else project.config.workflow.search
+    if s.mode == "auto":
+        from ..training.metrics import direction
+
+        s = s.copy()
+        s.mode = direction(s.metric)
     method = s.method if s.method != "none" else "random"
     dims = parse_space(s.space or default_space(project))
     if not dims:

@@ -120,6 +120,9 @@ class Project:
         self._loggers: list[Any] = []                # zur Laufzeit eingebundene Logger (add_logger)
         self._technique_memory: dict[str, Any] = {}  # vorherige Werte eingeschalteter Techniken (für disable)
         self.goal_report: Any = None                 # letzte Bewertung der Ziele (goal_check / from_goals)
+        self.test_data: Any = None                   # zurückgehaltene Testmenge (training.test_split / data.test)
+        self._test_split: tuple | None = None        # (Original-Trainingsdaten, Rest ohne Testmenge)
+        self.last_data_report: Any = None            # letzte Datenprüfung (data_check)
 
     # ================================================================ Erzeugen
     @classmethod
@@ -571,6 +574,69 @@ class Project:
             self._bundle = self.config.data.build()
         return self._bundle
 
+    def data_check(self, train_data: Any = None, val_data: Any = None) -> Any:
+        """Prüft die Daten vor dem Training (Klassen, Lecks, Duplikate, Skalen, NaN, Texte …) → ``DataReport``.
+
+        ``str(report)`` zeigt alle Befunde mit Abhilfe; ``apply_data_fixes()`` übernimmt die Vorschläge.
+        """
+        from .analysis.datacheck import check_data
+
+        info: dict = {}
+        if train_data is None:
+            bundle = self.data()
+            train_data, val_data, info = bundle.train, val_data if val_data is not None else bundle.val, bundle.info
+        n_params = None
+        try:
+            if self.config.data.name != "none":
+                n_params = sum(p.numel() for p in self._ensure_model().parameters())
+        except Exception:  # noqa: BLE001 - Prüfung soll auch ohne baubares Modell gehen
+            pass
+        task = {"classification": "klassifikation", "regression": "regression"}.get(str(info.get("task")), "auto")
+        self.last_data_report = check_data(train_data, val_data, info, n_params, task)
+        return self.last_data_report
+
+    def apply_data_fixes(self, report: Any = None, techniques: bool = True) -> list[str]:
+        """Übernimmt die Vorschläge der Datenprüfung (Einstellungen + passende Techniken)."""
+        report = report or self.last_data_report or self.data_check()
+        changed: list[str] = []
+        self._snapshot()
+        for path, value in report.settings().items():
+            try:
+                if self.config.get(path) != value:
+                    self.config.set(path, value)
+                    changed.append(f"{path} = {value!r}")
+            except ConfigError:
+                continue
+        if techniques:
+            from .techniques import BY_KEY
+
+            for key in report.techniques():
+                if key in BY_KEY:
+                    try:
+                        changed += self.technique(key, "an")
+                    except ConfigError:
+                        continue
+        if any(p.startswith("data.") for p in changed):
+            self._bundle = None
+        self._invalidate()
+        return changed
+
+    def drift_report(self, new_data: Any, reference: Any = None, with_model: bool = True) -> Any:
+        """Vergleicht neue Daten (z. B. aus dem Einsatz) mit den Trainingsdaten → ``DriftReport`` (PSI, KS …).
+
+        Mit trainiertem Modell zusätzlich die Vorhersage-Drift (Verteilung der vorhergesagten Klassen).
+        """
+        from .analysis.drift import drift_report
+
+        info = {}
+        if reference is None:
+            bundle = self.data()
+            reference, info = bundle.train, bundle.info
+        predict = None
+        if with_model and self.model is not None:
+            predict = self.predict
+        return drift_report(reference, new_data, info.get("features"), predict=predict)
+
     # ================================================================ Bauen
     def _verbose(self, kind: str = "info") -> bool:
         """Konsolenausgabe des Projekts gemäß ``training.verbose`` und ``training.logging.level``."""
@@ -660,16 +726,24 @@ class Project:
         """Trainiert (baut vorher, falls nötig). Ohne Daten wird der konfigurierte Datensatz genutzt."""
         if self.model is None:
             self.build()
+        info: dict = {}
         if train_data is None and self.config.training.paradigm.name != "reinforcement":
             bundle = self.data()
             train_data = bundle.train
+            info = bundle.info or {}
             val_data = val_data if val_data is not None else bundle.val
+            if bundle.test is not None:
+                self.test_data = bundle.test
             if self.config.data.name == "anomaly":
                 val_data = None  # Anomalie-Testmenge hat Labels → separat mit anomaly_report() auswerten
+        train_data = self._hold_out_test(train_data)
         self._fit_warning()
         self.trainer = Trainer(self.model, self.config.training, self.config.memory, self.surgeon,
                                teacher=self._teacher, log_backends=self._loggers, run_name=self.config.name,
                                run_config=self.config.to_dict())
+        from .training.metrics import target_inverse
+
+        self.trainer.target_inverse = target_inverse(info.get("target_transform"))
         self.model = self.trainer.module
         self.history = self.trainer.fit(train_data, val_data)
         d = self.config.deployment
@@ -683,6 +757,44 @@ class Project:
             except Exception as exc:  # noqa: BLE001 - Übersicht darf das Training nie scheitern lassen
                 print(f"  (Reduktions-Übersicht nicht verfügbar: {exc})")
         return self.history
+
+    def _hold_out_test(self, train_data: Any) -> Any:
+        """``training.test_split > 0``: einen Teil der Trainingsdaten als Testmenge zurückhalten (einmalig)."""
+        t = self.config.training
+        if t.test_split <= 0 or train_data is None or isinstance(train_data, torch.utils.data.DataLoader):
+            return train_data
+        cached = self._test_split
+        if cached is not None and cached[0] is train_data:
+            return cached[1]                      # gleiche Daten → gleiche Testmenge (kein Leck beim Neutrainieren)
+        if cached is None and self.test_data is not None:
+            return train_data                     # eigene Testmenge des Datensatzes (data.test)
+        from .training.data_utils import as_dataset, split_dataset
+
+        rest, test = split_dataset(as_dataset(train_data), t.test_split, t.seed, t.validation_strategy)
+        if test is None:
+            return train_data
+        self.test_data = test
+        self._test_split = (train_data, rest)
+        self._note(f"Testmenge: {len(test)} Beispiele zurückgehalten – erst am Ende mit Project.test() auswerten.")
+        return rest
+
+    def test(self, data: Any = None) -> dict[str, float]:
+        """Endgültige Bewertung auf Daten, die das Training **nie** gesehen hat (Präfix ``test_``).
+
+        Ohne ``data``: die mit ``training.test_split`` zurückgehaltene Testmenge bzw. ``data.test`` des Datensatzes.
+        Validierungswerte sind durch Early Stopping/Suche leicht geschönt – der Test zeigt die echte Qualität.
+        """
+        if self.trainer is None:
+            raise ConfigError("Erst trainieren (train), dann testen.")
+        data = data if data is not None else self.test_data
+        if data is None:
+            raise ConfigError("Keine Testmenge vorhanden – training.test_split > 0 setzen (z. B. "
+                              "project.turn_on('training.test_split')) und neu trainieren, oder Daten übergeben.",
+                              "training.test_split")
+        result = self.trainer.evaluate(data, prefix="test_")
+        if self._verbose("eval"):
+            print("  Test: " + "  ".join(f"{k}={v:.4g}" for k, v in result.items()))
+        return result
 
     def _fit_warning(self) -> None:
         """Mit gesetztem ``memory.memory_budget_gb``: vor dem Training prüfen und Notfall-Optionen nennen."""

@@ -45,7 +45,8 @@ from ..core import ConfigError, TrainingError, format_number
 from ..memory import MemoryConfig, MemoryManager
 from ..memory.execution import batch_len, free_memory, is_oom, split_batch
 from .config import TrainingConfig
-from .data_utils import (CurriculumSampler, as_dataset, difficulty_of, make_loader, split_dataset, to_device)
+from .data_utils import (CurriculumSampler, as_dataset, class_weight_tensor, difficulty_of, make_loader, split_dataset,
+                         to_device)
 from .distributed import DistributedContext
 from .logger import RunLogger, memory_now
 from .losses import build_losses
@@ -173,6 +174,12 @@ class Trainer:
         self._slow: dict[int, torch.Tensor] = {}
         self._la_count: dict[str, int] = defaultdict(int)
         self._dp_sum: dict[int, torch.Tensor] = {}
+        self._collector: Any = None              # sammelt Vorhersagen während evaluate() (Metriken)
+        self.class_weight: torch.Tensor | None = None
+        self._warned_metrics: set[str] = set()
+        #: optional ``f(pred, target) -> (pred, target)``: Regressionsziele vor den Metriken zurückrechnen
+        #: (z. B. CSV mit ``target_scaling`` → Fehler in echten Einheiten).
+        self.target_inverse: Callable | None = None
         if self.cfg.privacy.enabled:
             if any(isinstance(m, nn.modules.batchnorm._BatchNorm) for m in self.model.modules()):
                 raise ConfigError("DP-SGD (training.privacy) braucht Gradienten pro Beispiel – BatchNorm mischt Beispiele "
@@ -192,6 +199,11 @@ class Trainer:
         return self.dist.unwrap(self.model)
 
     # ===================================================================== Aufbau
+    def collect(self, pred: Any, target: Any, kind: str = "auto") -> None:
+        """Von Paradigmen in der Evaluierung aufgerufen: Vorhersagen für die Metriken sammeln."""
+        if self._collector is not None:
+            self._collector.add(pred, target, kind)
+
     def log(self, text: str, kind: str = "info") -> None:
         """Meldung an alle Logger-Ziele (``kind``: info, warnung, eval, fortschritt, detail, debug)."""
         self.logger.message(kind, text)
@@ -641,7 +653,7 @@ class Trainer:
         if not isinstance(train, torch.utils.data.DataLoader):
             ds = as_dataset(train)
             if val is None and c.validation_split > 0:
-                ds, val = split_dataset(ds, c.validation_split, c.seed)
+                ds, val = split_dataset(ds, c.validation_split, c.seed, c.validation_strategy)
             sampler = self.dist.sampler(ds, c.shuffle, c.seed or 0)
             if sampler is not None and c.curriculum.strategy != "none":
                 self.log("⚠ Curriculum wird im verteilten Training ignoriert (DistributedSampler).")
@@ -649,6 +661,12 @@ class Trainer:
                 diffs = [difficulty_of(ds[i], c.curriculum.strategy) for i in range(len(ds))]
                 sampler = CurriculumSampler(diffs, c.curriculum.start_fraction, c.curriculum.full_after_fraction,
                                             lambda: self.global_step / max(1, self.total_steps), c.shuffle, c.seed or 0)
+            if c.class_weights != "keine":
+                self.class_weight = class_weight_tensor(ds, c.class_weights)
+                if self.class_weight is None:
+                    self.log("⚠ class_weights: keine ganzzahligen Klassen-Ziele gefunden – ignoriert.", "warnung")
+                else:
+                    self.log("  Klassengewichte: " + ", ".join(f"{w:.3g}" for w in self.class_weight.tolist()), "detail")
             if c.balance_classes and sampler is None:
                 sampler = _balanced_sampler(ds, c.seed or 0)
                 if sampler is None:
@@ -826,8 +844,14 @@ class Trainer:
         return metrics
 
     @torch.no_grad()
-    def evaluate(self, data: Any) -> dict[str, float]:
-        """Evaluierung (EMA-Gewichte, falls aktiviert). Metriken mit Präfix ``val_``."""
+    def evaluate(self, data: Any, prefix: str = "val_") -> dict[str, float]:
+        """Evaluierung (EMA-Gewichte, falls aktiviert). Werte mit Präfix ``val_`` (``Project.test``: ``test_``).
+
+        Neben den Werten des Paradigmas (Verlust …) werden die Metriken aus ``training.metrics`` (leer +
+        ``auto_metrics`` = passende Auswahl je Aufgabe) über **alle** Beispiele berechnet.
+        """
+        from .metrics import Collector
+
         c = self.cfg
         loader = data if isinstance(data, torch.utils.data.DataLoader) else make_loader(
             data, c.eval_batch_size or c.batch_size, False)
@@ -836,6 +860,8 @@ class Trainer:
         ctx = self.ema.applied(self.model) if (self.ema is not None and c.ema.use_for_eval) else contextlib.nullcontext()
         sums: dict[str, float] = defaultdict(float)
         count = 0
+        wants = bool(c.metrics) or c.auto_metrics
+        self._collector = Collector(c.metric_max_samples) if wants else None
         with ctx:
             for i, batch in enumerate(loader):
                 if c.eval_max_batches and i >= c.eval_max_batches:
@@ -849,7 +875,19 @@ class Trainer:
                         sums[k] += float(v) * n
                 count += n
         self.model.train(was)
-        return {f"val_{k}": v / max(1, count) for k, v in sums.items()}
+        out = {f"{prefix}{k}": v / max(1, count) for k, v in sums.items()}
+        collector, self._collector = self._collector, None
+        if collector is not None:
+            if self.target_inverse is not None and collector.task == "regression" and collector.preds:
+                pairs = [self.target_inverse(p, t) for p, t in zip(collector.preds, collector.targets)]
+                collector.preds, collector.targets = [p for p, _ in pairs], [t for _, t in pairs]
+            skipped: list[str] = []
+            out.update(collector.metrics(list(c.metrics), c.auto_metrics, prefix, skipped))
+            for name in skipped:
+                if name not in self._warned_metrics:
+                    self._warned_metrics.add(name)
+                    self.log(f"⚠ Metrik '{name}' passt nicht zur Aufgabe ({collector.task}) – weggelassen.", "warnung")
+        return out
 
     # ===================================================================== Checkpoints
     def save_checkpoint(self, path: str | Path) -> Path:
@@ -901,20 +939,13 @@ class Trainer:
 
 def _balanced_sampler(ds: Any, seed: int) -> Any:
     """``WeightedRandomSampler`` mit Gewicht 1/Häufigkeit der Klasse (oder ``None`` ohne Klassen-Ziele)."""
-    from torch.utils.data import Subset, WeightedRandomSampler
+    from torch.utils.data import WeightedRandomSampler
 
-    from .data_utils import DictDataset
+    from .data_utils import class_labels
 
-    indices = None
-    base = ds
-    if isinstance(ds, Subset):
-        base, indices = ds.dataset, list(ds.indices)
-    data = getattr(base, "data", None) if isinstance(base, DictDataset) else None
-    targets = data.get("targets") if isinstance(data, dict) else None
-    if not isinstance(targets, torch.Tensor) or targets.is_floating_point() or targets.dim() != 1:
+    targets = class_labels(ds)
+    if targets is None:
         return None
-    if indices is not None:
-        targets = targets[indices]
     counts = torch.bincount(targets.long().clamp_min(0))
     weights = 1.0 / counts.clamp_min(1).float()[targets.long().clamp_min(0)]
     return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True,
