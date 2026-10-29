@@ -207,10 +207,12 @@ class CSVConfig(BaseConfig):
     standardize = Param(True, tooltip=T(
         "Kompatibilität: aus = keine Skalierung (überschreibt 'scaling').", "Ältere Konfigurationen.", "an."),
         level=Level.EXPERT)
-    target_scaling = Param("keine", choices={"keine": "unverändert", "standard": "Mittel 0, Std 1",
-                                             "log": "log(1+y) für schiefe, positive Ziele"}, tooltip=T(
-        "Transformation des Regressionsziels.", "Schiefe Ziele (Preise, Mengen) lernen sich besser logarithmisch.",
-        "log bei Preisen/Umsätzen."), level=Level.ADVANCED)
+    target_scaling = Param("auto", choices={"auto": "Regression: standardisieren (Mittel 0, Std 1)",
+                                            "keine": "unverändert", "standard": "Mittel 0, Std 1",
+                                            "log": "log(1+y) für schiefe, positive Ziele"}, tooltip=T(
+        "Transformation des Regressionsziels (Metriken und Vorhersagen bleiben in echten Einheiten).",
+        "Ziele in großen Einheiten (Preise ~ 100 000) lernt ein Netz sonst kaum; schiefe Ziele besser logarithmisch.",
+        "auto; log bei Preisen/Umsätzen mit großer Spannweite."), level=Level.ADVANCED, off="keine", on="auto")
     val_fraction = Param(0.0, min=0.0, max=0.9, tooltip=T(
         "Validierungsanteil direkt beim Laden (0 = später im Training abteilen).",
         "Beim Laden abgeteilt werden Mittelwerte/Skalen nur aus Trainingszeilen berechnet – keine Datenleckage.",
@@ -251,7 +253,7 @@ def load_csv(a: CSVConfig) -> Any:
                                a.missing_indicator, a.categorical).fit(sub_header, project(train_idx))
     info: dict[str, Any] = {"task": "classification" if is_cls else "regression", "features": prep.feature_names,
                             "preprocessor": prep}
-    if not is_cls and a.target_scaling != "keine":
+    if not is_cls and a.target_scaling != "keine":         # 'auto' = standard
         tr = y[train_idx]
         if a.target_scaling == "log":
             y = torch.log1p(y.clamp_min(0))

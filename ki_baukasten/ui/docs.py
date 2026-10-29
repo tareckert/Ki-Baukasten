@@ -211,7 +211,8 @@ def capabilities_markdown() -> str:
         for choice in action._choices_actions:  # noqa: SLF001
             out.append(f"| `{choice.dest}` | {_esc(choice.help or '')} |")
     out += ["", "Grafische Oberfläche: `python -m ki_baukasten gui` – Menü (Datei · Assistent · Einstellungen · "
-            "Techniken · Ausführen · Analyse · Qualität · Einsatz · Hilfe), Ziel-Assistent, Techniken-Fenster mit "
+            "Techniken · Ausführen · Analyse · Qualität · Einsatz · Hilfe; „Datei → Automatisch aus Daten…“), "
+            "Ziel-Assistent, Techniken-Fenster mit "
             "Reitern, Perfektions-Check, Datenprüfung, Test, Basis, Fehleranalyse, Kalibrierung, Modellkarte, "
             "HTTP-Dienst, "
             "Einstellungsbaum mit Tooltips und An/Aus/Eigen-Schaltern je Einstellung, Ansichtsfilter, Probelauf & "
@@ -326,7 +327,19 @@ def _quality_sections() -> list[str]:
            "Beam Search, n-Gramm-Sperre | `model = unet`, `ask()`, `generation.*` |",
            "| Einsatz | Modellkarte, Umgebung, gespeicherte Vorverarbeitung, Rohdaten-Vorhersage, HTTP-Dienst, "
            "Fortsetzen vom Checkpoint | `model_card()`, `save/load`, `predict_raw()`, `serve()`, "
-           "`training.resume_from` |", ""]
+           "`training.resume_from` |", "",
+           "## Leistung, Hardware & schlanker Export", "",
+           "| Bereich | Möglichkeiten | Wo |", "|---|---|---|",
+           "| Ein Aufruf | Datenart erkennen → Vorlage → Empfehlungen → Training → Test → Basis | `Project.auto(datei)`, "
+           "CLI `auto` |",
+           "| Hardware-Automatik | bf16/fp16/aus, TF32, cuDNN-Benchmark, channels_last, gepinnter Speicher je Gerät | "
+           "`memory.* = auto`, `hardware_report()`, CLI `hardware` |",
+           "| Tempo | fusionierter Optimierer, `TensorBatchLoader`, eine Synchronisation je Schritt, GQA ohne KV-Kopien | "
+           "automatisch |",
+           "| Automatisch einstellen | Lernrate (LR-Finder), Batchgröße passend zum GPU-Speicher | `training.auto_lr`, "
+           "`training.auto_batch_size` |",
+           "| Schlanker Export | Hüllen entfernen, EMA, LoRA exakt, BatchNorm falten, Ungenutztes entfernen, Präzision, "
+           "Prüfung, kompakte projekt.json | `deployment.export.*`, `export(...)`, `last_export` |", ""]
     return out
 
 

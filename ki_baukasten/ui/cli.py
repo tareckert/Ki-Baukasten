@@ -9,7 +9,10 @@ Befehle
 ==============  =================================================================
 Befehl          Zweck
 ==============  =================================================================
+auto            von den Daten zur fertigen KI in einem Schritt (Datenart erkennen, Vorlage, Empfehlungen, Training,
+                Test, Basis-Vergleich, Speichern)
 ziele           Ziel-Assistent: Zweck & Prioritäten → empfohlene/abgeratene Modelle, Techniken; neues Projekt
+hardware        erkanntes Rechengerät und automatisch gewählte Einstellungen
 presets         Vorlagen nach Anwendungsgebiet auflisten
 modelle         alle Modelle mit Kurzbeschreibung
 komponenten     alle Registries bzw. Einträge einer Registry (``komponenten activation``)
@@ -557,6 +560,27 @@ def _open(source: str, sets: list[str] | None = None):
     return _project(source, sets)
 
 
+def cmd_auto(a: argparse.Namespace) -> None:
+    from ..project import Project
+
+    over = {}
+    for item in a.setze:
+        path, value = item.split("=", 1)
+        over[path.strip()] = _parse_value(value.strip())
+    p = Project.auto(a.daten, target=a.ziel, description=a.beschreibung or "", steps=a.schritte, **over)
+    if p.last_test:
+        print("Test: " + "  ".join(f"{k}={v:.4g}" for k, v in p.last_test.items()))
+    if p.last_baseline:
+        print("Basis vs. Modell: " + "  ".join(f"{k}={v:.4g}" for k, v in p.last_baseline.items()))
+    print(f"Perfektions-Check: {p.perfection_check().score:.0f}/100")
+    target = p.save(a.speichern)
+    print(f"Gespeichert in: {target}  (bereitstellen: python -m ki_baukasten bereitstellen {target})")
+
+
+def cmd_hardware(a: argparse.Namespace) -> None:
+    print(_open(a.quelle).hardware_report())
+
+
 def cmd_perfektion(a: argparse.Namespace) -> None:
     if a.katalog:
         from ..requirements import requirements_markdown
@@ -914,6 +938,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--top-k", type=int, default=None)
     sp.add_argument("--anzahl", type=int, default=16)
     sp.set_defaults(fn=cmd_generieren)
+
+    sp = sub.add_parser("auto", help="von den Daten zur fertigen KI in einem Schritt")
+    sp.add_argument("daten", help="CSV/TSV, Bild-/Audio-Ordner, JSONL (Frage/Antwort), TXT oder PT")
+    sp.add_argument("--ziel", help="Zielspalte (Tabellen; Standard: letzte Spalte)")
+    sp.add_argument("--beschreibung", help="wofür die KI gedacht ist (z. B. 'Kreditentscheidungen für Kunden')")
+    sp.add_argument("--schritte", type=int, help="Trainingsschritte (Standard: Vorlage)")
+    sp.add_argument("--setze", action="append", default=[], metavar="PFAD=WERT")
+    sp.add_argument("--speichern", default=None, help="Zielordner (Standard: ausgaben/<vorlage>)")
+    sp.set_defaults(fn=cmd_auto)
+
+    sp = sub.add_parser("hardware", help="Rechengerät und automatisch gewählte Einstellungen")
+    sp.add_argument("quelle", nargs="?", default="tabellen_klassifikation")
+    sp.set_defaults(fn=cmd_hardware)
 
     sp = sub.add_parser("perfektion", help="Anforderungs-Katalog: Perfektions-Check eines Projekts")
     sp.add_argument("quelle", nargs="?", default="tabellen_klassifikation",

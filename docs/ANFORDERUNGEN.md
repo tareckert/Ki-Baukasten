@@ -2,7 +2,7 @@
 
 Automatisch erzeugt aus `ki_baukasten/requirements.py` (`python -m ki_baukasten doku` bzw. `perfektion --katalog`).
 
-**Abdeckung: 51 von 53 Anforderungen sind im Baukasten umsetzbar.** Für ein konkretes Projekt prüft `project.perfection_check()`, was davon eingeschaltet ist; `project.apply_perfection()` schaltet alle empfohlenen, schaltbaren Punkte ein.
+**Abdeckung: 54 von 56 Anforderungen sind im Baukasten umsetzbar.** Für ein konkretes Projekt prüft `project.perfection_check()`, was davon eingeschaltet ist; `project.apply_perfection()` schaltet alle empfohlenen, schaltbaren Punkte ein.
 
 Legende: **Pflicht** – ohne das ist das Ergebnis unzuverlässig · **empfohlen** – Stand der Praxis · **optional** – je nach Lage. Anwendungen: `alle` = alle Anwendungen, `datensatz` = mit Datensatz (nicht RL), `wenige_labels` = wenige Labels, `tabellen` = Tabellen, `bild` = Bilder, `segmentierung` = Segmentierung, `sprache` = Sprache/Text, `generierung` = Textgenerierung, `zeitreihen` = Zeitreihen, `audio` = Audio, `klassifikation` = Klassifikation, `regression` = Regression/Prognose, `rl` = Reinforcement Learning, `generativ` = Generative Modelle, `graph` = Graphen, `anomalie` = Anomalien, `menschen` = Entscheidungen über Menschen, `detektion` = Objekterkennung, `empfehlung` = Empfehlungssysteme.
 
@@ -45,6 +45,8 @@ Legende: **Pflicht** – ohne das ist das Ergebnis unzuverlässig · **empfohlen
 | ✓ | Early Stopping / beste Gewichte behalten | datensatz | empfohlen | Stoppt, bevor das Auswendiglernen beginnt. | callback early_stopping (monitor val_loss/val_f1 …) | `early_stopping` |
 | ✓ | Reproduzierbar (Seed) | alle | pflicht | Ergebnisse müssen wiederholbar und vergleichbar sein. | training.seed | `seed` |
 | ✓ | Checkpoints und Fortsetzen | alle | empfohlen | Abbrüche kosten sonst die ganze Arbeit. | callback checkpoint, training.resume_from = 'auto' | `checkpoints`, `fortsetzen` |
+| ✓ | Hardware ausgenutzt (Präzision, TF32, fusionierter Optimierer …) | alle | pflicht | Gleiche Hardware, gleiches Tempo wie von Hand optimierte Modelle. | memory.mixed_precision/matmul_precision = 'auto', fusionierter Optimierer, SDPA, schneller Tensor-Lader | automatisch |
+| ✓ | Lernrate bestimmt (LR-Finder) | datensatz | optional | Eine passende Lernrate spart viele Versuche. | training.auto_lr bzw. project.find_lr() | `auto_lernrate` |
 | ✓ | Hyperparameter-Suche | alle | optional | Gute Einstellungen automatisch finden. | workflow.search (random/grid/evolution/pso/pbt), project.tune() | `zufallssuche`, `partikelschwarm`, `genetisch`, `pbt`, `gittersuche` |
 | ✓ | Verlauf protokollieren | alle | empfohlen | Nachvollziehen, was passiert ist. | training.logging (CSV/JSONL/TensorBoard/W&B/MLflow) | `log_datei`, `log_jsonl`, `tensorboard`, `wandb`, `mlflow` |
 | ✓ | Große Modelle auf kleiner Hardware | alle | optional | Hardware ist oft der Engpass. | Checkpointing, 8-Bit-Optimierer, LoRA/QLoRA, Streaming, Notfall-Ausführung | automatisch |
@@ -82,6 +84,7 @@ Legende: **Pflicht** – ohne das ist das Ergebnis unzuverlässig · **empfohlen
 | | Anforderung | gilt für | Stufe | Warum | Umsetzung im Baukasten | an/abwählbar |
 |---|---|---|---|---|---|---|
 | ✓ | Vorverarbeitung mit dem Modell gespeichert | datensatz | pflicht | Im Einsatz müssen Rohdaten genau wie im Training aufbereitet werden. | save() → vorverarbeitung.json; load() + predict_raw() | automatisch |
+| ✓ | Export ohne Ballast (geprüft) | alle | pflicht | Ein Einsatz-Modell soll nur enthalten, was die Vorhersage braucht. | deployment.export: Trainings-Hüllen weg, EMA, LoRA einrechnen, BatchNorm falten, Ungenutztes entfernen, Ausgabe gegen das Original geprüft | automatisch |
 | ✓ | Modellkarte und Umgebung dokumentiert | alle | empfohlen | Zweck, Daten, Ergebnisse, Grenzen, Versionen – nachvollziehbar. | deployment.model_card | `modellkarte` |
 | ✓ | Für das Zielgerät verkleinert | alle | optional | Das Modell muss dort laufen, wo es gebraucht wird. | deployment.main_target, recommend_for/reduce_for | `komprimieren_nach_training` |
 | ✓ | Export in ein Standardformat | alle | optional | Einsatz ohne Python/PyTorch (ONNX, TorchScript …). | workflow.export_format / project.export() | `export_nach_training` |

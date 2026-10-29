@@ -581,7 +581,8 @@ class BaukastenGUI(tk.Tk):
                     sub.add_command(label=item[0], command=item[1])
             m.add_cascade(label=title, menu=sub)
 
-        menu("Datei", [("Öffnen…", self.open_file), ("Speichern…", self.save_file),
+        menu("Datei", [("Automatisch aus Daten…", self.auto_from_data), ("Öffnen…", self.open_file),
+                       ("Speichern…", self.save_file),
                        ("Modell importieren…", self.import_model), None, ("Beenden", self.destroy)])
         menu("Assistent", [("Neue KI nach Zielen…", self.goal_wizard),
                            ("Ziele prüfen / ändern…", lambda: self.goal_wizard(check_current=True)),
@@ -605,6 +606,8 @@ class BaukastenGUI(tk.Tk):
                            ("Lernraten-Finder", lambda: self._run_bg("LR-Finder", lambda: self.project.find_lr())),
                            None, ("Probelauf & Gewichte…", self.inspector)])
         menu("Analyse", [("Aufbau", self.architecture), ("Speicherschätzung", self.memory),
+                         ("Hardware & automatische Einstellungen",
+                          lambda: self.log_write("\n" + self.project.hardware_report() + "\n")),
                          ("Notfall-Optionen (Training)…", lambda: self.fallback_dialog(None))])
         menu("Qualität", [("Perfektions-Check (Anforderungen)", self.perfection_check),
                           ("Alles Empfohlene einschalten", self.apply_perfection), None,
@@ -650,6 +653,28 @@ class BaukastenGUI(tk.Tk):
 
     def switch_overview(self) -> None:
         self.log_write(self.project.switch_overview() + "\n")
+
+    def auto_from_data(self) -> None:
+        """Datei oder Ordner wählen → Project.auto (Vorlage erkennen, Empfehlungen, Training, Test) im Hintergrund."""
+        from tkinter import filedialog
+
+        from ..project import Project
+
+        path = filedialog.askopenfilename(title="Daten wählen (CSV, JSONL, TXT, PT) – Abbrechen für einen Ordner",
+                                          filetypes=[("Daten", "*.csv *.tsv *.jsonl *.json *.txt *.pt"),
+                                                     ("Alle", "*")])
+        if not path:
+            path = filedialog.askdirectory(title="Bild-/Audio-Ordner wählen (ordner/<klasse>/…)")
+        if not path:
+            return
+
+        def job():
+            p = Project.auto(path, train=True)
+            self.after(0, lambda: self.set_project(p, f"✓ Project.auto: {p.config.name} · Test "
+                                                      f"{ {k: round(v, 3) for k, v in p.last_test.items()} }"))
+            return str(p.perfection_check())
+
+        self._run_bg("Automatisch aus Daten", job)
 
     # ------------------------------------------------------------ Qualität
     def perfection_check(self) -> None:

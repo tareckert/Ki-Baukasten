@@ -43,7 +43,7 @@ Prioritäten: `genauigkeit` (möglichst gute Ergebnisse), `geschwindigkeit` (sch
 
 ## Techniken-Katalog
 
-112 Techniken, die Communitys, Forschung und Firmen nutzen – jede an/abwählbar (`p.enable('qlora')`, `p.disable('qlora')` stellt den vorherigen Zustand exakt wieder her).
+114 Techniken, die Communitys, Forschung und Firmen nutzen – jede an/abwählbar (`p.enable('qlora')`, `p.disable('qlora')` stellt den vorherigen Zustand exakt wieder her).
 
 ### Stabilität
 
@@ -96,8 +96,9 @@ Schneller trainieren und rechnen.
 | `channels_last` | Speicherlayout channels_last | NVIDIA, timm | GPU, CNN |
 | `cudnn_benchmark` | cuDNN-Benchmark | torchvision-Referenzskripte | GPU |
 | `daten_parallel_laden` | Daten parallel laden | PyTorch-DataLoader-Praxis |  |
-| `fused_optimizer` | Fusionierter Optimierer | PyTorch AdamW(fused=True) | nur CUDA |
+| `fused_optimizer` | Fusionierter Optimierer (erzwingen) | PyTorch AdamW(fused=True) | Standard ist bereits automatisch |
 | `gqa` | Grouped-Query-Attention | LLaMA 2/3, Mistral, Gemma |  |
+| `auto_batchgroesse` | Batchgröße an den GPU-Speicher anpassen | Lightning auto_scale_batch_size |  |
 
 ### Große Modelle, kleine Hardware
 
@@ -116,7 +117,7 @@ Speicher sparen, auslagern, stückweise rechnen.
 | `stream_ram` | Blöcke trainierbar im RAM (Streaming) | Prinzip von DeepSpeed ZeRO-Offload |  |
 | `stream_ssd` | Eingefrorene Basis auf der SSD (Streaming) | Prinzip von ZeRO-Infinity |  |
 | `split_cpu` | Teile auf der CPU rechnen (device_map) | Hugging Face accelerate device_map |  |
-| `layerweise` | Schicht für Schicht von der SSD (Inferenz) | AirLLM | nur Inferenz (vor dem Training ausschalten oder Blöcke einfrieren) |
+| `layerweise` | Schicht für Schicht von der SSD (Inferenz) | AirLLM | beim Training trainierbarer Blöcke automatisch als SSD-Streaming |
 | `lisa` | LISA: wenige Blöcke gleichzeitig trainieren | LISA (Pan et al. 2024) |  |
 | `oom_schutz` | Speichermangel: Batch automatisch teilen | Lightning auto_scale (Prinzip) |  |
 | `bf16_gewichte` | Gewichte komplett in bf16 | reines bf16-Training großer LLMs |  |
@@ -141,6 +142,7 @@ Gute Einstellungen automatisch finden.
 |---|---|---|---|
 | `zufallssuche` | Zufallssuche | Bergstra & Bengio (2012) |  |
 | `gittersuche` | Gittersuche | scikit-learn GridSearch |  |
+| `auto_lernrate` | Lernrate automatisch bestimmen (LR-Finder) | fastai lr_find, Lightning Tuner |  |
 
 ### Schwarmintelligenz
 
@@ -183,7 +185,7 @@ Sensible Daten schützen.
 
 | Kennung | Technik | Wer nutzt es | Hinweis |
 |---|---|---|---|
-| `dp_sgd` | Differential Privacy (DP-SGD) | Google, Apple, US-Zensus | langsam (jedes Beispiel einzeln) |
+| `dp_sgd` | Differential Privacy (DP-SGD) | Google, Apple, US-Zensus | langsam (jedes Beispiel einzeln); BatchNorm wird dafür durch GroupNorm ersetzt |
 
 ### Überwachung & Reproduzierbarkeit
 
@@ -291,7 +293,7 @@ Zusätzlich: Batch automatisch teilen bei Speichermangel (`memory.oom_strategy='
 
 ## Anforderungs-Katalog & Perfektions-Check
 
-53 Anforderungen in 6 Phasen (Daten, Modell, Training, Bewertung, Vertrauen & Sicherheit, Einsatz & Betrieb), je Anwendung; 51 davon sind im Baukasten umsetzbar. `project.perfection_check()` zeigt für das eigene Projekt aktiv · eingebaut · aus · offen · fehlt mit Punktzahl, `apply_perfection()` schaltet alles Empfohlene ein, CLI `perfektion`, GUI „Qualität“. Vollständig: [ANFORDERUNGEN.md](ANFORDERUNGEN.md).
+56 Anforderungen in 6 Phasen (Daten, Modell, Training, Bewertung, Vertrauen & Sicherheit, Einsatz & Betrieb), je Anwendung; 54 davon sind im Baukasten umsetzbar. `project.perfection_check()` zeigt für das eigene Projekt aktiv · eingebaut · aus · offen · fehlt mit Punktzahl, `apply_perfection()` schaltet alles Empfohlene ein, CLI `perfektion`, GUI „Qualität“. Vollständig: [ANFORDERUNGEN.md](ANFORDERUNGEN.md).
 
 ## Daten, Bewertung, Vertrauen, Einsatz
 
@@ -308,6 +310,16 @@ Zusätzlich: Batch automatisch teilen bei Speichermangel (`memory.oom_strategy='
 | Wenige Labels | Active Learning (Unsicherheit, Marge, Entropie, Vielfalt), Pseudo-Labeling | `select_for_labeling()`, `pseudo_label()` |
 | Domänen | U-Net-Segmentierung, Audio-Klassifikation, Instruction-Tuning (Verlust nur auf Antworten), Beam Search, n-Gramm-Sperre | `model = unet`, `ask()`, `generation.*` |
 | Einsatz | Modellkarte, Umgebung, gespeicherte Vorverarbeitung, Rohdaten-Vorhersage, HTTP-Dienst, Fortsetzen vom Checkpoint | `model_card()`, `save/load`, `predict_raw()`, `serve()`, `training.resume_from` |
+
+## Leistung, Hardware & schlanker Export
+
+| Bereich | Möglichkeiten | Wo |
+|---|---|---|
+| Ein Aufruf | Datenart erkennen → Vorlage → Empfehlungen → Training → Test → Basis | `Project.auto(datei)`, CLI `auto` |
+| Hardware-Automatik | bf16/fp16/aus, TF32, cuDNN-Benchmark, channels_last, gepinnter Speicher je Gerät | `memory.* = auto`, `hardware_report()`, CLI `hardware` |
+| Tempo | fusionierter Optimierer, `TensorBatchLoader`, eine Synchronisation je Schritt, GQA ohne KV-Kopien | automatisch |
+| Automatisch einstellen | Lernrate (LR-Finder), Batchgröße passend zum GPU-Speicher | `training.auto_lr`, `training.auto_batch_size` |
+| Schlanker Export | Hüllen entfernen, EMA, LoRA exakt, BatchNorm falten, Ungenutztes entfernen, Präzision, Prüfung, kompakte projekt.json | `deployment.export.*`, `export(...)`, `last_export` |
 
 ## Anpassen – jede Schicht, jedes Modul, jeder Tensor
 
@@ -489,6 +501,8 @@ Verstehen, was die KI tut.
 | `automl` | automatische Hyperparameter-Suche |
 | `verteilt` | verteilt trainieren (mehrere GPUs/Rechner) |
 | `generieren` | aus gespeichertem Projekt generieren |
+| `auto` | von den Daten zur fertigen KI in einem Schritt |
+| `hardware` | Rechengerät und automatisch gewählte Einstellungen |
 | `perfektion` | Anforderungs-Katalog: Perfektions-Check eines Projekts |
 | `datenpruefung` | Daten prüfen (Lecks, Duplikate, Klassen …) |
 | `bewerten` | Validierung, Test, Basis, Fehleranalyse, Kalibrierung |
@@ -498,4 +512,4 @@ Verstehen, was die KI tut.
 | `doku` | Parameter-Referenz exportieren |
 | `gui` | grafische Oberfläche |
 
-Grafische Oberfläche: `python -m ki_baukasten gui` – Menü (Datei · Assistent · Einstellungen · Techniken · Ausführen · Analyse · Qualität · Einsatz · Hilfe), Ziel-Assistent, Techniken-Fenster mit Reitern, Perfektions-Check, Datenprüfung, Test, Basis, Fehleranalyse, Kalibrierung, Modellkarte, HTTP-Dienst, Einstellungsbaum mit Tooltips und An/Aus/Eigen-Schaltern je Einstellung, Ansichtsfilter, Probelauf & Gewichte, Reduzieren/Export mit Notfall-Ausführung, Modell importieren, Rückgängig/Wiederholen.
+Grafische Oberfläche: `python -m ki_baukasten gui` – Menü (Datei · Assistent · Einstellungen · Techniken · Ausführen · Analyse · Qualität · Einsatz · Hilfe; „Datei → Automatisch aus Daten…“), Ziel-Assistent, Techniken-Fenster mit Reitern, Perfektions-Check, Datenprüfung, Test, Basis, Fehleranalyse, Kalibrierung, Modellkarte, HTTP-Dienst, Einstellungsbaum mit Tooltips und An/Aus/Eigen-Schaltern je Einstellung, Ansichtsfilter, Probelauf & Gewichte, Reduzieren/Export mit Notfall-Ausführung, Modell importieren, Rückgängig/Wiederholen.

@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 from ki_baukasten import Project, Trainer, TrainingConfig, build_model
 from ki_baukasten.analysis.export import fold_batchnorm, prepare_for_export
 from ki_baukasten.components.feedforward import MixtureOfExperts, MoEConfig
+from ki_baukasten.core.errors import ConfigError
 from ki_baukasten.training.data_utils import DictDataset, TensorBatchLoader, collate, make_loader, split_dataset
 from ki_baukasten.training.paradigms import main_output
 from ki_baukasten.training.trainer import EMA, LazyMetrics, mean_metrics
@@ -128,7 +129,8 @@ def test_tensor_batch_loader_identical_to_dataloader():
     torch.manual_seed(3)
     b = list(DataLoader(rest, batch_size=16, shuffle=True, collate_fn=collate))
     after_b = torch.rand(1)
-    assert all(torch.equal(x["inputs"], y["inputs"]) and torch.equal(x["m"]["a"], y["m"]["a"]) for x, y in zip(a, b))
+    assert len(a) == len(b) and all(torch.equal(x["inputs"], y["inputs"]) and torch.equal(x["m"]["a"], y["m"]["a"])
+                                    for x, y in zip(a, b))
     assert torch.equal(after_a, after_b)
 
 
@@ -255,3 +257,90 @@ def test_prepare_for_export_keeps_original_untouched():
     prepare_for_export(p.model, p._example_input())
     assert all(torch.equal(before[k], v) for k, v in p.model.state_dict().items())
     assert any(isinstance(m, torch.nn.BatchNorm2d) for m in p.model.modules())
+
+
+def _csv(path, rows, header):
+    import csv
+
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(header)
+        w.writerows(rows)
+
+
+def test_detect_data_kinds(tmp_path):
+    import random
+
+    from ki_baukasten.project import detect_data
+
+    rng = random.Random(0)
+    _csv(tmp_path / "k.csv", [[rng.random(), rng.choice("ab"), rng.choice(["ja", "nein"])] for _ in range(50)],
+         ["x", "farbe", "kauft"])
+    assert detect_data(tmp_path / "k.csv", "kauft")[0] == "tabellen_klassifikation"
+    _csv(tmp_path / "r.csv", [[rng.random(), rng.random() * 1000] for _ in range(80)], ["x", "preis"])
+    assert detect_data(tmp_path / "r.csv")[0] == "tabellen_regression"
+    _csv(tmp_path / "t.csv", [["Das ist ein recht langer Beispieltext Nummer %d" % i, "a"] for i in range(30)],
+         ["text", "label"])
+    preset, data = detect_data(tmp_path / "t.csv")
+    assert preset == "text_klassifikation" and data["text_column"] == "text"
+    (tmp_path / "q.jsonl").write_text('{"prompt": "a", "response": "b"}\n', encoding="utf-8")
+    assert detect_data(tmp_path / "q.jsonl")[0] == "sprachmodell_sft"
+    (tmp_path / "bilder" / "rot").mkdir(parents=True)
+    (tmp_path / "bilder" / "rot" / "1.png").write_bytes(b"")
+    assert detect_data(tmp_path / "bilder")[0] == "bildklassifikation_cnn"
+    with pytest.raises(ConfigError, match="nicht gefunden"):
+        detect_data(tmp_path / "fehlt.csv")
+
+
+def test_detect_data_excel_csv_and_consistent_task(tmp_path):
+    import random
+
+    from ki_baukasten.data.files import CSVConfig, load_csv
+    from ki_baukasten.project import detect_data
+
+    rng = random.Random(1)
+    lines = ["flaeche;preis"] + [f"{rng.uniform(20, 99):.1f}".replace(".", ",") + f";{rng.randint(1, 9)},{i}"
+                                 for i in range(60)]
+    (tmp_path / "de.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    preset, data = detect_data(tmp_path / "de.csv")
+    assert preset == "tabellen_regression" and data["delimiter"] == ";"
+    assert load_csv(CSVConfig(**{k: v for k, v in data.items() if k != "name"})).info["task"] == "regression"
+    # ganzzahliges Ziel mit vielen Werten: Vorlage und Lader müssen dieselbe Aufgabe wählen
+    _csv(tmp_path / "n.csv", [[rng.random(), rng.randint(0, 45)] for _ in range(100)], ["x", "anzahl"])
+    preset, data = detect_data(tmp_path / "n.csv")
+    task = load_csv(CSVConfig(**{k: v for k, v in data.items() if k != "name"})).info["task"]
+    assert task == ("regression" if preset == "tabellen_regression" else "classification")
+
+
+def test_project_auto_regression_in_real_units(tmp_path):
+    import random
+
+    warnings.simplefilter("ignore")
+    rng = random.Random(0)
+    rows = []
+    for _ in range(400):
+        a = rng.uniform(20, 200)
+        rows.append([round(a, 1), rng.randint(1, 6), round(a * 3000 + rng.gauss(0, 5000))])
+    _csv(tmp_path / "preise.csv", rows, ["flaeche", "zimmer", "preis"])
+    p = Project.auto(tmp_path / "preise.csv", steps=200, **QUIET)
+    assert p.config.name == "tabellen_regression" and p.last_test["test_r2"] > 0.9
+    assert p.last_baseline["modell_mae"] < p.last_baseline["basis_mae"] / 3
+    value = p.predict_raw([{"flaeche": 100, "zimmer": 3}])["vorhersage"][0]
+    assert 240_000 < value < 360_000                     # echte Einheiten (Ziel-Skalierung zurückgerechnet)
+    assert {"checkpoints", "log_datei"}.isdisjoint({r.technique.key for r in p.techniques(status="an")})
+
+
+def test_cli_auto_and_hardware(tmp_path, capsys):
+    import random
+
+    from ki_baukasten.ui.cli import main as cli
+
+    rng = random.Random(1)
+    _csv(tmp_path / "k.csv", [[a := rng.random(), rng.random(), "ja" if a > 0.5 else "nein"] for _ in range(200)],
+         ["a", "b", "y"])
+    cli(["auto", str(tmp_path / "k.csv"), "--schritte", "40", "--setze", "training.verbose=false",
+         "--setze", "deployment.show_after_training=false", "--speichern", str(tmp_path / "ki")])
+    out = capsys.readouterr().out
+    assert "Test:" in out and (tmp_path / "ki" / "MODELLKARTE.md").exists()
+    cli(["hardware"])
+    assert "Automatisch gewählt" in capsys.readouterr().out

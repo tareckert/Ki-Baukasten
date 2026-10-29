@@ -3,15 +3,24 @@
 Ein Python-Baukasten (PyTorch), mit dem sich **KIs und ganze KI-Systeme bis ins kleinste Detail** zusammenstellen,
 kombinieren, trainieren und speichern lassen – mit einer **Erklärung zu jeder einzelnen Einstellung**.
 
-- **Über 1.500 einzeln dokumentierte Einstellungen** (alle Parameter aller 279 Konfigurationsklassen) – jede mit
+- **Ein Aufruf von den Daten zur fertigen KI**: `Project.auto("kunden.csv", target="kauft")` erkennt die Datenart
+  (Tabelle, Texte, Bilder, Audio, Frage/Antwort, Text), wählt die Vorlage, schaltet alles Empfohlene ein, trainiert,
+  testet und vergleicht mit einer Basis – danach bleibt alles einzeln änderbar (CLI `auto`, GUI „Datei → Automatisch
+  aus Daten…“)
+- **So schnell wie von Hand optimiert**: pro Trainingsschritt gleichauf mit einer handgeschriebenen PyTorch-Schleife
+  (gemessen), Hardware-Automatik (bf16/fp16, TF32, cuDNN-Benchmark, channels_last, gepinnter Speicher je Gerät),
+  fusionierter Optimierer, Grouped-Query-Attention ohne KV-Kopien, eine GPU-Synchronisation je Schritt
+- **Export ohne Ballast**: Trainings-Hüllen entfernt, EMA übernommen, LoRA exakt eingerechnet, BatchNorm gefaltet,
+  ungenutzte Gewichte/Puffer entfernt, Ausgabe gegen das Original geprüft – jeder Schritt schaltbar
+- **Über 1.550 einzeln dokumentierte Einstellungen** (alle Parameter aller 280 Konfigurationsklassen) – jede mit
   Tooltip: *Was ist das? Warum/Nutzen? Wofür wichtig? Tipp* – und jede mit Schalter **An · Aus · Eigen**
-- **Anforderungs-Katalog & Perfektions-Check**: 53 Anforderungen, die eine KI je nach Anwendung (Tabellen, Bilder,
+- **Anforderungs-Katalog & Perfektions-Check**: 56 Anforderungen, die eine KI je nach Anwendung (Tabellen, Bilder,
   Segmentierung, Sprache, Generierung, Zeitreihen, Audio, RL, Entscheidungen über Menschen …) und Phase (Daten →
   Modell → Training → Bewertung → Vertrauen → Einsatz) braucht; `project.perfection_check()` zeigt für das eigene
   Projekt, was **aktiv**, **eingebaut**, **ausgeschaltet**, **offen** oder **nicht vorhanden** ist (mit Punktzahl),
   `apply_perfection()` schaltet alles Empfohlene ein – siehe [`docs/ANFORDERUNGEN.md`](docs/ANFORDERUNGEN.md)
 - **Übersichtlich in drei Ebenen**: **Ziel-Assistent** (Zweck und Prioritäten angeben → passende Modelle werden
-  empfohlen, unpassende abgeraten), **Techniken-Katalog** (112 Verfahren aus Community, Forschung und Industrie in
+  empfohlen, unpassende abgeraten), **Techniken-Katalog** (114 Verfahren aus Community, Forschung und Industrie in
   14 Kategorien, je mit einem Häkchen an/aus) und **Einstellungen** (jede einzeln, mit Ansichtsfilter)
 - **399 austauschbare Komponenten** in 27 Registries (Aktivierungen, Normen, Attention-Kernel, Mixer, FFN/MoE/KAN,
   Modelle, Optimierer, Zeitpläne, Verluste, **Metriken**, Belohnungen, Tensor- und Modul-Operationen, Kompressions-
@@ -82,22 +91,23 @@ Es gibt keine „verbotenen“ Einstellungen: auch experimentelle, exotische ode
 5. [Daten, Metriken & Bewertung](#daten-metriken--bewertung)
 6. [Vertrauen: Kalibrierung, Unsicherheit, Erklärungen, Fairness, Robustheit](#vertrauen-kalibrierung-unsicherheit-erklärungen-fairness-robustheit)
 7. [Einsatz: Modellkarte, Rohdaten, HTTP-Dienst](#einsatz-modellkarte-rohdaten-http-dienst)
-8. [Grundkonzepte](#grundkonzepte)
-9. [Was alles drin ist](#was-alles-drin-ist)
-10. [Vorlagen nach Anwendungsgebiet](#vorlagen-nach-anwendungsgebiet)
-11. [Speicher & große Modelle](#speicher--große-modelle) – Streaming, Quantisierung, LoRA, 8-Bit-Optimierer
-12. [Notfall-Ausführung](#notfall-ausführung-wenn-es-trotz-verkleinern-nicht-passt)
-13. [Mamba, Generierung & KV-Cache](#mamba-generierung--kv-cache)
-14. [Modelle eindampfen, Lehrer-Schüler & Zielsysteme](#modelle-eindampfen-lehrer-schüler--zielsysteme)
-15. [Ablauf: Suche, Schwarm, Evolution, föderiert](#ablauf-suche-schwarm-evolution-föderiert)
-16. [Logger & Cluster](#logger--cluster)
-17. [Fremde Modelle importieren & Probelauf](#fremde-modelle-importieren--probelauf)
-18. [Aufbau, Ratgeber & Export](#aufbau-ratgeber--export)
-19. [Reinforcement Learning & Belohnungen](#reinforcement-learning--belohnungen)
-20. [Eigene Komponenten](#eigene-komponenten)
-21. [Projektstruktur](#projektstruktur)
-22. [Tests](#tests)
-23. [Ehrliche Grenzen](#ehrliche-grenzen)
+8. [Leistung, Hardware & schlanker Export](#leistung-hardware--schlanker-export)
+9. [Grundkonzepte](#grundkonzepte)
+10. [Was alles drin ist](#was-alles-drin-ist)
+11. [Vorlagen nach Anwendungsgebiet](#vorlagen-nach-anwendungsgebiet)
+12. [Speicher & große Modelle](#speicher--große-modelle) – Streaming, Quantisierung, LoRA, 8-Bit-Optimierer
+13. [Notfall-Ausführung](#notfall-ausführung-wenn-es-trotz-verkleinern-nicht-passt)
+14. [Mamba, Generierung & KV-Cache](#mamba-generierung--kv-cache)
+15. [Modelle eindampfen, Lehrer-Schüler & Zielsysteme](#modelle-eindampfen-lehrer-schüler--zielsysteme)
+16. [Ablauf: Suche, Schwarm, Evolution, föderiert](#ablauf-suche-schwarm-evolution-föderiert)
+17. [Logger & Cluster](#logger--cluster)
+18. [Fremde Modelle importieren & Probelauf](#fremde-modelle-importieren--probelauf)
+19. [Aufbau, Ratgeber & Export](#aufbau-ratgeber--export)
+20. [Reinforcement Learning & Belohnungen](#reinforcement-learning--belohnungen)
+21. [Eigene Komponenten](#eigene-komponenten)
+22. [Projektstruktur](#projektstruktur)
+23. [Tests](#tests)
+24. [Ehrliche Grenzen](#ehrliche-grenzen)
 
 Ausführliche Erklärung des inneren Aufbaus und aller Eingriffspunkte: [`docs/ARCHITEKTUR.md`](docs/ARCHITEKTUR.md).
 
@@ -121,6 +131,11 @@ Die grafische Oberfläche nutzt Tkinter (in Python enthalten; unter Debian/Ubunt
 
 ```python
 from ki_baukasten import Project
+
+# Variante 0: direkt aus den Daten – Datenart erkennen, Vorlage, Empfehlungen, Training, Test, Basis-Vergleich
+p = Project.auto("kunden.csv", target="kauft")
+print(p.last_test, p.last_baseline)
+p.save("ausgaben/kunden_ki")                        # inkl. Vorverarbeitung + Modellkarte → p.serve() / predict_raw
 
 # Variante A: nach Zielen – der Assistent wählt die Vorlage und schaltet passende Techniken ein
 p = Project.from_goals(description="Spam-Filter direkt auf dem Handy", task="text_klassifizieren",
@@ -160,6 +175,8 @@ schueler = p.distill(width=0.5, depth=0.5)          # Lehrer-Schüler: kleineres
 ### Kommandozeile
 
 ```bash
+python -m ki_baukasten auto kunden.csv --ziel kauft --speichern ausgaben/kunden_ki  # Daten → fertige KI
+python -m ki_baukasten hardware                                                  # Gerät + Automatik
 python -m ki_baukasten ziele --text "Bilder auf dem Handy in Echtzeit erkennen" --erstellen neu.json  # Assistent
 python -m ki_baukasten perfektion meine_ki.json --anwenden --speichern meine_ki.json  # Anforderungen prüfen + an
 python -m ki_baukasten perfektion --katalog -o docs/ANFORDERUNGEN.md           # ganzer Anforderungs-Katalog
@@ -238,7 +255,7 @@ Trotz über tausend Einstellungen bleibt es übersichtlich, weil man auf drei Eb
 | Ebene | Wofür | Python | CLI | GUI |
 |---|---|---|---|---|
 | **1. Ziele** | Zweck, wichtige Punkte, Zielgerät → Modell wird empfohlen, Unpassendes abgeraten | `Project.from_goals`, `set_goals`, `goal_check` | `ziele` | ✚ Neue KI nach Zielen |
-| **2. Techniken** | 112 bewährte Verfahren in 14 Kategorien mit einem Häkchen | `enable`, `disable`, `techniques` | `techniken` | Techniken |
+| **2. Techniken** | 114 bewährte Verfahren in 14 Kategorien mit einem Häkchen | `enable`, `disable`, `techniques` | `techniken` | Techniken |
 | **3. Einstellungen** | jede einzelne: An (empfohlen) · Aus · Eigen | `switch`, `set(…, "aus")`, `switches` | `schalter` | Formular + Ansicht |
 
 **Ziel-Assistent** – Beispiel `evaluate_goals({"description": "Pflanzenkrankheiten per Handykamera in Echtzeit",
@@ -358,6 +375,43 @@ Der HTTP-Dienst ist standardmäßig nur lokal erreichbar, im Netzwerk nur mit AP
 HTTP keine Dateipfade an (Bilder/Audio als Base64) und begrenzt Anfragegröße und Batch. Lange Läufe setzen mit
 `training.resume_from = "auto"` beim neuesten Checkpoint fort. `project.generation` legt die Standard-Generierung fest
 (Temperatur, top-p, **Beam Search**, **Wiederholungssperre**), auch für den HTTP-Dienst.
+
+## Leistung, Hardware & schlanker Export
+
+**Gleiches Tempo wie von Hand optimiert.** Gemessen auf derselben CPU mit demselben Modell: ein Trainingsschritt
+des Baukastens liegt innerhalb weniger Prozent einer handgeschriebenen PyTorch-Schleife mit fusioniertem AdamW
+(Transformer, Median abwechselnder Messungen: von Hand 32,9–33,7 ms, Baukasten 32,4–35,3 ms je Lauf; Beispiel 28
+misst es auf dem eigenen Rechner). Erreicht durch:
+
+| Maßnahme | Wirkung |
+|---|---|
+| Fusionierter Optimierer automatisch (`optimizer.fused = None`) | AdamW-Schritt auf der CPU ~5× schneller als die Standardausführung |
+| `TensorBatchLoader` für Daten im Speicher | Batch per Index-Zugriff statt Beispiel für Beispiel – gleiche Batches und Zufallsfolge wie `DataLoader` |
+| Kennzahlen bleiben Tensoren, gebündelte NaN-Prüfung + Clipping | eine GPU-Synchronisation je Schritt statt einer je Parameter-Tensor |
+| Python-Längenprüfung der Positionen, MoE mit sortierter Zuteilung | keine versteckten Synchronisationen im Vorwärtsdurchlauf |
+| Grouped-Query-Attention direkt an SDPA (`enable_gqa`), Decode-Schritt ohne Maske | keine KV-Kopien, schnellere Generierung |
+| EMA gebündelt (`torch._foreach_lerp_`) | Mittelung ohne Python-Schleife je Parameter |
+
+**Hardware-Automatik** (`memory.*` = `auto`/`None`, jederzeit fest einstellbar; `p.hardware_report()`, CLI
+`hardware`): NVIDIA ab Ampere → bf16 + TF32, Volta/Turing → fp16 mit Loss-Scaling, Faltungsnetze auf NVIDIA →
+cuDNN-Benchmark und channels_last, CUDA → gepinnter Speicher; Apple/CPU → volle Präzision (dort meist nicht
+schneller). Optional: `training.auto_batch_size` (größte sicher passende Batchgröße auf GPUs, Lernrate √-skaliert),
+`training.auto_lr` (LR-Finder vor dem Training).
+
+**Export ohne Ballast** (`deployment.export`, `p.export(...)`, Bericht in `p.last_export`): auf einer Kopie werden
+Checkpointing-/Streaming-/Auslagerungs-Hüllen entfernt, EMA-Gewichte übernommen, LoRA eingerechnet (auf QLoRA-Basis
+exakt behalten, entquantisiert oder bewusst neu quantisiert), BatchNorm in Faltungen gefaltet und alle Parameter und
+Puffer entfernt, die der Rechengraph der Vorhersage nie benutzt (z. B. der Diskriminator eines GANs, Sampling-
+Tabellen eines Diffusionsmodells, Zähler von BatchNorm). Jeder Schritt wird gegen das Original geprüft und bei
+Abweichung zurückgenommen. `projekt.json` enthält standardmäßig nur geänderte Einstellungen
+(`deployment.export.compact_config`).
+
+```python
+p.export("ausgaben/modell", "export")                 # .pt2 (torch.export) – auch "torchscript", "onnx", "state_dict"
+print(p.last_export)  # z. B. GAN: "18.434 Parameter (0.07 MB; vorher 35.459 / 0.14 MB) · 12 ungenutzte Tensoren
+                      #  entfernt · geprüft: größte Abweichung zum Original 0"
+p.export("ausgaben/gpu", "export", dtype="bfloat16", fold_batchnorm=False)   # jeder Schritt einzeln schaltbar
+```
 
 ---
 
@@ -901,8 +955,8 @@ ki_baukasten/
 ├── ui/            cli, gui (Tkinter), assistant (Ziel-Assistent, Techniken-Fenster), inspector (Probelauf-Fenster),
 │                  docs (Referenz + Möglichkeiten-Katalog), serve (HTTP-Dienst)
 └── project.py     Project-Fassade
-examples/          27 ausführlich kommentierte Beispiele + Beispiel-Konfigurationsdatei
-tests/             ~530 Tests (pytest), CI per GitHub Actions (Python 3.10 und 3.12)
+examples/          28 ausführlich kommentierte Beispiele + Beispiel-Konfigurationsdatei
+tests/             ~560 Tests (pytest), CI per GitHub Actions (Python 3.10 und 3.12)
 docs/              ARCHITEKTUR.md, MOEGLICHKEITEN.md (Katalog), PARAMETER_REFERENZ.md, ANFORDERUNGEN.md
                    (die letzten drei automatisch erzeugt)
 ```
@@ -928,6 +982,7 @@ docs/              ARCHITEKTUR.md, MOEGLICHKEITEN.md (Katalog), PARAMETER_REFERE
 | `25_eigene_csv_daten.py` | CSV mit Kategorien/Lücken, Datenprüfung, Metriken, Testmenge, Basis, Fehleranalyse, Drift |
 | `26_vertrauen.py` | Kalibrierung, Conformal, Enthaltung, MC-Dropout, Erklärungen, Fairness, PGD, Active Learning |
 | `27_einsatz_und_domaenen.py` | Speichern mit Modellkarte, Laden ohne Daten, HTTP-Dienst, Segmentierung, Audio, SFT + Beam Search |
+| `28_auto_hardware_export.py` | `Project.auto` aus einer CSV, Hardware-Bericht, Tempo-Vergleich mit reinem PyTorch, schlanker Export |
 
 Konvention: **Code-Bezeichner englisch** (wie in PyTorch und Fachliteratur), **alle Erklärungen,
 Kommentare, Tooltips und Ausgaben deutsch**.
@@ -938,7 +993,7 @@ Kommentare, Tooltips und Ausgaben deutsch**.
 
 ```bash
 pip install pytest
-pytest            # ~530 Tests, ca. 70–100 s auf CPU
+pytest            # ~560 Tests, ca. 80–110 s auf CPU
 ```
 
 Geprüft werden u. a.: jede Komponente jeder Registry, jedes Modell vorwärts/rückwärts, Kausalität aller Mixer und
@@ -958,7 +1013,14 @@ beim Neutrainieren fest, Klassengewichte, Temperature Scaling, Conformal-Abdecku
 Integrated Gradients vollständig, Occlusion findet das entscheidende Token, Angriffe bleiben in der ε-Kugel,
 Fortsetzen vom Checkpoint, U-Net/Segmentierung, WAV-Lesen, SFT-Verlust nur auf Antworten, Beam Search,
 Wiederholungssperre, Laden ohne Trainingsdaten, HTTP-Dienst (inkl. API-Schlüssel, keine Dateipfade), Katalog-
-Konsistenz, Perfektions-Check je Anwendung und alle neuen CLI-Befehle.
+Konsistenz, Perfektions-Check je Anwendung und alle neuen CLI-Befehle. Runde 5: zuvor nicht exportierbare Modelle
+(Encoder-Transformer, ViT, MoE, GNN, Seq2Seq, Diffusion, GAN) exportieren mit gleicher Ausgabe, BatchNorm-Falten
+exakt, GAN-Export ohne Diskriminator, QLoRA-Export exakt, keine Trainings-Hüllen im Export, EMA-Übernahme und
+EMA-genaues Early Stopping, `TensorBatchLoader` = `DataLoader` (Batches und Zufallsfolge), fusionierter Optimierer,
+MoE-Zuteilung = Referenz, Hardware-Auflösung (Ampere/Volta/CPU simuliert), zweites `train()` mit SSD-Streaming,
+Techniken-Korrekturen, kompakte Konfiguration, `Project.auto` (Regression in echten Einheiten). Zusätzlich liefen
+alle 37 Vorlagen durch Training → Speichern/Laden (gleiche Ausgabe) → Export in alle Formate (gleiche Ausgabe) und
+jede anwendbare Technik auf sieben Vorlagen durch ein echtes Training.
 
 ---
 
@@ -1007,3 +1069,14 @@ Konsistenz, Perfektions-Check je Anwendung und alle neuen CLI-Befehle.
 - Der **HTTP-Dienst** ist für Tests, Prototypen und kleine Lasten gedacht (ein Modell, Anfragen nacheinander, kein
   TLS); für Produktion Export + eigener Server/Reverse-Proxy. **Audio** liest nur 16-Bit-PCM-WAV.
 - **PSI-Schwellen** (0,1 / 0,25) und die Grenzwerte der Datenprüfung sind bewährte Faustregeln, keine Gesetze.
+- Die **GPU-Zweige der Hardware-Automatik** (bf16/fp16/TF32/cuDNN/channels_last, Auto-Batchgröße) sind mit
+  simulierten Geräten getestet; echte GPUs gibt es in dieser Umgebung nicht. Der Tempo-Vergleich mit reinem PyTorch
+  wurde auf der CPU gemessen.
+- **MoE im Export** rechnet alle Experten und gewichtet (gleiches Ergebnis, aber mehr Rechenaufwand als das
+  Routing); die Kapazitätsgrenze gilt nur im Training.
+- **„Ungenutztes entfernen“** stützt sich auf den Rechengraphen der Vorhersage (`forward`): Teile, die nur andere
+  Methoden nutzen (z. B. `sample()` eines Diffusionsmodells, die Streuung einer RL-Policy), fehlen im Export – dafür
+  `strip_unused=False` setzen. **Kompakte projekt.json** übernimmt beim Laden die Standardwerte der jeweiligen
+  Version; für exakt eingefrorene Konfigurationen `compact_config=False`.
+- Ändert man eine Einstellung unter `training.*`, `model.*`, `memory.*` oder `data.*`, wird beim nächsten `train()`
+  neu gebaut und von vorn trainiert (reproduzierbar); Weitertrainieren: `continue_training(...)`.

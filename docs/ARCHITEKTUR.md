@@ -25,7 +25,8 @@ flowchart LR
   M --> V["Vertrauen<br/>calibrate · Conformal · MC-Dropout · TTA ·<br/>explain · fairness · robustness"]
   V --> R["Zielsystem-Übersicht<br/>recommend_for · reduce_for"]
   R --> K["Kompression<br/>Pruning · Low-Rank · Quantisierung ·<br/>Heilen / Lehrer-Schüler"]
-  K --> H["Projekt speichern<br/>projekt.json · modell.pt · vorverarbeitung.json ·<br/>MODELLKARTE.md · umgebung.json"]
+  K --> EX["Export-Vorbereitung (Kopie)<br/>Hüllen weg · EMA · LoRA · BatchNorm falten ·<br/>Ungenutztes entfernen · geprüft"]
+  EX --> H["Projekt speichern<br/>projekt.json (kompakt) · modell.pt · vorverarbeitung.json ·<br/>MODELLKARTE.md · umgebung.json"]
   H --> I["Inferenz / Generierung (Cache, Beam Search)<br/>predict_raw · HTTP-Dienst · Export (torch.export, ONNX …)"]
   I --> DR["Betrieb<br/>drift_report · continue_training"]
   X["Fremdes Modell<br/>.pt2 · TorchScript · state_dict · HF"] -->|import_model| D
@@ -57,6 +58,9 @@ flowchart LR
 | Metriken | `training/metrics.py` | `training.metrics`, `training.auto_metrics`, `evaluate()`, `test()`, `baseline()`, `error_analysis()` |
 | Vertrauen | `analysis/inference.py`, `analysis/explain.py`, `analysis/fairness.py`, `analysis/robustness.py` | `inference.*`, `calibrate()`, `predict_with_uncertainty()`, `explain_prediction()`, `feature_importance()`, `fairness_report()`, `training.adversarial`, `robustness_report()` |
 | Wenige Labels | `workflow/active.py` | `select_for_labeling()`, `pseudo_label()` |
+| Hardware-Automatik | `memory/hardware.py`, `training/optimizers.py` (`_fast`) | `memory.mixed_precision/matmul_precision = 'auto'`, `cudnn_benchmark`/`channels_last`/`training.pin_memory` = None, `hardware_report()` |
+| Schlanker Export | `analysis/export.py` | `deployment.export.*`, `export(...)`, `last_export` |
+| Ein-Aufruf-Einstieg | `project.py` (`Project.auto`, `detect_data`) | CLI `auto`, GUI „Datei → Automatisch aus Daten…“ |
 | Einsatz | `analysis/modelcard.py`, `data/artifacts.py`, `ui/serve.py` | `model_card()`, `save()/load()`, `predict_raw()`, `serve()`, `deployment.server.*`, `generation.*` |
 
 ---
@@ -175,6 +179,21 @@ Gewichte – so bleibt jede Kombination aus Umbau, Kompression und Training repr
    Normierung als JSON; `predict_raw` und der HTTP-Dienst verarbeiten Rohdaten damit genau wie im Training.
 5. **Perfektions-Check**: `requirements.py` ordnet jeder Anforderung Techniken (Status aus dem Katalog), eigene
    Prüfungen (z. B. „wurde `test()` ausgeführt?“) oder einen Hinweis auf eine Lücke zu.
+
+## 5c. Tempo und schlanker Export – wie es funktioniert
+
+1. **Ein Trainingsschritt ohne versteckte Wartezeiten**: Paradigmen geben Kennzahlen als Tensoren zurück; der
+   Trainer sammelt sie auf dem Gerät und wandelt sie erst beim Protokollieren um (`mean_metrics`, eine
+   Synchronisation). NaN-Prüfung und Gradient-Clipping laufen gebündelt (`clip_grad_norm_(foreach=True)` liefert die
+   Norm, eine Prüfung). Der Optimierer wird fusioniert gebaut, wenn das Gerät es kann (`optimizers._fast`).
+2. **Daten**: `make_loader` erkennt Tensor-Daten im Speicher (`DictDataset` und verschachtelte `Subset`s) und baut
+   einen `TensorBatchLoader` – Unterklasse von `DataLoader` mit gleichem Sampler, gleicher Länge und gleicher
+   Zufallsfolge, aber einem Index-Zugriff je Tensor statt Einzelzugriffen und `collate`.
+3. **Export-taugliche Modelle**: Modelle fragen `core.runtime.is_exporting()` ab (MoE rechnet dann dicht, GNN-Pooling
+   nutzt eine symbolische Graphanzahl, Scans den reinen PyTorch-Pfad); Längenprüfungen laufen in Python.
+4. **`prepare_for_export`** arbeitet auf einer Kopie: Hüllen entfernen → EMA → LoRA → BatchNorm falten → ungenutzte
+   Tensoren entfernen (Platzhalter ohne Verwendung im `torch.export`-Graphen, sonst Parameter ohne Gradient) →
+   Präzision. Jeder riskante Schritt wird mit dem Original verglichen und bei Abweichung zurückgenommen.
 
 ## 6. Eigene Bausteine integrieren
 

@@ -158,6 +158,43 @@ class Project:
         return p
 
     @classmethod
+    def auto(cls, source: str | Path, target: str | None = None, description: str = "", train: bool = True,
+             steps: int | None = None, **overrides: Any) -> "Project":
+        """**Ein Aufruf von den Daten zur fertigen KI**: erkennt die Datenart, wählt die passende Vorlage,
+        schaltet alle empfohlenen Anforderungen ein (Testmenge, Kalibrierung …), trainiert, testet und vergleicht
+        mit einer Basis. Alles bleibt danach einzeln änderbar.
+
+        ``source``: CSV/TSV (Tabelle oder Texte mit Labels), Bildordner (``ordner/<klasse>/*.png``), Audio-Ordner
+        (``ordner/<klasse>/*.wav``), JSONL mit ``prompt``/``response`` (Assistent), ``.txt`` (Sprachmodell) oder
+        ``.pt`` (Tensoren). ``target``: Zielspalte bei Tabellen.
+        """
+        preset, data = detect_data(Path(source), target)
+        p = cls.from_preset(preset)
+        p.config.set("data", data)
+        if description:
+            p.config.set("goals.description", description)
+        if steps is not None:
+            p.config.set("training.max_steps", steps)
+        if overrides:
+            p.config.update(overrides)
+        p.apply_perfection("empfohlen")
+        for key in ("checkpoints", "log_datei"):          # schreiben Dateien – bei Bedarf selbst einschalten
+            if key in {r.technique.key for r in p.techniques(status="an")}:
+                p.disable(key)
+        if p._verbose():
+            print(f"  Project.auto: Vorlage '{preset}', Daten '{data['name']}'")
+        if train:
+            p.train()
+            if p.test_data is not None:
+                p.test()
+            if p.config.training.paradigm.name == "supervised":
+                try:
+                    p.baseline()
+                except ConfigError:
+                    pass
+        return p
+
+    @classmethod
     def from_goals(cls, goals: Any = None, choice: int = 0, apply_techniques: bool = True,
                    **goal_fields: Any) -> "Project":
         """Neue KI aus **Zielen**: Aufgabe, Prioritäten, Daten, Zielgerät … → beste Vorlage + passende Techniken.
@@ -1703,6 +1740,13 @@ class Project:
                 target.shape[1:] else target
             const = ref.float().mean(0, keepdim=True).expand_as(target).reshape(out.shape) \
                 if target.numel() == out.numel() else torch.zeros_like(out)
+        if task == "regression":                       # in echten Einheiten (Ziel-Skalierung zurückrechnen)
+            from .training.metrics import target_inverse
+
+            inverse = target_inverse(self._info().get("target_transform"))
+            if inverse is not None:
+                const, _ = inverse(const, target)
+                out, target = inverse(out, target)
         base = compute_metrics(auto_specs(task), const, target, prefix="basis_")
         model = compute_metrics(auto_specs(task), out, target, prefix="modell_")
         result = {**base, **model}
@@ -2131,6 +2175,71 @@ class Project:
     def __repr__(self) -> str:
         return f"<Project {self.config.name!r}: model={self.config.model.name}, data={self.config.data.name}, " \
                f"paradigm={self.config.training.paradigm.name}>"
+
+
+_IMG = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp")
+
+
+def detect_data(path: Path, target: str | None = None) -> tuple[str, dict[str, Any]]:
+    """Datenart einer Datei/eines Ordners erkennen → (Vorlage, Daten-Einstellungen)."""
+    import csv as _csv
+
+    if not path.exists():
+        raise ConfigError(f"'{path}' nicht gefunden.")
+    if path.is_dir():
+        subdirs = [d for d in path.iterdir() if d.is_dir()]
+        names = {d.name.lower() for d in subdirs}
+        if {"bilder", "masken"} <= names or {"images", "masks"} <= names:
+            img = "bilder" if "bilder" in names else "images"
+            return "segmentierung_unet", {"name": "segmentation", "images": str(path / img),
+                                          "masks": str(path / ("masken" if img == "bilder" else "masks"))}
+        files = [f for d in subdirs for f in d.iterdir() if f.is_file()]
+        if any(f.suffix.lower() == ".wav" for f in files):
+            return "audio_klassifikation", {"name": "audio", "path": str(path)}
+        if any(f.suffix.lower() in _IMG for f in files):
+            return "bildklassifikation_cnn", {"name": "image_folder", "path": str(path)}
+        raise ConfigError(f"Ordner '{path}': erwartet ordner/<klasse>/*.png|*.wav oder bilder/ + masken/.")
+    suffix = path.suffix.lower()
+    if suffix in (".jsonl", ".json"):
+        return "sprachmodell_sft", {"name": "instructions", "path": str(path)}
+    if suffix == ".txt":
+        return "sprachmodell_mini", {"name": "text", "path": str(path)}
+    if suffix == ".pt":
+        return "tabellen_klassifikation", {"name": "tensor_file", "path": str(path)}
+    if suffix in (".csv", ".tsv"):
+        with open(path, newline="", encoding="utf-8") as f:
+            first = f.readline()
+            f.seek(0)
+            delim = "\t" if suffix == ".tsv" else (";" if first.count(";") > first.count(",") else ",")  # Excel (DE)
+            reader = _csv.reader(f, delimiter=delim)
+            header = next(reader)
+            rows = [r for _, r in zip(range(200), reader)]
+        target = target or header[-1]
+        if target not in header:
+            raise ConfigError(f"Zielspalte '{target}' nicht in {header}.")
+        ti = header.index(target)
+        others = [i for i in range(len(header)) if i != ti]
+        long_text = [i for i in others if rows and sum(len(r[i]) for r in rows if i < len(r)) / len(rows) > 25
+                     and sum(" " in r[i] for r in rows if i < len(r)) > len(rows) / 2]
+        if len(others) == 1 and long_text:
+            return "text_klassifikation", {"name": "text_classification", "path": str(path),
+                                           "text_column": header[long_text[0]], "label_column": target}
+        values = [r[ti] for r in rows if ti < len(r) and r[ti].strip()]
+
+        def number(v: str) -> bool:
+            try:
+                float(v.replace(",", "."))
+                return True
+            except ValueError:
+                return False
+        numeric = values and all(number(v) for v in values)
+        regression = numeric and len(set(values)) > max(10, len(values) // 5)
+        data = {"name": "csv", "path": str(path), "target": target, "delimiter": delim,
+                "task": "regression" if regression else "classification"}   # gleiche Wahl wie die Vorlage
+        if long_text:
+            data["drop_columns"] = [header[i] for i in long_text]
+        return ("tabellen_regression" if regression else "tabellen_klassifikation"), data
+    raise ConfigError(f"Unbekannte Datenart '{suffix}' – CSV/TSV, Bild-/Audio-Ordner, JSONL, TXT oder PT.")
 
 
 def _has_onnx() -> bool:
