@@ -16,11 +16,13 @@ Gliederung
 * **Stabilität** – Gradient-Clipping, NaN-Behandlung, EMA der Gewichte
 * **Curriculum** – Daten von leicht nach schwer
 * **Ablauf** – Evaluierung, Logging, Callbacks, Seeds, DataLoader
+* **Cluster** – verteiltes Training (DDP, ZeRO-1, FSDP)
 """
 
 from __future__ import annotations
 
 from ..core import (BaseConfig, ComponentListParam, ComponentParam, Level, NestedParam, Param, T)
+from .distributed import DistributedConfig
 
 
 class RegularizationConfig(BaseConfig):
@@ -213,6 +215,9 @@ class TrainingConfig(BaseConfig):
         "Hintergrundprozesse zum Datenladen.", "Schneller bei aufwendigem Laden.", "0 (einfach) bis CPU-Kerne."))
     pin_memory = Param(False, group="Daten", level=Level.EXPERT, tooltip=T(
         "Gepinnter Speicher für schnellere GPU-Übertragung.", "Schneller bei CUDA.", "GPU-Training: an."))
+
+    # --- Cluster ----------------------------------------------------------------
+    distributed = NestedParam(DistributedConfig, group="Cluster", level=Level.ADVANCED)
 
     def check(self) -> list[str]:
         problems = []

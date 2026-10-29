@@ -523,7 +523,7 @@ class Project:
         self._fit_warning()
         self.trainer = Trainer(self.model, self.config.training, self.config.memory, self.surgeon,
                                teacher=self._teacher)
-        self.model = self.trainer.model
+        self.model = self.trainer.module
         self.history = self.trainer.fit(train_data, val_data)
         d = self.config.deployment
         if self.config.training.verbose and d.show_after_training:
@@ -828,7 +828,7 @@ class Project:
             batches = self._batches(old, 8)
             fisher = fisher_information(trainer.model, batches, calibration_loss)
             trainer.penalties.append(ewc_penalty(trainer.model, fisher, strength * 100.0))
-        self.trainer, self.model = trainer, trainer.model
+        self.trainer, self.model = trainer, trainer.module
         hist = trainer.fit(train_data, val_data)
         self.history = self.history + hist
         return hist
@@ -993,13 +993,24 @@ class Project:
 
     # ================================================================ Speichern
     def save(self, directory: str | Path | None = None) -> Path:
-        """Speichert Konfiguration (projekt.json), Gewichte (modell.pt) und Verlauf (verlauf.json)."""
+        """Speichert Konfiguration (projekt.json), Gewichte (modell.pt) und Verlauf (verlauf.json).
+
+        Im verteilten Training rufen alle Prozesse ``save`` auf (FSDP sammelt die Gewichte ein);
+        geschrieben wird nur von Prozess 0.
+        """
+        from .training.distributed import is_main_process
+
         d = Path(directory or Path(self.config.output_dir) / self.config.name)
-        d.mkdir(parents=True, exist_ok=True)
-        self.config.save(d / "projekt.json")
+        state = None
         if self.model is not None:
             target = getattr(self.model, "_orig_mod", self.model)
-            torch.save(target.state_dict(), d / "modell.pt")
+            state = self.trainer.dist.model_state(target) if self.trainer is not None else target.state_dict()
+        if not is_main_process():
+            return d
+        d.mkdir(parents=True, exist_ok=True)
+        self.config.save(d / "projekt.json")
+        if state is not None:
+            torch.save(state, d / "modell.pt")
         (d / "verlauf.json").write_text(json.dumps(self.history, ensure_ascii=False, indent=1, default=str),
                                         encoding="utf-8")
         return d

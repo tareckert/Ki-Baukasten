@@ -46,6 +46,7 @@ from ..memory import MemoryConfig, MemoryManager
 from ..memory.execution import batch_len, free_memory, is_oom, split_batch
 from .config import TrainingConfig
 from .data_utils import (CurriculumSampler, as_dataset, difficulty_of, make_loader, split_dataset, to_device)
+from .distributed import DistributedContext
 from .losses import build_losses
 
 
@@ -127,8 +128,11 @@ class Trainer:
         self.cfg = (config or TrainingConfig()).validate()
         set_seed(self.cfg.seed, self.cfg.deterministic)
         self.mem = MemoryManager(memory)
+        self.dist = DistributedContext(self.cfg.distributed, self.mem.device)
+        self.mem.device = self.dist.device
         self.device = self.mem.device
         self.model = self.mem.prepare_model(model, training=True)
+        self.model = self.dist.wrap(self.model, self.cfg.paradigm.name, self.mem.cfg.mixed_precision)
         self.raw_model = model
         self.surgeon = surgeon
         if surgeon is not None:
@@ -161,9 +165,14 @@ class Trainer:
         """Effektive Akkumulationsschritte (Einstellung × automatische Batch-Teilung)."""
         return self.cfg.gradient_accumulation_steps * self._split
 
+    @property
+    def module(self) -> nn.Module:
+        """Das eigentliche Modell (ohne DDP-Hülle) – für Vorhersage, Speichern, Export."""
+        return self.dist.unwrap(self.model)
+
     # ===================================================================== Aufbau
     def log(self, text: str) -> None:
-        if self.cfg.verbose:
+        if self.cfg.verbose and self.dist.main:
             print(text, flush=True)
 
     def _layer_scale(self, name: str, n_layers: int) -> float:
@@ -210,7 +219,7 @@ class Trainer:
             groups = self._param_groups(named, spec)
             if not groups:
                 continue
-            self.optimizers[key] = spec.build(groups)
+            self.optimizers[key] = self.dist.wrap_optimizer(spec.build(groups))
             self.group_params[key] = [p for g in groups for p in g["params"]]
         unknown = set(overrides) - set(self.optimizers)
         if unknown:
@@ -293,7 +302,9 @@ class Trainer:
         if not torch.isfinite(loss.detach()):
             return self._handle_nan(key, "Verlust")
         scaled = loss / self.accumulation
-        (self.scaler.scale(scaled) if self.scaler is not None else scaled).backward()
+        last = (self._micro[key] + 1) % self.accumulation == 0
+        with self.dist.no_sync(self.model, skip=not last):
+            (self.scaler.scale(scaled) if self.scaler is not None else scaled).backward()
         self._micro[key] += 1
         self._pending.add(key)
         if self._micro[key] % self.accumulation:
@@ -333,6 +344,7 @@ class Trainer:
     def _step(self, key: str, closure: Callable[[], torch.Tensor] | None) -> bool:
         opt = self.optimizers[key]
         params = self.group_params[key]
+        self.dist.allreduce_grads(params)
         if self.scaler is not None:
             self.scaler.unscale_(opt)
         if any(p.grad is not None and not torch.isfinite(p.grad).all() for p in params):
@@ -415,8 +427,10 @@ class Trainer:
             ds = as_dataset(train)
             if val is None and c.validation_split > 0:
                 ds, val = split_dataset(ds, c.validation_split, c.seed)
-            sampler = None
-            if c.curriculum.strategy != "none":
+            sampler = self.dist.sampler(ds, c.shuffle, c.seed or 0)
+            if sampler is not None and c.curriculum.strategy != "none":
+                self.log("⚠ Curriculum wird im verteilten Training ignoriert (DistributedSampler).")
+            elif c.curriculum.strategy != "none":
                 diffs = [difficulty_of(ds[i], c.curriculum.strategy) for i in range(len(ds))]
                 sampler = CurriculumSampler(diffs, c.curriculum.start_fraction, c.curriculum.full_after_fraction,
                                             lambda: self.global_step / max(1, self.total_steps), c.shuffle, c.seed or 0)
@@ -454,6 +468,8 @@ class Trainer:
         epoch = self.epoch
         while not self.should_stop and self.global_step < self.total_steps:
             self.model.train()
+            if hasattr(getattr(train_loader, "sampler", None), "set_epoch"):
+                train_loader.sampler.set_epoch(epoch)
             for batch in train_loader:
                 batch = to_device(batch, self.device, non_blocking=c.pin_memory)
                 before = self.global_step
@@ -565,11 +581,16 @@ class Trainer:
 
     # ===================================================================== Checkpoints
     def save_checkpoint(self, path: str | Path) -> Path:
+        """Speichert Modell, Optimierer, Zeitpläne usw. – im verteilten Training schreibt nur Prozess 0."""
         path = Path(path)
+        for opt in self.optimizers.values():
+            self.dist.consolidate(opt)          # ZeRO-1: Optimierer-Teile einsammeln (alle Prozesse)
+        model_state = self.dist.model_state(getattr(self.model, "_orig_mod", self.model))
+        if not self.dist.main:
+            return path
         path.parent.mkdir(parents=True, exist_ok=True)
-        target = getattr(self.model, "_orig_mod", self.model)
         state = {
-            "model": target.state_dict(),
+            "model": model_state,
             "optimizers": {k: o.state_dict() for k, o in self.optimizers.items()},
             "schedulers": {k: s.state_dict() for k, s in self.schedulers.items()},
             "scaler": self.scaler.state_dict() if self.scaler is not None else None,
@@ -584,7 +605,7 @@ class Trainer:
 
     def load_checkpoint(self, path: str | Path, model_only: bool = False) -> dict:
         state = torch.load(path, map_location=self.device, weights_only=False)
-        target = getattr(self.model, "_orig_mod", self.model)
+        target = self.dist.unwrap(getattr(self.model, "_orig_mod", self.model))
         target.load_state_dict(state["model"])
         if not model_only:
             for k, o in self.optimizers.items():

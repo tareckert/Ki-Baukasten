@@ -34,6 +34,7 @@ schueler        Lehrer-Schüler: kleineres Modell per Distillation trainieren
 probelauf       Forward/Backward mit allen Wegen, Statistiken, Warnungen (+ Testlauf)
 moeglichkeiten  Katalog aller Möglichkeiten (Speicher, Tempo, Kompression, Training …)
 trainieren      trainieren (und speichern)
+verteilt        verteilt trainieren: mehrere GPUs/Rechner/Prozesse (DDP, ZeRO-1, FSDP über torchrun)
 generieren      gespeichertes Projekt laden und Text/Samples erzeugen
 doku            vollständige Parameter-Referenz als Markdown exportieren
 gui             grafische Oberfläche starten
@@ -417,6 +418,22 @@ def cmd_trainieren(a: argparse.Namespace) -> None:
         print(f"Gespeichert in: {target}")
 
 
+def cmd_verteilt(a: argparse.Namespace) -> None:
+    import shlex
+    import subprocess
+
+    from ..training.distributed import launch_command
+
+    extra = [x for item in a.setze for x in ("--setze", item)]
+    if a.speichern:
+        extra += ["--speichern", a.speichern]
+    cmd = launch_command(a.quelle, a.prozesse, a.strategie, a.knoten, a.knoten_rang, a.master, extra)
+    print("Start:", " ".join(shlex.quote(c) for c in cmd))
+    if a.nur_anzeigen:
+        return
+    sys.exit(subprocess.call(cmd))
+
+
 def cmd_generieren(a: argparse.Namespace) -> None:
     from ..project import Project
 
@@ -631,6 +648,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--epochen", type=int)
     sp.add_argument("--speichern", default=None, help="Zielordner (Standard: ausgaben/<name>; '-' = nicht speichern)")
     sp.set_defaults(fn=cmd_trainieren)
+
+    sp = sub.add_parser("verteilt", help="verteilt trainieren (mehrere GPUs/Rechner)")
+    with_source(sp)
+    sp.add_argument("--prozesse", type=int, default=2, help="Prozesse pro Rechner (meist = Anzahl GPUs)")
+    sp.add_argument("--strategie", default="ddp", choices=["ddp", "zero1", "fsdp"])
+    sp.add_argument("--knoten", type=int, default=1, help="Anzahl Rechner")
+    sp.add_argument("--knoten-rang", type=int, default=0, help="Nummer dieses Rechners (0 … knoten-1)")
+    sp.add_argument("--master", help="Adresse:Port von Rechner 0 (bei mehreren Rechnern)")
+    sp.add_argument("--speichern", help="Zielordner für das trainierte Projekt")
+    sp.add_argument("--nur-anzeigen", action="store_true", help="Befehl nur anzeigen, nicht starten")
+    sp.set_defaults(fn=cmd_verteilt)
 
     sp = sub.add_parser("generieren", help="aus gespeichertem Projekt generieren")
     sp.add_argument("ordner")
