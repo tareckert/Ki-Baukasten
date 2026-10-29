@@ -256,6 +256,60 @@ class MixtureOfExperts(nn.Module):
         return out.reshape(shape)
 
 
+class KANConfig(BaseConfig):
+    __title__ = "KAN-FFN"
+    __tooltip__ = T(
+        "Kolmogorov-Arnold-Netz als FFN: lernbare Funktionen auf den Kanten statt fester Aktivierungen.",
+        "Jede Verbindung lernt ihre eigene eindimensionale Funktion (hier über Gauß-Basisfunktionen, FastKAN).",
+        "Forschung, wissenschaftliche/symbolische Daten, Interpretierbarkeit.",
+    )
+    hidden_mult = Param(2.0, min=0.01, tooltip=T(
+        "Breite der versteckten KAN-Schicht relativ zu d_model.",
+        "KAN-Schichten haben grid_size-mal mehr Parameter als lineare – daher kleiner als bei MLP.",
+        "1–2."))
+    grid_size = Param(8, min=2, tooltip=T(
+        "Anzahl Basisfunktionen pro Eingabe.", "Feinere Funktionen, mehr Parameter (∝ grid_size).", "5–10."))
+    grid_range = Param([-2.0, 2.0], item_type=float, length=2, tooltip=T(
+        "Wertebereich der Basisfunktions-Zentren (Eingaben werden vorher normalisiert).",
+        "Sollte die typischen Werte abdecken.", "[-2, 2]."), level=Level.EXPERT)
+    base_activation = ComponentParam("activation", "silu", tooltip=T(
+        "Zusätzlicher Basis-Pfad: lineare Schicht auf act(x) (wie im KAN-Original).",
+        "Stabilisiert das Training, gibt einen glatten Grundverlauf.", "silu; None = aus."), nullable=True)
+    dropout = Param(0.0, min=0.0, max=1.0, tooltip=T("Dropout zwischen den KAN-Schichten.", "Regularisierung.",
+                                                        "0–0.1."), group="Regularisierung")
+
+
+class KANLayer(nn.Module):
+    """Eine KAN-Schicht (FastKAN, Li 2024): y = W_s · φ(LN(x)) + W_b · act(x), φ = Gauß-RBF-Basis."""
+
+    def __init__(self, d_in: int, d_out: int, cfg: KANConfig):
+        super().__init__()
+        lo, hi = cfg.grid_range
+        self.register_buffer("centers", torch.linspace(lo, hi, cfg.grid_size), persistent=False)
+        self.inv_width = (cfg.grid_size - 1) / (hi - lo)
+        self.norm = nn.LayerNorm(d_in)
+        self.spline = nn.Linear(d_in * cfg.grid_size, d_out, bias=False)
+        nn.init.trunc_normal_(self.spline.weight, std=0.1 / math.sqrt(d_in))
+        self.act = cfg.base_activation.build() if cfg.base_activation is not None else None
+        self.base = nn.Linear(d_in, d_out) if self.act is not None else None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        z = (self.norm(x).unsqueeze(-1) - self.centers.to(x.dtype)) * self.inv_width
+        out = self.spline(torch.exp(-z.square()).flatten(-2))
+        return out + self.base(self.act(x)) if self.base is not None else out
+
+
+class KANFeedForward(nn.Module):
+    def __init__(self, d_model: int, cfg: KANConfig):
+        super().__init__()
+        h = max(1, int(round(d_model * cfg.hidden_mult)))
+        self.l1, self.l2 = KANLayer(d_model, h, cfg), KANLayer(h, d_model, cfg)
+        self.drop = nn.Dropout(cfg.dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.l2(self.drop(self.l1(x)))
+
+
 class NoFeedForward(nn.Module):
     """Gibt Nullen zurück – zusammen mit der Residualverbindung also 'kein FFN'."""
 
@@ -283,6 +337,12 @@ R("moe", lambda a, d_model: MixtureOfExperts(d_model, a), config=MoEConfig, alia
       "Mixture-of-Experts: Router wählt pro Token die besten k Experten.",
       "Sehr viele Parameter bei geringen Rechenkosten pro Token.",
       "Große Sprachmodelle (Mixtral, DeepSeek, Switch).",
+  ))
+R("kan", lambda a, d_model: KANFeedForward(d_model, a), config=KANConfig, aliases=("kolmogorov_arnold",),
+  level=Level.EXPERIMENTAL, tooltip=T(
+      "Kolmogorov-Arnold-FFN (lernbare Kantenfunktionen, FastKAN-Variante).",
+      "Andere induktive Annahme als MLPs: glatte, interpretierbare 1D-Funktionen pro Verbindung.",
+      "Forschung (Liu et al. 2024), wissenschaftliche Regression.",
   ))
 R("none", lambda a, d_model: NoFeedForward(), aliases=("keins", "identity"), level=Level.EXPERIMENTAL, tooltip=T(
     "Kein FFN (Block besteht nur aus Attention).",

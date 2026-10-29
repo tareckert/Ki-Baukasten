@@ -104,6 +104,8 @@ class Project:
         self._bundle: Any = None
         self.history: list[dict] = []
         self.notes: list[str] = []
+        self._undo: list[dict] = []
+        self._redo: list[dict] = []
 
     # ================================================================ Erzeugen
     @classmethod
@@ -127,7 +129,12 @@ class Project:
         if "*" in path:
             self.set_all(path, value)
             return self
-        self.config.set(path, value)
+        self._snapshot()
+        try:
+            self.config.set(path, value)
+        except Exception:
+            self._undo.pop()  # fehlgeschlagene Änderung nicht in den Verlauf
+            raise
         self._invalidate()
         return self
 
@@ -161,6 +168,7 @@ class Project:
                 errors.append(f"{path}: {exc}")
         if errors:
             raise ConfigError("set_all: nicht alle Treffer akzeptieren den Wert:\n  - " + "\n  - ".join(errors))
+        self._snapshot()
         for path in paths:
             self.config.set(path, value)
         self._invalidate()
@@ -172,22 +180,96 @@ class Project:
         Beispiel: ``p.search("speicher")`` findet alle Einstellungen, deren Name oder
         Erklärung mit Speicher zu tun hat.
         """
+        from .core import all_registries
+
         words = [w.lower() for w in text.split()]
+
+        def ok(*parts: str) -> bool:
+            blob = " ".join(p for p in parts if p).lower()
+            return all(w in blob for w in words)
+
         hits = []
         for ref in self.config.walk(max_level=max_level):
             tip = ref.param.tooltip
-            blob = " ".join([ref.path, tip.what, tip.why, tip.use_for, tip.tip] if tip else [ref.path]).lower()
-            if all(w in blob for w in words):
+            if ok(ref.path, *([tip.what, tip.why, tip.use_for, tip.tip] if tip else [])):
                 hits.append((ref.path, tip.what if tip else ""))
+        # Auch auswählbare Komponenten (z. B. Optimierer 'adamw8bit', Mixer 'ssm') finden.
+        for kind, reg in all_registries().items():
+            for name in reg.names():
+                comp = reg.get(name)
+                tip = comp.tooltip
+                if ok(name, kind, *([tip.what, tip.why, tip.use_for, tip.tip] if tip else [])):
+                    hits.append((f"{kind}:{name}", f"Komponente – {tip.what if tip else ''}"))
         return hits[:limit]
 
     def get(self, path: str) -> Any:
         return self.config.get(path)
 
     def update(self, changes: dict[str, Any]) -> "Project":
-        self.config.update(changes)
+        self._snapshot()
+        try:
+            self.config.update(changes)
+        except Exception:
+            self.config = ProjectConfig.from_dict(self._undo.pop())  # alles oder nichts
+            raise
         self._invalidate()
         return self
+
+    # ------------------------------------------------------------ Verlauf (Rückgängig/Wiederholen)
+    def _snapshot(self) -> None:
+        self._undo.append(self.config.to_dict())
+        del self._undo[:-50]
+        self._redo.clear()
+
+    def undo(self, steps: int = 1) -> bool:
+        """Macht die letzten ``steps`` Änderungen (set/set_all/update/Profil/Ratgeber) rückgängig."""
+        done = False
+        for _ in range(steps):
+            if not self._undo:
+                break
+            self._redo.append(self.config.to_dict())
+            self.config = ProjectConfig.from_dict(self._undo.pop())
+            done = True
+        if done:
+            self._invalidate()
+        return done
+
+    def redo(self, steps: int = 1) -> bool:
+        """Stellt rückgängig gemachte Änderungen wieder her."""
+        done = False
+        for _ in range(steps):
+            if not self._redo:
+                break
+            self._undo.append(self.config.to_dict())
+            self.config = ProjectConfig.from_dict(self._redo.pop())
+            done = True
+        if done:
+            self._invalidate()
+        return done
+
+    def diff(self, other: "Project | ProjectConfig | str | dict") -> list[tuple[str, Any, Any]]:
+        """Unterschiede zu einem anderen Projekt/Preset/einer Datei → ``[(pfad, hier, dort)]``."""
+        if isinstance(other, str):
+            other = Project.from_file(other) if Path(other).exists() else Project.from_preset(other)
+        if isinstance(other, dict):
+            other = ProjectConfig.from_dict(other)
+        cfg = other.config if isinstance(other, Project) else other
+
+        def leaves(c: ProjectConfig) -> dict[str, Any]:
+            # Komponenten über ihren Namen vergleichen, Unter-Konfigurationen über ihre Einträge.
+            return {r.path: (r.value.name if hasattr(r.value, "component") else r.value) for r in c.walk()
+                    if not isinstance(r.value, BaseConfig)}
+
+        mine, theirs = leaves(self.config), leaves(cfg)
+        missing = object()
+        out = []
+        for path in dict.fromkeys(list(mine) + list(theirs)):
+            a, b = mine.get(path, missing), theirs.get(path, missing)
+            if a is missing and b is None or b is missing and a is None:
+                continue  # Einstellung existiert nur auf einer Seite und ist dort leer – kein echter Unterschied
+            if a != b:
+                out.append((path, None if a is missing else a, None if b is missing else b))
+        return out
 
     def explain(self, path: str | None = None) -> str:
         return self.config.explain(path)
@@ -203,6 +285,7 @@ class Project:
         """Speicherprofil anwenden: 'standard', 'sparsam', 'extrem_sparsam', 'schnell'."""
         from .presets import apply_memory_profile
 
+        self._snapshot()
         apply_memory_profile(self.config, name)
         self._invalidate()
         return self
@@ -385,6 +468,60 @@ class Project:
         if self.surgeon is not None:
             parts.append(self.surgeon.report())
         return "\n\n".join(parts)
+
+    def architecture(self, fmt: str = "text", max_depth: int = 3, path: str | Path | None = None) -> str:
+        """Komplette Aufbau-Darstellung (``text`` | ``markdown`` | ``mermaid`` | ``json``), optional als Datei."""
+        from .analysis import architecture_report
+
+        model = self._ensure_model()
+        example = None
+        try:
+            bundle = self.data()
+            if isinstance(bundle.train, dict) and "inputs" in bundle.train:
+                example = bundle.train["inputs"][:1]
+        except Exception:  # noqa: BLE001 - ohne Daten: Beispiel-Eingabe des Modells
+            example = None
+        text = architecture_report(model, fmt, max_depth, example)
+        if path is not None:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_text(text, encoding="utf-8")
+        return text
+
+    def advise(self, batch_size: int | None = None) -> list:
+        """Optimierungs- und Speichervorschläge (``analysis.advisor``), sortiert nach Wichtigkeit."""
+        from .analysis import advise
+
+        return advise(self, batch_size)
+
+    def apply_advice(self, keys: list[str] | str | None = None, category: str | None = None) -> list:
+        """Wendet Vorschläge an (nach Kennung(en) und/oder Kategorie). Rückgängig mit ``undo()``."""
+        from .analysis import apply_advice
+
+        tips = self.advise()
+        if isinstance(keys, str):
+            keys = [keys]
+        self._snapshot()
+        chosen = apply_advice(self, tips, keys, category)
+        # apply_advice ruft update() pro Vorschlag auf – im Verlauf soll das EIN Schritt sein.
+        if chosen:
+            del self._undo[len(self._undo) - len(chosen):]
+        else:
+            self._undo.pop()
+        return chosen
+
+    def export(self, path: str | Path, fmt: str = "export", merge_lora: bool = True) -> Path:
+        """Modell exportieren: ``export`` (torch.export), ``torchscript``, ``onnx`` oder ``state_dict``."""
+        from .analysis import export_model
+
+        model = self._ensure_model()
+        example = None
+        try:
+            bundle = self.data()
+            if isinstance(bundle.train, dict) and "inputs" in bundle.train:
+                example = bundle.train["inputs"][:1].cpu()
+        except Exception:  # noqa: BLE001
+            example = None
+        return export_model(model, path, fmt, example, merge_lora)
 
     def memory_report(self, batch_size: int | None = None) -> Any:
         model = self._ensure_model()

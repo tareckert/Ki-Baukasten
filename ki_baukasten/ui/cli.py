@@ -19,6 +19,11 @@ pruefen         Konfigurationsdatei prüfen
 bauen           Modell bauen und Übersicht + Speicherschätzung zeigen
 speicher        Speicherschätzung mit Empfehlungen
 tensoren        Parameternamen/-formen (für Tensor-Regeln) + Regel-Vorschau
+aufbau          komplette Aufbau-Darstellung (Text, Markdown, Mermaid, JSON)
+optimieren      Ratgeber: Speicher-/Tempo-/Stabilitätsvorschläge (optional übernehmen)
+suche           Einstellungen per Volltext (Pfade + Tooltips) finden
+vergleiche      zwei Vorlagen/Dateien vergleichen
+exportieren     Modell exportieren (torch.export, TorchScript, ONNX, state_dict)
 trainieren      trainieren (und speichern)
 generieren      gespeichertes Projekt laden und Text/Samples erzeugen
 doku            vollständige Parameter-Referenz als Markdown exportieren
@@ -28,6 +33,8 @@ gui             grafische Oberfläche starten
 Quelle ``QUELLE`` ist entweder ein Preset-Name oder eine Konfigurationsdatei.
 Mit ``--setze pfad=wert`` (mehrfach) lassen sich Einstellungen überschreiben,
 z. B. ``--setze model.d_model=256 --setze training.optimizer.lr=1e-3``.
+Platzhalter wirken auf alle Treffer: ``--setze "dropout=0.1"`` (jede Einstellung
+namens dropout) oder ``--setze "model.**.num_heads=8"``.
 """
 
 from __future__ import annotations
@@ -62,7 +69,20 @@ def _project(source: str, sets: list[str] | None = None):
         if "=" not in item:
             raise SystemExit(f"--setze erwartet pfad=wert, erhalten: {item!r}")
         path, value = item.split("=", 1)
-        p.set(path.strip(), _parse_value(value.strip()))
+        path = path.strip()
+        if "." not in path and "*" not in path:
+            try:
+                p.config.get(path)
+            except Exception:  # kein Pfad auf oberster Ebene → als Name überall suchen
+                path = "**." + path
+        raw = value.strip()
+        parsed = _parse_value(raw)
+        try:
+            p.set(path, parsed)
+        except Exception:
+            if parsed == raw:
+                raise
+            p.set(path, raw)  # z. B. 'none' als Auswahlwert statt None
     return p
 
 
@@ -177,6 +197,59 @@ def cmd_tensoren(a: argparse.Namespace) -> None:
         print(TensorSurgeon(model, cfg_rules).preview())
 
 
+def cmd_aufbau(a: argparse.Namespace) -> None:
+    p = _project(a.quelle, a.setze)
+    text = p.architecture(a.format, a.tiefe, a.ausgabe)
+    if a.ausgabe:
+        print(f"Aufbau geschrieben: {a.ausgabe}")
+    else:
+        print(text)
+
+
+def cmd_optimieren(a: argparse.Namespace) -> None:
+    p = _project(a.quelle, a.setze)
+    tips = p.advise(a.batch)
+    if not tips:
+        print("✓ Keine Vorschläge – die Konfiguration sieht gut aus.")
+        return
+    for t in tips:
+        print(t, end="\n\n")
+    if a.anwenden is not None:
+        keys = None if a.anwenden in ("alle", "all", "") else [k.strip() for k in a.anwenden.split(",")]
+        done = p.apply_advice(keys, a.kategorie)
+        print("Übernommen:", ", ".join(d.key for d in done) or "(nichts)")
+        out = Path(a.ausgabe or f"{p.config.name}_optimiert.json")
+        p.config.save(out, only_changed=True)
+        print(f"Optimierte Konfiguration gespeichert: {out}")
+
+
+def cmd_suche(a: argparse.Namespace) -> None:
+    p = _project(a.quelle, a.setze)
+    hits = p.search(a.text, limit=a.anzahl)
+    if not hits:
+        print(f"Nichts gefunden für '{a.text}'.")
+    for path, what in hits:
+        print(f"{path:<58} {what}")
+
+
+def cmd_vergleiche(a: argparse.Namespace) -> None:
+    p = _project(a.quelle, a.setze)
+    diff = p.diff(a.andere)
+    if not diff:
+        print("Keine Unterschiede.")
+    print(f"{'Pfad':<58} {a.quelle[:24]:<26} {a.andere[:24]}")
+    for path, mine, theirs in diff:
+        print(f"{path:<58} {str(mine)[:25]:<26} {str(theirs)[:40]}")
+
+
+def cmd_exportieren(a: argparse.Namespace) -> None:
+    from ..project import Project
+
+    p = Project.load(a.quelle) if Path(a.quelle).is_dir() else _project(a.quelle, a.setze)
+    target = p.export(a.ausgabe, a.format, merge_lora=not a.ohne_merge)
+    print(f"Exportiert: {target}")
+
+
 def cmd_trainieren(a: argparse.Namespace) -> None:
     p = _project(a.quelle, a.setze)
     if a.speicher:
@@ -278,6 +351,42 @@ def build_parser() -> argparse.ArgumentParser:
     with_source(sp)
     sp.add_argument("--filter", help="nur Namen, die diesen Text enthalten")
     sp.set_defaults(fn=cmd_tensoren)
+
+    sp = sub.add_parser("aufbau", help="komplette Aufbau-Darstellung des Modells")
+    with_source(sp)
+    sp.add_argument("--format", default="text", choices=["text", "markdown", "mermaid", "json"])
+    sp.add_argument("--tiefe", type=int, default=3)
+    sp.add_argument("-o", "--ausgabe", help="in Datei schreiben (z. B. aufbau.md)")
+    sp.set_defaults(fn=cmd_aufbau)
+
+    sp = sub.add_parser("optimieren", help="Optimierungs- und Speichervorschläge")
+    with_source(sp)
+    sp.add_argument("--batch", type=int)
+    sp.add_argument("--anwenden", nargs="?", const="alle", default=None,
+                    help="Vorschläge übernehmen: ohne Wert = alle, sonst Kennungen (adamw8bit,gqa)")
+    sp.add_argument("--kategorie", help="nur diese Kategorie übernehmen (speicher, tempo, stabilitaet, struktur)")
+    sp.add_argument("-o", "--ausgabe", help="Zieldatei der optimierten Konfiguration")
+    sp.set_defaults(fn=cmd_optimieren)
+
+    sp = sub.add_parser("suche", help="Einstellungen per Volltext finden")
+    sp.add_argument("text")
+    sp.add_argument("--quelle", default="tabellen_klassifikation")
+    sp.add_argument("--setze", action="append", default=[])
+    sp.add_argument("--anzahl", type=int, default=40)
+    sp.set_defaults(fn=cmd_suche)
+
+    sp = sub.add_parser("vergleiche", help="zwei Vorlagen/Dateien vergleichen")
+    with_source(sp)
+    sp.add_argument("andere", help="zweite Vorlage oder Datei")
+    sp.set_defaults(fn=cmd_vergleiche)
+
+    sp = sub.add_parser("exportieren", help="Modell exportieren")
+    sp.add_argument("quelle", help="gespeicherter Projektordner, Preset oder Datei")
+    sp.add_argument("--setze", action="append", default=[])
+    sp.add_argument("--format", default="export", choices=["export", "torchscript", "onnx", "state_dict"])
+    sp.add_argument("-o", "--ausgabe", default="export/modell")
+    sp.add_argument("--ohne-merge", action="store_true", help="LoRA-Adapter nicht einrechnen")
+    sp.set_defaults(fn=cmd_exportieren)
 
     sp = sub.add_parser("trainieren", help="trainieren")
     with_source(sp)

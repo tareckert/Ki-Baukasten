@@ -115,11 +115,15 @@ class RotaryPositional(PositionalEncoding):
     (über ``layer_overrides``) funktionieren dadurch ohne Weiteres.
     """
 
-    def __init__(self, theta: float, fraction: float, scaling: str, factor: float, interleaved: bool):
+    def __init__(self, theta: float, fraction: float, scaling: str, factor: float, interleaved: bool,
+                 original_context: int = 2048, beta_fast: float = 32.0, beta_slow: float = 1.0):
         super().__init__()
         self.theta, self.fraction, self.scaling, self.factor = theta, fraction, scaling, factor
         self.pos_scale = 1.0 / factor if scaling == "linear" else 1.0
         self.interleaved = interleaved
+        self.original_context, self.beta_fast, self.beta_slow = original_context, beta_fast, beta_slow
+        # YaRN: Temperatur-Korrektur der Attention (auf q und k verteilt → Faktor auf cos/sin).
+        self.mscale = (0.1 * math.log(factor) + 1.0) if scaling == "yarn" and factor > 1 else 1.0
         self._cache: dict[tuple[int, str], torch.Tensor] = {}
 
     def _inv_freq(self, head_dim: int, device: torch.device) -> tuple[int, torch.Tensor]:
@@ -130,7 +134,14 @@ class RotaryPositional(PositionalEncoding):
             if self.scaling == "ntk" and self.factor != 1.0:
                 # NTK-aware: Basis vergrößern statt Positionen zu stauchen
                 theta = theta * self.factor ** (rot / max(1, rot - 2))
-            self._cache[key] = 1.0 / (theta ** (torch.arange(0, rot, 2, device=device).float() / rot))
+            inv = 1.0 / (theta ** (torch.arange(0, rot, 2, device=device).float() / rot))
+            if self.scaling == "yarn" and self.factor != 1.0:
+                # YaRN (Peng et al. 2023): hohe Frequenzen (kurze Wellenlängen) unverändert lassen,
+                # niedrige Frequenzen interpolieren, dazwischen weich überblenden.
+                ratio = self.original_context / (2 * math.pi / inv)       # Umdrehungen im Originalkontext
+                keep = ((ratio - self.beta_slow) / (self.beta_fast - self.beta_slow)).clamp(0.0, 1.0)
+                inv = inv / self.factor * (1 - keep) + inv * keep
+            self._cache[key] = inv
         return rot, self._cache[key]
 
     def _rotate_one(self, x: torch.Tensor, rot: int, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
@@ -147,7 +158,7 @@ class RotaryPositional(PositionalEncoding):
     def _cos_sin(self, head_dim: int, positions: torch.Tensor) -> tuple[int, torch.Tensor, torch.Tensor]:
         rot, inv_freq = self._inv_freq(head_dim, positions.device)
         freqs = torch.outer(positions.float() * self.pos_scale, inv_freq)  # [T, rot/2]
-        return rot, freqs.cos(), freqs.sin()
+        return rot, freqs.cos() * self.mscale, freqs.sin() * self.mscale
 
     def rotate(self, q, k, positions):
         rot, cos, sin = self._cos_sin(q.shape[-1], positions)
@@ -306,11 +317,22 @@ class RoPEConfig(BaseConfig):
         "none": "keine Kontext-Erweiterung",
         "linear": "Positionen stauchen (Position Interpolation)",
         "ntk": "Basis vergrößern (NTK-aware) – meist bessere Qualität ohne Nachtraining",
+        "yarn": "YaRN: frequenzabhängige Interpolation + Attention-Temperatur (beste Qualität, Qwen/DeepSeek)",
     }, tooltip=T("Verfahren zur Kontextverlängerung.", "Erlaubt Sequenzen länger als im Training.",
                  "Kontext-Erweiterung vortrainierter Modelle."), level=Level.ADVANCED)
     factor = Param(1.0, min=1.0, tooltip=T(
         "Erweiterungsfaktor des Kontexts (z. B. 4 = vierfache Länge).", "Stärke der Skalierung.",
         "Nur mit scaling ≠ none."), level=Level.ADVANCED)
+    original_context = Param(None, type=int, min=1, nullable=True, tooltip=T(
+        "Kontextlänge, mit der ursprünglich trainiert wurde (nur YaRN; None = max_seq_len / factor).",
+        "YaRN entscheidet anhand dieser Länge, welche Frequenzen interpoliert werden.",
+        "Vortrainiertes Modell mit 4096 Tokens auf 16k erweitern: 4096, factor 4."), level=Level.EXPERT)
+    yarn_beta_fast = Param(32.0, min=0.0, tooltip=T(
+        "YaRN β_fast: ab so vielen Umdrehungen im Originalkontext bleibt eine Frequenz unverändert.",
+        "Schützt die lokale Positionsauflösung.", "32 (Paper)."), level=Level.EXPERT)
+    yarn_beta_slow = Param(1.0, min=0.0, tooltip=T(
+        "YaRN β_slow: unter so vielen Umdrehungen wird voll interpoliert.", "Niedrige Frequenzen.", "1 (Paper)."),
+        level=Level.EXPERT)
     interleaved = Param(False, tooltip=T(
         "Paare benachbarter Dimensionen rotieren (GPT-J) statt Hälften (GPT-NeoX/LLaMA).",
         "Nur für Kompatibilität mit fremden Gewichten relevant.",
@@ -385,7 +407,9 @@ def _learned(a, d_model, head_dim, num_heads, max_seq_len):
     "Standard moderner LLMs (LLaMA, Mistral, Qwen).",
 ))
 def _rope(a, d_model, head_dim, num_heads, max_seq_len):
-    return RotaryPositional(a.theta, a.fraction, a.scaling, a.factor, a.interleaved)
+    original = a.original_context or max(1, int(max_seq_len / max(a.factor, 1.0)))
+    return RotaryPositional(a.theta, a.fraction, a.scaling, a.factor, a.interleaved, original,
+                            a.yarn_beta_fast, a.yarn_beta_slow)
 
 
 @R("alibi", config=ALiBiConfig, tooltip=T(

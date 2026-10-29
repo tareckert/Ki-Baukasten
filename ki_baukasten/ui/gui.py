@@ -166,6 +166,10 @@ class BaukastenGUI(tk.Tk):
             ("Bauen", self.build_model, "Modell bauen und Aufbau anzeigen."),
             ("Speicher", self.memory, "Speicherbedarf schätzen und Empfehlungen anzeigen."),
             ("Trainieren", self.train, "Training im Hintergrund starten (Fortschritt im Protokoll)."),
+            ("Aufbau", self.architecture, "Komplette Auflistung des Modells: Module, Formen, Schichten, Anpassungspfade."),
+            ("Optimieren", self.advise, "Ratgeber: Vorschläge für Speicher, Tempo und Stabilität (mit Übernahme)."),
+            ("↶ Rückgängig", self.undo, "Letzte Änderung zurücknehmen."),
+            ("↷ Wiederholen", self.redo, "Zurückgenommene Änderung wiederherstellen."),
         ):
             b = ttk.Button(bar, text=text, command=cmd)
             b.pack(side="left", padx=2)
@@ -498,8 +502,8 @@ class BaukastenGUI(tk.Tk):
         text = self.search_var.get().strip().lower()
         if not text:
             return
-        hits = [ref for ref in self.project.config.walk() if text in ref.path.lower()
-                or text in ref.param.tooltip.what.lower()]
+        found = {path for path, _ in self.project.search(text, limit=500)}
+        hits = [ref for ref in self.project.config.walk() if ref.path in found]
         if not hits:
             messagebox.showinfo("Suche", f"Nichts gefunden für '{text}'.")
             return
@@ -566,6 +570,62 @@ class BaukastenGUI(tk.Tk):
 
     def memory(self) -> None:
         self._run_bg("Speicherschätzung", lambda: str(self.project.memory_report()))
+
+    def architecture(self) -> None:
+        self._run_bg("Aufbau", lambda: self.project.architecture("text", max_depth=3))
+
+    def advise(self) -> None:
+        def job():
+            tips = self.project.advise()
+            self._last_tips = tips
+            if not tips:
+                return "Keine Vorschläge – die Konfiguration sieht gut aus."
+            return "\n\n".join(str(t) for t in tips) + "\n\nÜbernehmen: Knopf 'Optimieren' erneut nach Auswahl " \
+                "im Dialog (nach Abschluss)."
+
+        self._run_bg("Ratgeber", job)
+        self.after(300, self._offer_advice)
+
+    def _offer_advice(self) -> None:
+        if self.busy:
+            self.after(300, self._offer_advice)
+            return
+        tips = [t for t in getattr(self, "_last_tips", []) if t.changes]
+        if not tips:
+            return
+        win = tk.Toplevel(self)
+        win.title("Vorschläge übernehmen")
+        ttk.Label(win, text="Auswählen und übernehmen (rückgängig mit ↶):", padding=6).pack(anchor="w")
+        vars_ = []
+        for t in tips:
+            v = tk.BooleanVar(value=t.priority == 1)
+            cb = ttk.Checkbutton(win, text=f"[{t.category}] {t.title}", variable=v)
+            cb.pack(anchor="w", padx=8)
+            HoverTip(cb, lambda t=t: f"{t.reason}\n{t.effect}\n" + ", ".join(f"{k}={v!r}" for k, v in t.changes.items()))
+            vars_.append((t, v))
+
+        def apply() -> None:
+            keys = [t.key for t, v in vars_ if v.get()]
+            if keys:
+                done = self.project.apply_advice(keys)
+                self.log_write("✓ übernommen: " + ", ".join(a.title for a in done) + "\n")
+                self.refresh_tree()
+                self.select_path(self.current_path if self._exists(self.current_path) else "")
+            win.destroy()
+
+        ttk.Button(win, text="Übernehmen", command=apply).pack(pady=6)
+
+    def undo(self) -> None:
+        if self.project.undo():
+            self.log_write("↶ rückgängig\n")
+            self.refresh_tree()
+            self.select_path(self.current_path if self._exists(self.current_path) else "")
+
+    def redo(self) -> None:
+        if self.project.redo():
+            self.log_write("↷ wiederhergestellt\n")
+            self.refresh_tree()
+            self.select_path(self.current_path if self._exists(self.current_path) else "")
 
     def train(self) -> None:
         def job():
