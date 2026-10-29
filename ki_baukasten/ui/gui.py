@@ -22,6 +22,10 @@ Aufbau des Fensters
 * **Tooltips**: Maus über einen Einstellungsnamen halten.
 * **?**: ausführliche Erklärung inkl. aller Optionen im Erklärungsbereich.
 * **Stufe**: blendet Einstellungen nach Erfahrungsstufe ein/aus (nichts wird gesperrt).
+* **An / Aus / Eigen**: jede Einstellung hat drei Schalter – empfohlener Wert, abgeschaltet
+  (z. B. Dropout 0) oder eigener Wert. Pflicht-Einstellungen kennen nur An/Eigen.
+* **Ansicht**: nur eingeschaltete, nur ausgeschaltete oder nur eigene Werte zeigen – so bleibt
+  auch bei über tausend Einstellungen alles übersichtlich.
 * Komponenten (Aktivierung, Optimierer, Mixer, Belohnungen …) per Auswahlliste
   wechseln; kompatible Argumente bleiben erhalten.
 * Training läuft in einem Hintergrund-Thread; die Oberfläche bleibt bedienbar.
@@ -55,6 +59,8 @@ from ..core.config import _is_spec
 _DONE = object()
 _LEVELS = [("Basis", "basic"), ("Fortgeschritten", "advanced"), ("Experte", "expert"), ("Experimentell", "experimental")]
 _NONE = "(keine)"
+_VIEWS = {"Alle": None, "Nur eingeschaltete": ("an", "eigen"), "Nur ausgeschaltete": ("aus",),
+          "Nur eigene Werte": ("eigen",), "Nur schaltbare": "schaltbar"}
 
 
 class HoverTip:
@@ -121,6 +127,7 @@ class BaukastenGUI(tk.Tk):
         else:
             self.project = Project.from_preset(source or "tabellen_klassifikation")
         self.level = tk.StringVar(value="Fortgeschritten")
+        self.view = tk.StringVar(value="Alle")
         self.current_path = ""
         self.log_queue: "queue.Queue[str]" = queue.Queue()
         self.busy = False
@@ -154,6 +161,12 @@ class BaukastenGUI(tk.Tk):
         lv.bind("<<ComboboxSelected>>", lambda e: (self.refresh_tree(), self.select_path(self.current_path)))
         HoverTip(lv, lambda: "Erfahrungsstufe: blendet Einstellungen ein/aus.\nNichts ist gesperrt – "
                               "'Experimentell' zeigt wirklich alles.")
+        ttk.Label(bar, text="Ansicht:").pack(side="left", padx=(8, 0))
+        vw = ttk.Combobox(bar, textvariable=self.view, values=list(_VIEWS), width=18, state="readonly")
+        vw.pack(side="left", padx=4)
+        vw.bind("<<ComboboxSelected>>", lambda e: self.show_form(self.current_path))
+        HoverTip(vw, lambda: "Filtert das Formular nach Schalterzustand:\n● an  ○ aus  ◆ eigener Wert.\n"
+                              "Gruppen (öffnen →) bleiben immer sichtbar.")
         self.search_var = tk.StringVar()
         se = ttk.Entry(bar, textvariable=self.search_var, width=22)
         se.pack(side="left", padx=(12, 2))
@@ -268,7 +281,8 @@ class BaukastenGUI(tk.Tk):
             value = target._values[name]
             path = f"{prefix}{name}"
             if isinstance(value, BaseConfig):
-                self.tree.insert(parent_iid, "end", iid=path, text=f"{name}  [{value.title()}]")
+                mark = ("● " if value._values.get("enabled") else "○ ") if "enabled" in type(value)._params else ""
+                self.tree.insert(parent_iid, "end", iid=path, text=f"{mark}{name}  [{value.title()}]")
                 self._add_children(path, path + ".", value, eff)
             elif _is_spec(value):
                 comp_level = value.component.level
@@ -317,23 +331,46 @@ class BaukastenGUI(tk.Tk):
         else:
             target = obj
         limit = Level.parse(self.max_level())
+        view = _VIEWS.get(self.view.get())
+        hidden = 0
         for name, param in target._iter_params():
             if not param.level.visible_at(limit):
                 continue
+            if view is not None and not self._view_match(param, target._values[name], view):
+                hidden += 1
+                continue
             self._param_row(f"{prefix}{name}", name, param, target._values[name], row)
             row += 1
+        if hidden:
+            ttk.Label(self.form, text=f"({hidden} Einstellungen durch die Ansicht '{self.view.get()}' ausgeblendet)",
+                      foreground="#888").grid(row=row, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
-    def _label(self, parent: tk.Widget, text: str, path: str, param: Any, row: int) -> None:
+    @staticmethod
+    def _view_match(param: Any, value: Any, view: Any) -> bool:
+        from ..core import UNSET, off_value, state_of
+
+        if getattr(param, "kind", "value") in ("nested", "config_list"):
+            return True
+        if view == "schaltbar":
+            return off_value(param) is not UNSET
+        return state_of(param, value) in view
+
+    def _label(self, parent: tk.Widget, text: str, path: str, param: Any, row: int, off: bool = False) -> None:
         badge = "" if param.level is Level.BASIC else f"  ·{param.level.label}"
-        lbl = ttk.Label(parent, text=text + badge, cursor="question_arrow")
+        lbl = ttk.Label(parent, text=text + badge, cursor="question_arrow", foreground="#999" if off else "")
         lbl.grid(row=row, column=0, sticky="w", padx=(0, 10), pady=2)
         HoverTip(lbl, lambda: f"{path}\n\n" + param.tooltip.format(width=80) +
                  (f"\n\nTyp: {param.type_label()}" + (f"   {param.constraint_label()}" if param.constraint_label() else "")))
         ttk.Button(parent, text="?", width=2, command=lambda: self.explain(path)).grid(row=row, column=2, padx=4)
 
     def _param_row(self, path: str, name: str, param: Any, value: Any, row: int) -> None:
+        from ..core import state_of
+
         kind = getattr(param, "kind", "value")
-        self._label(self.form, name, path, param, row)
+        leaf = kind not in ("nested", "config_list")
+        self._label(self.form, name, path, param, row, off=leaf and state_of(param, value) == "aus")
+        if leaf:
+            self._switch_buttons(path, param, value, row)
         if kind in ("nested", "config_list", "component_list"):
             text = f"{value.title()} öffnen →" if isinstance(value, BaseConfig) else \
                 f"{len(value or [])} Elemente öffnen →" if isinstance(value, list) else "öffnen →"
@@ -346,7 +383,7 @@ class BaukastenGUI(tk.Tk):
             cb.grid(row=row, column=1, sticky="w")
             cb.bind("<<ComboboxSelected>>", lambda e: self._set_component(path, var.get()))
             if value is not None and type(value.args)._params:
-                ttk.Button(self.form, text="Argumente →", command=lambda: self.select_path(path)).grid(row=row, column=3)
+                ttk.Button(self.form, text="Argumente →", command=lambda: self.select_path(path)).grid(row=row, column=4)
             self._row_widgets[path] = cb
             return
         is_bool = bool in param.types and not param.nullable
@@ -369,6 +406,49 @@ class BaukastenGUI(tk.Tk):
         w.grid(row=row, column=1, sticky="w")
         w.bind("<FocusIn>", lambda e: self.explain(path), add="+")
         self._row_widgets[path] = w
+
+    def _switch_buttons(self, path: str, param: Any, value: Any, row: int) -> None:
+        """Drei Schalter je Einstellung: An (empfohlen) · Aus · Eigen (benutzerdefiniert)."""
+        from ..core import UNSET, off_value, on_value, state_of
+        from ..core.switches import _show, off_label
+
+        off, on = off_value(param), on_value(param, self.project._switch_memory.get(path, UNSET))
+        frame = ttk.Frame(self.form)
+        frame.grid(row=row, column=3, sticky="w", padx=(6, 0))
+        var = tk.StringVar(value=state_of(param, value))
+        tips = {
+            "an": f"An: empfohlener Wert {_show(on)}" if on is not UNSET else
+                  "An: kein empfohlener Wert hinterlegt – bitte links einen eigenen Wert eingeben.",
+            "aus": f"Aus: {off_label(param)}" if off is not UNSET else
+                   "Pflicht-Einstellung: kann nicht ausgeschaltet werden (nur An oder Eigen).",
+            "eigen": "Eigen: benutzerdefinierter Wert – im Feld links eingeben (der zuletzt eigene Wert wird "
+                     "beim Aus-Schalten gemerkt und hier wiederhergestellt).",
+        }
+        for key, text in (("an", "An"), ("aus", "Aus"), ("eigen", "Eigen")):
+            rb = ttk.Radiobutton(frame, text=text, value=key, variable=var, style="Toolbutton",
+                                 command=lambda k=key: self._switch(path, k))
+            if key == "aus" and off is UNSET:
+                rb.state(["disabled"])
+            rb.pack(side="left")
+            HoverTip(rb, lambda k=key: tips[k])
+
+    def _switch(self, path: str, state: str) -> None:
+        try:
+            changed = self.project.switch(path, state)
+        except ConfigError as exc:
+            if state == "an":
+                messagebox.showinfo("Kein empfohlener Wert", f"{exc}\n\nBitte im Feld einen eigenen Wert eingeben.")
+            else:
+                messagebox.showerror("Schalter", str(exc))
+            changed = []
+        for c in changed:
+            self.log_write(f"✓ {c} → {state}: {self.project.config.get(c)!r}\n")
+        current = self.current_path
+        self.refresh_tree()
+        self.select_path(current if self._exists(current) else "")
+        w = self._row_widgets.get(path)
+        if state == "eigen" and w is not None:
+            w.focus_set()
 
     def _component_chooser(self, path: str, spec: Any, row: int) -> int:
         from ..core import registry

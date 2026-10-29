@@ -93,6 +93,20 @@ def _type_label(t: type) -> str:
     return _TYPE_LABELS.get(t, getattr(t, "__name__", str(t)))
 
 
+class _Unset:
+    """Marker "nicht angegeben" (z. B. für ``off``/``on`` eines ``Param``)."""
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+#: Marker für nicht angegebene Schalterwerte (siehe ``core.switches``).
+UNSET: Any = _Unset()
+
+
 # ---------------------------------------------------------------------------
 # Typumwandlung
 # ---------------------------------------------------------------------------
@@ -272,6 +286,11 @@ class Param:
         default_factory: Funktion für veränderliche Standardwerte.
         item_type: Elementtyp(en) für Listen/Tupel (z. B. ``int``).
         length:    erlaubte Länge für Listen: Zahl oder ``(min, max)``.
+        off:       Wert für den Schalter **Aus** (z. B. ``0.0`` für Dropout). Ohne Angabe wird er
+                   abgeleitet (siehe ``core.switches``); ``None`` ist ein gültiger Aus-Wert.
+        on:        Wert für den Schalter **An**, wenn der Standardwert selbst "aus" ist
+                   (z. B. ``0.2`` für Mixup).
+        switchable: ``False`` = Pflicht-Einstellung ohne Aus-Zustand (nur An/Eigen).
     """
 
     kind: ClassVar[str] = "value"
@@ -293,6 +312,9 @@ class Param:
         default_factory: Callable[[], Any] | None = None,
         item_type: Any = None,
         length: int | tuple[int, int] | None = None,
+        off: Any = UNSET,
+        on: Any = UNSET,
+        switchable: bool | None = None,
     ):
         if not isinstance(tooltip, Tooltip):
             raise TypeError("Param braucht ein Tooltip (T(...)) – jede Einstellung muss erklärt sein.")
@@ -324,6 +346,9 @@ class Param:
         self.unit = unit
         self.validator = validator
         self.length = length
+        self.off = off
+        self.on = on
+        self.switchable = switchable
 
     # ------------------------------------------------------------ Deskriptor
     def __set_name__(self, owner: type, name: str) -> None:

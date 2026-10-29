@@ -112,6 +112,7 @@ class Project:
         self._redo: list[dict] = []
         self._teacher: nn.Module | None = None       # Lehrer für distillation (Project.distill)
         self.last_compression: Any = None
+        self._switch_memory: dict[str, Any] = {}     # beim Ausschalten gemerkte eigene Werte (für "an"/"eigen")
 
     # ================================================================ Erzeugen
     @classmethod
@@ -152,7 +153,18 @@ class Project:
 
     # ================================================================ Einstellungen
     def set(self, path: str, value: Any) -> "Project":
-        """Setzt eine Einstellung. Enthält ``path`` ein ``*``, gilt der Wert für alle Treffer (siehe ``set_all``)."""
+        """Setzt eine Einstellung. Enthält ``path`` ein ``*``, gilt der Wert für alle Treffer (siehe ``set_all``).
+
+        Die Werte ``"an"``, ``"aus"``, ``"eigen"`` und ``"standard"`` schalten die Einstellung um (siehe
+        ``switch``), sofern sie dort nicht ohnehin ein gültiger Text sind – z. B. ``p.set("**.dropout", "aus")``
+        oder ``p.set("training.ema", "an")``.
+        """
+        from .core.switches import is_switch_command
+
+        probe = self.config.find(path)[0] if "*" in path and self.config.find(path) else path
+        if isinstance(value, str) and "*" not in probe and is_switch_command(self.config, probe, value):
+            self.switch(path, value)
+            return self
         if "*" in path:
             self.set_all(path, value)
             return self
@@ -200,6 +212,97 @@ class Project:
             self.config.set(path, value)
         self._invalidate()
         return paths
+
+    # ------------------------------------------------------------ Schalter (An / Aus / Eigen)
+    def switch(self, pattern: str, state: str, value: Any = None, scope: str = "alle",
+               pick: str | None = None) -> list[str]:
+        """Schaltet Einstellungen **an**, **aus**, auf **eigen** (benutzerdefiniert) oder **standard**.
+
+        Args:
+            pattern: Pfad oder Muster (``*``/``**``) – z. B. ``"**.dropout"``, ``"training.regularization"``
+                     (ganze Gruppe) oder ``"training.ema"`` (Gruppe mit ``enabled``-Schalter).
+            state:   ``an`` | ``aus`` | ``eigen`` | ``standard``.
+            value:   eigener Wert für ``eigen`` (ohne Angabe: zuletzt gemerkter Wert).
+            scope/pick: wie bei ``set_all`` (alle, nur_auswahl, nur_einer, alle_ausser).
+
+        Pflicht-Einstellungen (ohne Aus-Zustand) werden bei Mustern übersprungen. Rückgängig mit ``undo()``.
+        """
+        from .core import UNSET
+        from .core.switches import set_state
+        from .tensor.selection import apply_scope
+
+        if "*" in pattern:
+            paths = apply_scope(self.config.find(pattern), scope, pick, f"switch('{pattern}')")
+            if not paths:
+                raise ConfigError(f"Kein Pfad passt auf '{pattern}'. Tipp: Project.search('{pattern}').")
+        else:
+            paths = [pattern]
+        trial = self.config.copy()
+        memory = dict(self._switch_memory)
+        changed: list[str] = []
+        errors: list[str] = []
+        for path in paths:
+            try:
+                changed += set_state(trial, path, state, UNSET if value is None else value, memory)
+            except ConfigError as exc:
+                if len(paths) == 1:
+                    raise
+                errors.append(f"{path}: {exc}")
+        if not changed:
+            if errors and len(errors) == len(paths):
+                raise ConfigError(f"switch('{pattern}', '{state}'): nichts umschaltbar:\n  - " + "\n  - ".join(errors))
+            self._switch_memory = memory
+            return []
+        self._snapshot()
+        self.config = trial
+        self._switch_memory = memory
+        self._invalidate()
+        return changed
+
+    def turn_on(self, pattern: str, **kw: Any) -> list[str]:
+        """Kurzform für ``switch(pattern, "an")``."""
+        return self.switch(pattern, "an", **kw)
+
+    def turn_off(self, pattern: str, **kw: Any) -> list[str]:
+        """Kurzform für ``switch(pattern, "aus")``."""
+        return self.switch(pattern, "aus", **kw)
+
+    def reset(self, pattern: str, **kw: Any) -> list[str]:
+        """Kurzform für ``switch(pattern, "standard")`` (Standardwert wiederherstellen)."""
+        return self.switch(pattern, "standard", **kw)
+
+    def switches(self, pattern: str | None = None, state: str | None = None, max_level: str | None = None,
+                 only_switchable: bool = False) -> list:
+        """Zustand aller Einstellungen (``SwitchInfo``: Pfad, an/aus/eigen, Wert, Aus-/An-Wert, Pflicht?)."""
+        from .core import switch_table
+
+        return switch_table(self.config, pattern, state, max_level, only_switchable)
+
+    def switch_overview(self, max_level: str | None = "advanced") -> str:
+        """Kompakte Übersicht: was ist an, was aus, was eigen – nach Bereichen gruppiert."""
+        from .core.switches import _show, summary
+
+        counts = summary(self.config, max_level)
+        lines = [f"Schalter-Übersicht ({self.config.name}): {counts['an']} an · {counts['aus']} aus · "
+                 f"{counts['eigen']} eigen  ({counts['schaltbar']} schaltbar, {counts['pflicht']} Pflicht)"]
+        active: dict[str, list[str]] = {}
+        custom: dict[str, list[str]] = {}
+        for info in self.switches(max_level=max_level):
+            section, _, rest = info.path.partition(".")
+            if not rest:
+                continue  # Projekt-Metadaten (Name, Gebiet …)
+            if info.switchable and info.state != "aus":
+                text = rest if info.value is True else f"{rest}={_show(info.value)}"
+                active.setdefault(section, []).append(text + ("*" if info.state == "eigen" else ""))
+            elif not info.switchable and info.state == "eigen":
+                custom.setdefault(section, []).append(f"{rest}={_show(info.value)}")
+        lines.append("Eingeschaltet (* = eigener Wert):")
+        lines.extend(f"  [{k}] " + ", ".join(v) for k, v in active.items())
+        if custom:
+            lines.append("Eigene Werte bei Pflicht-Einstellungen:")
+            lines.extend(f"  [{k}] " + ", ".join(v) for k, v in custom.items())
+        lines.append(f"Ausgeschaltet: {counts['aus']} Einstellungen – Liste: projekt.switches(state='aus')")
+        return "\n".join(lines)
 
     def search(self, text: str, max_level: str | None = None, limit: int = 40) -> list[tuple[str, str]]:
         """Volltextsuche über Pfade **und** Tooltips → ``[(pfad, Kurzbeschreibung)]``.

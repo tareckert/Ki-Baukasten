@@ -22,6 +22,7 @@ tensoren        Parameternamen/-formen (für Tensor-Regeln) + Regel-Vorschau
 aufbau          komplette Aufbau-Darstellung (Text, Markdown, Mermaid, JSON)
 optimieren      Ratgeber: Speicher-/Tempo-/Stabilitätsvorschläge (optional übernehmen)
 suche           Einstellungen per Volltext (Pfade + Tooltips) finden
+schalter        jede Einstellung An / Aus / Eigen: Übersicht, umschalten, speichern
 vergleiche      zwei Vorlagen/Dateien vergleichen
 exportieren     Modell exportieren (torch.export, TorchScript, ONNX, state_dict)
 importieren     fremdes Modell laden (pt2, TorchScript, state_dict, safetensors, HF) → Projekt
@@ -237,6 +238,33 @@ def cmd_suche(a: argparse.Namespace) -> None:
         print(f"Nichts gefunden für '{a.text}'.")
     for path, what in hits:
         print(f"{path:<58} {what}")
+
+
+def cmd_schalter(a: argparse.Namespace) -> None:
+    p = _project(a.quelle, a.setze)
+    for state, patterns in (("aus", a.aus), ("an", a.an), ("standard", a.standard)):
+        for pattern in patterns:
+            if "." not in pattern and "*" not in pattern:
+                try:
+                    p.config.get(pattern)
+                except Exception:
+                    pattern = "**." + pattern
+            changed = p.switch(pattern, state)
+            print(f"{state:>8}: {pattern} → {len(changed)} geändert" + (f" ({', '.join(changed[:6])}"
+                                                                      f"{' …' if len(changed) > 6 else ''})" if changed else ""))
+    if a.uebersicht or not (a.muster or a.zustand):
+        print(p.switch_overview(a.stufe))
+    if a.muster or a.zustand:
+        pattern = a.muster
+        if pattern and "." not in pattern and "*" not in pattern:
+            pattern = "**." + pattern
+        infos = p.switches(pattern, a.zustand, a.stufe, a.nur_schaltbar)
+        for info in infos:
+            print(f"  {info}")
+        print(f"{len(infos)} Einstellungen.  Umschalten: --an/--aus/--standard MUSTER  oder  --setze pfad=aus")
+    if a.speichern:
+        p.config.save(a.speichern, only_changed=True)
+        print(f"Gespeichert: {a.speichern}")
 
 
 def cmd_vergleiche(a: argparse.Namespace) -> None:
@@ -483,6 +511,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--setze", action="append", default=[])
     sp.add_argument("--anzahl", type=int, default=40)
     sp.set_defaults(fn=cmd_suche)
+
+    sp = sub.add_parser("schalter", help="Einstellungen An/Aus/Eigen anzeigen und umschalten")
+    with_source(sp)
+    sp.add_argument("muster", nargs="?", help="nur passende Einstellungen (z. B. dropout, 'training.**')")
+    sp.add_argument("--zustand", choices=["an", "aus", "eigen"], help="nur Einstellungen in diesem Zustand")
+    sp.add_argument("--stufe", default="fortgeschritten", help="basis | fortgeschritten | experte | experimentell")
+    sp.add_argument("--nur-schaltbar", action="store_true", help="Pflicht-Einstellungen ausblenden")
+    sp.add_argument("--an", action="append", default=[], metavar="MUSTER", help="einschalten (mehrfach möglich)")
+    sp.add_argument("--aus", action="append", default=[], metavar="MUSTER", help="ausschalten (mehrfach möglich)")
+    sp.add_argument("--standard", action="append", default=[], metavar="MUSTER", help="auf Standard zurücksetzen")
+    sp.add_argument("--uebersicht", action="store_true", help="kompakte Übersicht zeigen")
+    sp.add_argument("--speichern", help="Ergebnis als Konfigurationsdatei speichern")
+    sp.set_defaults(fn=cmd_schalter)
 
     sp = sub.add_parser("vergleiche", help="zwei Vorlagen/Dateien vergleichen")
     with_source(sp)
