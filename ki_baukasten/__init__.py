@@ -17,8 +17,11 @@ Leitprinzipien
    und sind überall einsetzbar – auch eigene.
 4. **Jede Schicht darf anders sein.** Schichtweise Overrides und Tensor-
    Chirurgie bis auf einzelne Ausschnitte von Gewichtstensoren.
-5. **Speicher ist planbar.** Präzision, Checkpointing, Offloading/Swapping,
-   Quantisierung und eine Speicherschätzung mit Empfehlungen.
+5. **Speicher ist planbar.** Präzision, Checkpointing, trainierbares RAM-Streaming,
+   Offloading/Swapping, eigene int8/int4/nf4-Quantisierung, LoRA/QLoRA, 8-Bit-AdamW
+   und eine Speicherschätzung mit Empfehlungen.
+6. **Alles ist durchschaubar.** Komplette Aufbau-Darstellung, Ratgeber mit direkt
+   übernehmbaren Vorschlägen, Rückgängig/Wiederholen, Export.
 
 Schnellstart
 ------------
@@ -36,8 +39,9 @@ Paketübersicht
 ``models``      MLP, CNN, RNN, Transformer, SSM, Hybrid, AE/VAE, GAN, Diffusion, GNN, RL-Netze,
                 freier Graph, Ensemble, Pipeline, Fusion, Mixture-of-Models, Multi-Task
 ``training``    Trainer, Paradigmen, Optimierer, Zeitpläne, Verluste, Callbacks, RL
-``memory``      Präzision, Checkpointing, Offloading, Quantisierung, Speicherschätzung
-``tensor``      Tensor-Chirurgie
+``memory``      Präzision, Checkpointing, Streaming/Offloading, Quantisierung, LoRA, Speicherschätzung
+``tensor``      Tensor- und Modul-Chirurgie, Geltungsbereiche
+``analysis``    Aufbau-Darstellung, Ratgeber, Export
 ``data``        Datensätze (synthetisch + eigene Dateien)
 ``presets``     Vorlagen je Anwendungsgebiet, Speicherprofile
 ``project``     ``Project``-Fassade
@@ -46,22 +50,22 @@ Paketübersicht
 
 from __future__ import annotations
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 from .core import (BaseConfig, BuildError, ComponentListParam, ComponentParam, ComponentSpec, ConfigError,
                    ConfigListParam, FreeConfig, KIBaukastenError, Level, NestedParam, Param, T, Tooltip,
                    TrainingError, all_registries, register, registry, select_indices)
-from . import components, models, training, memory, tensor, data, presets  # noqa: E402,F401  (füllt Registries)
+from . import components, models, training, memory, tensor, data, presets, analysis  # noqa: E402,F401  (Registries)
 from .memory import MemoryConfig, estimate_memory  # noqa: E402
 from .models import BaseModel, ModelConfig, build_model  # noqa: E402
 from .presets import DOMAINS, MEMORY_PROFILES, apply_memory_profile, get_preset, presets_by_domain  # noqa: E402
 from .project import Project, ProjectConfig  # noqa: E402
-from .tensor import TensorRuleConfig, TensorSurgeon  # noqa: E402
+from .tensor import ModuleRuleConfig, ModuleSurgeon, TensorRuleConfig, TensorSurgeon  # noqa: E402
 from .training import Trainer, TrainingConfig  # noqa: E402
 
 __all__ = [
     "__version__", "Project", "ProjectConfig", "Trainer", "TrainingConfig", "MemoryConfig", "TensorRuleConfig",
-    "TensorSurgeon", "BaseModel", "ModelConfig", "build_model", "estimate_memory",
+    "TensorSurgeon", "ModuleRuleConfig", "ModuleSurgeon", "BaseModel", "ModelConfig", "build_model", "estimate_memory",
     "BaseConfig", "Param", "NestedParam", "ConfigListParam", "ComponentParam", "ComponentListParam", "ComponentSpec",
     "FreeConfig", "Level", "T", "Tooltip", "registry", "register", "all_registries", "select_indices",
     "get_preset", "presets_by_domain", "apply_memory_profile", "DOMAINS", "MEMORY_PROFILES",

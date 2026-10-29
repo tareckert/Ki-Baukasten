@@ -230,7 +230,8 @@ def merge_lora(model: nn.Module) -> int:
 
 
 def lora_parameter_count(model: nn.Module) -> tuple[int, int]:
-    """(Adapter-Parameter, alle Parameter)."""
+    """(Adapter-Parameter, alle Gewichte inkl. quantisierter Basisgewichte)."""
     total = sum(p.numel() for p in model.parameters())
+    total += sum(m.in_features * m.out_features for m in model.modules() if isinstance(m, QuantLinear))
     lora = sum(p.numel() for n, p in model.named_parameters() if ".lora_" in n)
     return lora, total

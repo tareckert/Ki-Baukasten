@@ -63,7 +63,7 @@ hängen von der gewählten Komponente ab – siehe Abschnitt *Registries und Kom
 | `training.batch_size` | Ganzzahl | `32` | ≥ 1 | Basis | **Was:** Beispiele pro Schritt.<br>**Nutzen:** Größer = stabilere Gradienten, mehr Speicher.<br>**Wofür:** 8–512. |
 | `training.eval_batch_size` | Ganzzahl (oder None) | `None` | ≥ 1 | Fortgeschritten | **Was:** Batchgröße für Evaluierung (None = batch_size).<br>**Nutzen:** Evaluierung braucht weniger Speicher.<br>**Wofür:** 2× batch_size. |
 | `training.gradient_accumulation_steps` | Ganzzahl | `1` | ≥ 1 | Basis | **Was:** Gradienten über n Mikro-Batches sammeln vor einem Schritt.<br>**Nutzen:** Simuliert große Batches mit wenig Speicher (effektive Batchgröße = batch_size · n).<br>**Wofür:** Große Modelle auf kleinen GPUs. |
-| `training.optimizer` | Komponente aus Registry 'optimizer' | `adamw` | Auswahl: sgd \| adam \| adamw \| nadam \| radam \| adamax \| adagrad \| adadelta \| rmsprop \| adafactor \| lion \| muon | Basis | **Was:** Optimierer.<br>**Nutzen:** Wie Gradienten zu Updates werden.<br>**Wofür:** adamw (Standard), sgd (CNNs), lion/muon (experimentell). |
+| `training.optimizer` | Komponente aus Registry 'optimizer' | `adamw` | Auswahl: sgd \| adam \| adamw \| nadam \| radam \| adamax \| adagrad \| adadelta \| rmsprop \| adafactor \| lion \| adamw8bit \| muon | Basis | **Was:** Optimierer.<br>**Nutzen:** Wie Gradienten zu Updates werden.<br>**Wofür:** adamw (Standard), sgd (CNNs), lion/muon (experimentell). |
 | `training.optimizer.lr` | Kommazahl | `0.001` | ≥ 0.0 | Basis | **Was:** Lernrate – Schrittweite der Gewichtsänderungen.<br>**Nutzen:** Wichtigster Hyperparameter: zu groß → Divergenz, zu klein → quälend langsam.<br>**Wofür:** Jedes Training.<br>**Tipp:** Adam/AdamW: 1e-4…1e-3 (Transformer 3e-4); SGD: 0.01…0.1; Feintuning: 1e-5. |
 | `training.optimizer.weight_decay` | Kommazahl | `0.01` | ≥ 0.0 | Basis | **Was:** Entkoppelter Gewichtsverfall (AdamW).<br>**Nutzen:** Korrekte Regularisierung für adaptive Optimierer – der Grund, AdamW statt Adam zu nehmen.<br>**Wofür:** 0.01…0.1 (LLMs 0.1). |
 | `training.optimizer.betas` | Liste[Kommazahl] | `[0.9, 0.999]` | Bereich 0.0 … 1.0 · Länge 2 | Fortgeschritten | **Was:** Abklingraten für 1. Moment (Richtung) und 2. Moment (Skalierung).<br>**Nutzen:** β₂ kleiner (0.95) stabilisiert große Modelle; β₁ steuert die Glättung.<br>**Wofür:** LLMs: [0.9, 0.95]; Standard: [0.9, 0.999]. |
@@ -128,14 +128,32 @@ hängen von der gewählten Komponente ab – siehe Abschnitt *Registries und Kom
 | `memory.checkpoint_layers` | Text | `'*'` |  | Fortgeschritten | **Was:** Welche Blöcke neu berechnet werden (Selektor wie bei layer_overrides).<br>**Nutzen:** Feiner Kompromiss Speicher vs. Zeit (z. B. nur jeden zweiten Block).<br>**Wofür:** '*', '::2', '0:8'. |
 | `memory.activation_offload` | Ja/Nein | `False` |  | Fortgeschritten | **Was:** Für den Backward gespeicherte Aktivierungen in den CPU-RAM auslagern.<br>**Nutzen:** Spart GPU-Speicher ohne Neuberechnung, kostet Übertragungszeit.<br>**Wofür:** Lange Sequenzen auf kleiner GPU. |
 | `memory.offload` | Unter-Konfiguration Offloading / Layer-Swapping | ⟶ OffloadConfig |  | Fortgeschritten | **Was:** Auslagern von Modellblöcken auf CPU-RAM oder Festplatte (Swapping).<br>**Nutzen:** Ermöglicht Modelle, die größer als der Speicher des Rechengeräts sind.<br>**Wofür:** Inferenz sehr großer Modelle auf kleiner GPU / wenig RAM. |
-| `memory.offload.mode` | Text | `'none'` | Auswahl: none \| cpu \| disk | Fortgeschritten | **Was:** Auslagerungsmodus.<br>**Nutzen:** Tauscht Geschwindigkeit gegen Speicher: disk spart am meisten, ist aber am langsamsten.<br>**Wofür:** Nur für Inferenz bzw. eingefrorene Blöcke (Gradienten bräuchten die Gewichte auf dem Gerät). |
+| `memory.offload.mode` | Text | `'none'` | Auswahl: none \| cpu \| disk \| stream | Fortgeschritten | **Was:** Auslagerungsmodus.<br>**Nutzen:** Tauscht Geschwindigkeit gegen Speicher: disk spart am meisten, ist aber am langsamsten; stream erlaubt Training von Modellen, deren Gewichte + Optimierer nicht auf die GPU passen.<br>**Wofür:** Inferenz großer Modelle: cpu/disk. Training großer Modelle auf kleiner GPU: stream.<br>**Tipp:** stream rechnet jeden Block im Backward neu (wie Checkpointing) und überträgt die Gewichte zweimal pro Schritt – typischerweise 1.3–3× langsamer. |
 | `memory.offload.targets` | Text | `'auto'` |  | Fortgeschritten | **Was:** Welche Module ausgelagert werden: 'auto' = Hauptblöcke des Modells, sonst Regex auf Modulnamen.<br>**Nutzen:** Kleine Teile (Embeddings, Kopf) bleiben dauerhaft auf dem Gerät.<br>**Wofür:** Meist 'auto'; z. B. 'blocks\.(1[0-9]\|2[0-9])' für nur hintere Blöcke. |
+| `memory.offload.layers` | Text | `'*'` |  | Fortgeschritten | **Was:** Welche der automatisch gefundenen Blöcke ausgelagert werden (Selektor wie bei layer_overrides).<br>**Nutzen:** Feiner Kompromiss: nur so viele Blöcke auslagern, wie nötig – der Rest rechnet ohne Übertragung.<br>**Wofür:** '*' = alle, '0:12' = die ersten 12, '::2' = jeder zweite. Nur mit targets='auto'. |
+| `memory.offload.prefetch` | Ja/Nein | `False` |  | Experimentell | **Was:** Nächsten Block auf einem eigenen CUDA-Stream vorladen, während der aktuelle rechnet (nur stream + CUDA).<br>**Nutzen:** Versteckt Übertragungszeit hinter Rechenzeit.<br>**Wofür:** Experimentell; bei Problemen ausschalten. |
 | `memory.offload.directory` | Text | `'offload_cache'` |  | Fortgeschritten | **Was:** Ordner für ausgelagerte Gewichte (disk).<br>**Nutzen:** Schnelle SSD empfohlen.<br>**Wofür:** Lokale SSD. |
 | `memory.offload.pin_memory` | Ja/Nein | `True` |  | Experte | **Was:** CPU-Kopien in gepinntem Speicher halten (cpu-Modus, nur CUDA).<br>**Nutzen:** Deutlich schnellere Übertragung CPU → GPU.<br>**Wofür:** CUDA. |
 | `memory.offload.keep_resident` | Ganzzahl | `1` | ≥ 0 | Fortgeschritten | **Was:** Wie viele zuletzt genutzte Blöcke auf dem Gerät bleiben dürfen.<br>**Nutzen:** Mehr = weniger Nachladen, mehr Speicher.<br>**Wofür:** 1–2. |
-| `memory.quantization` | Text | `'none'` | Auswahl: none \| fake_quant \| dynamic_int8 | Fortgeschritten | **Was:** Quantisierung der Gewichte.<br>**Nutzen:** Kleinere, schnellere Modelle; fake_quant bereitet ein Modell auf echte Quantisierung vor.<br>**Wofür:** Edge-Geräte, CPU-Inferenz. |
+| `memory.quantization` | Text | `'none'` | Auswahl: none \| int8 \| int4 \| nf4 \| fake_quant \| torchao_int8 \| torchao_int4 \| dynamic_int8 | Fortgeschritten | **Was:** Quantisierung der Gewichte linearer Schichten.<br>**Nutzen:** int8 braucht ¼, int4/nf4 ⅛ des float32-Gewichtsspeichers – Inferenz großer Modelle und QLoRA-Feintuning; fake_quant bereitet ein Modell auf echte Quantisierung vor.<br>**Wofür:** Inferenz/Edge: int8; Feintuning großer Modelle: nf4 + memory.lora (QLoRA).<br>**Tipp:** int8/int4/nf4 sind eine eigene Implementierung in reinem PyTorch – unabhängig von torch.ao. |
 | `memory.quant_bits` | Ganzzahl | `8` | Bereich 2 … 16 | Fortgeschritten | **Was:** Bitbreite für fake_quant.<br>**Nutzen:** Weniger Bits = kleiner, ungenauer.<br>**Wofür:** 8 (sicher), 4 (aggressiv). |
-| `memory.quant_targets` | Text | `'linear'` | Auswahl: linear \| linear_conv | Experte | **Was:** Welche Schichten quantisiert werden.<br>**Nutzen:** Faltungen sind empfindlicher.<br>**Wofür:** linear. |
+| `memory.quant_group_size` | Ganzzahl (oder None) | `128` | ≥ 8 | Fortgeschritten | **Was:** Gruppengröße: so viele Gewichte einer Zeile teilen sich eine Skala (None = eine Skala pro Ausgabekanal).<br>**Nutzen:** Kleinere Gruppen = genauer (wichtig bei 4 Bit), minimal mehr Speicher für Skalen.<br>**Wofür:** int8: None oder 128; int4/nf4: 32–128. |
+| `memory.quant_skip` | Text (oder None) | `'lm_head'` |  | Fortgeschritten | **Was:** Regex: Module, die NICHT quantisiert werden.<br>**Nutzen:** Ausgabeschicht und empfindliche Teile in voller Genauigkeit halten.<br>**Wofür:** 'lm_head', 'lm_head\|router'. |
+| `memory.quant_only` | Text (oder None) | `None` |  | Experte | **Was:** Regex: nur diese Module quantisieren (None = alle linearen Schichten).<br>**Nutzen:** Gezielt nur große Schichten (z. B. FFN) komprimieren.<br>**Wofür:** 'ffn', 'blocks\.(1[0-9])'. |
+| `memory.quant_compute_dtype` | Text | `'auto'` | Auswahl: auto \| float32 \| bfloat16 \| float16 | Experte | **Was:** Datentyp, in den die Gewichte zum Rechnen entpackt werden.<br>**Nutzen:** Geschwindigkeit vs. Genauigkeit.<br>**Wofür:** auto. |
+| `memory.quant_targets` | Text | `'linear'` | Auswahl: linear \| linear_conv | Experte | **Was:** Welche Schichten fake_quant betrifft.<br>**Nutzen:** Faltungen sind empfindlicher.<br>**Wofür:** linear. |
+| `memory.lora` | Unter-Konfiguration LoRA / QLoRA (Adapter-Feintuning) | ⟶ LoRAConfig |  | Fortgeschritten | **Was:** Kleine, trainierbare Niedrig-Rang-Adapter auf linearen Schichten; die Basisgewichte bleiben eingefroren.<br>**Nutzen:** Feintuning mit einem Bruchteil des Speichers (Gradienten + Optimierer nur für die Adapter).<br>**Wofür:** Anpassen großer vortrainierter Modelle; mit memory.quantization = 'nf4'/'int8' → QLoRA. |
+| `memory.lora.enabled` | Ja/Nein | `False` |  | Fortgeschritten | **Was:** LoRA-Adapter einbauen.<br>**Nutzen:** Aktiviert Adapter-Feintuning.<br>**Wofür:** Feintuning großer Modelle. |
+| `memory.lora.rank` | Ganzzahl | `8` | ≥ 1 | Fortgeschritten | **Was:** Rang r der Korrektur.<br>**Nutzen:** Größer = ausdrucksstärker, mehr Parameter.<br>**Wofür:** 4–64; Standard 8–16. |
+| `memory.lora.alpha` | Kommazahl | `16.0` | ≥ 0.0 | Fortgeschritten | **Was:** Skalierung α (effektiver Faktor α/r).<br>**Nutzen:** Entkoppelt Lernrate vom Rang.<br>**Wofür:** Meist 2·rank. |
+| `memory.lora.dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Dropout auf die Adapter-Eingabe.<br>**Nutzen:** Regularisierung bei kleinen Datensätzen.<br>**Wofür:** 0.05–0.1. |
+| `memory.lora.targets` | Text | `'auto'` |  | Fortgeschritten | **Was:** Welche Schichten Adapter bekommen: 'auto' = alle linearen Schichten in den Blöcken, sonst Regex auf Modulnamen.<br>**Nutzen:** Weniger Ziele = weniger Parameter; Attention-Projektionen sind die wichtigsten.<br>**Wofür:** 'auto', 'q_proj\|v_proj' (Original-LoRA), '.*proj' (alle Projektionen). |
+| `memory.lora.layers` | Text | `'*'` |  | Fortgeschritten | **Was:** Nur in diesen Blöcken (Selektor wie bei layer_overrides; nur mit targets='auto').<br>**Nutzen:** Z. B. nur die oberen Schichten anpassen.<br>**Wofür:** '*', '-4:' (letzte vier Blöcke). |
+| `memory.lora.exclude` | Text (oder None) | `'lm_head'` |  | Fortgeschritten | **Was:** Regex: diese Module nie mit Adaptern versehen.<br>**Nutzen:** Ausgabeschicht bleibt meist unverändert.<br>**Wofür:** lm_head. |
+| `memory.lora.freeze_base` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Alle Nicht-Adapter-Parameter einfrieren.<br>**Nutzen:** Der eigentliche Speichervorteil von LoRA.<br>**Wofür:** an. |
+| `memory.lora.train_also` | Text (oder None) | `None` |  | Fortgeschritten | **Was:** Regex: diese Parameter trotz freeze_base trainieren (z. B. Normen, Ausgabekopf).<br>**Nutzen:** Kleine Zusatzteile trainieren oft spürbar besser mit.<br>**Wofür:** 'norm', 'lm_head\|head'. |
+| `memory.lora.init` | Text | `'kaiming'` | Auswahl: kaiming \| gaussian \| pissa | Experte | **Was:** Initialisierung der Adapter.<br>**Nutzen:** Bestimmt den Startpunkt.<br>**Wofür:** kaiming; pissa für schnelleres Lernen. |
+| `memory.lora.use_dora` | Ja/Nein | `False` |  | Experimentell | **Was:** DoRA: zusätzlicher lernbarer Betrag pro Ausgabekanal.<br>**Nutzen:** Oft näher an vollem Feintuning, etwas teurer.<br>**Wofür:** Wenn LoRA zu schwach ist. |
 | `memory.channels_last` | Ja/Nein | `False` |  | Experte | **Was:** Speicherlayout NHWC für Faltungsnetze.<br>**Nutzen:** Schneller auf Tensor-Core-GPUs.<br>**Wofür:** CNN-Training auf GPU. |
 | `memory.compile` | Ja/Nein | `False` |  | Fortgeschritten | **Was:** Modell mit torch.compile übersetzen.<br>**Nutzen:** Oft 1.3–2× schneller nach Aufwärmzeit.<br>**Wofür:** Lange Trainings auf GPU. |
 | `memory.compile_mode` | Text | `'default'` | Auswahl: default \| reduce-overhead \| max-autotune | Experte | **Was:** Modus von torch.compile.<br>**Nutzen:** Mehr Optimierung = längeres Kompilieren.<br>**Wofür:** default. |
@@ -144,7 +162,8 @@ hängen von der gewählten Komponente ab – siehe Abschnitt *Registries und Kom
 | `memory.max_memory_fraction` | Kommazahl (oder None) | `None` | Bereich 0.05 … 1.0 | Experte | **Was:** Maximaler Anteil des GPU-Speichers für diesen Prozess.<br>**Nutzen:** Mehrere Prozesse auf einer GPU.<br>**Wofür:** 0.5. |
 | `memory.empty_cache_every_n_steps` | Ganzzahl (oder None) | `None` | ≥ 1 | Experte | **Was:** GPU-Cache alle n Schritte leeren.<br>**Nutzen:** Gegen Fragmentierung bei variablen Formen.<br>**Wofür:** Selten nötig. |
 | `memory.memory_budget_gb` | Kommazahl (oder None) | `None` | ≥ 0.0 | Basis | **Was:** Verfügbarer Speicher in GB für die Speicherschätzung (None = automatisch erkennen).<br>**Nutzen:** Die Schätzung prüft, ob das Training hineinpasst, und schlägt Einstellungen vor.<br>**Wofür:** Planung vor dem Training großer Modelle. |
-| `tensor_rules` | Liste von Tensor-Regel | 0 Elemente |  | Fortgeschritten | **Was:** Regeln für Eingriffe in einzelne Tensoren (Einfrieren, Pruning, eigene LR …).<br>**Nutzen:** Feinste Kontrolle bis auf einzelne Gewichte.<br>**Wofür:** Transfer-Learning, Kompression, Experimente. |
+| `module_rules` | Liste von Modul-Regel | 0 Elemente |  | Fortgeschritten | **Was:** Regeln für Eingriffe in ganze Schichten (ersetzen, entfernen, LoRA/Quantisierung einzeln, Hooks …).<br>**Nutzen:** Jede Schicht jeder Art anpassen – für alle, nur bestimmte oder genau eine (scope).<br>**Wofür:** Ablationen, gezieltes Feintuning, Präzision pro Schicht, Analyse. Wirken vor den Tensor-Regeln. |
+| `tensor_rules` | Liste von Tensor-Regel | 0 Elemente |  | Fortgeschritten | **Was:** Regeln für Eingriffe in einzelne Tensoren (Einfrieren, Pruning, Kopieren, eigene LR …).<br>**Nutzen:** Feinste Kontrolle bis auf einzelne Gewichte – für alle, nur bestimmte oder genau einen (scope).<br>**Wofür:** Transfer-Learning, Kompression, Experimente. |
 | `auto_fit_dims` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Modellgrößen (Ein-/Ausgabe, Vokabular, Beobachtungen …) automatisch an Daten/Umgebung anpassen.<br>**Nutzen:** Vorlagen passen dadurch ohne Handarbeit zu jedem Datensatz.<br>**Wofür:** Aus, wenn exakte Werte erzwungen werden sollen. |
 | `output_dir` | Text | `'ausgaben'` |  | Fortgeschritten | **Was:** Basisordner für Ausgaben (Checkpoints, Protokolle, gespeicherte Projekte).<br>**Nutzen:** Ordnung.<br>**Wofür:** ausgaben. |
 
@@ -169,6 +188,7 @@ hängen von der gewählten Komponente ab – siehe Abschnitt *Registries und Kom
 - [RL-Umgebungen (`environment`)](#registry-environment)
 - [Belohnungsterme (`reward`)](#registry-reward)
 - [RL-Algorithmen (`rl_algorithm`)](#registry-rl-algorithm)
+- [Modul-Operationen (`module_op`)](#registry-module-op)
 - [Tensor-Operationen (`tensor_op`)](#registry-tensor-op)
 - [Tensor-Funktionen (Chirurgie) (`tensor_function`)](#registry-tensor-function)
 - [Datensätze (`dataset`)](#registry-dataset)
@@ -818,7 +838,7 @@ Fabrik-Signatur: `factory(args, d_model)`
 |---|---|---|---|---|---|
 | `num_experts` | Ganzzahl | `8` | ≥ 1 | Basis | **Was:** Anzahl Experten.<br>**Nutzen:** Mehr Experten = viel mehr Parameter bei (fast) gleichen Rechenkosten pro Token.<br>**Wofür:** Große Modelle mit begrenztem Rechenbudget (Mixtral: 8, DeepSeek: 64+). |
 | `top_k` | Ganzzahl | `2` | ≥ 1 | Basis | **Was:** Wie viele Experten pro Token aktiv sind.<br>**Nutzen:** Mehr = bessere Qualität, aber höhere Kosten. 1 = Switch-Transformer.<br>**Wofür:** Mixtral: 2.<br>**Tipp:** Muss ≤ num_experts sein. |
-| `expert` | Komponente aus Registry 'feedforward' | `glu` | Auswahl: mlp \| glu \| moe \| none | Basis | **Was:** Bauart jedes Experten (beliebiges FFN, sogar ein weiteres MoE).<br>**Nutzen:** Experten können MLP, GLU oder exotische Varianten sein.<br>**Wofür:** Standard: GLU (SwiGLU). |
+| `expert` | Komponente aus Registry 'feedforward' | `glu` | Auswahl: mlp \| glu \| moe \| kan \| none | Basis | **Was:** Bauart jedes Experten (beliebiges FFN, sogar ein weiteres MoE).<br>**Nutzen:** Experten können MLP, GLU oder exotische Varianten sein.<br>**Wofür:** Standard: GLU (SwiGLU). |
 | `expert.hidden_mult` | Kommazahl | `2.6666666666666665` | ≥ 0.01 | Basis | **Was:** Breite relativ zu d_model (GLU hat 3 Matrizen → Standard 8/3 hält die Parameter wie MLP mit 4).<br>**Nutzen:** Mehr Breite = mehr Kapazität.<br>**Wofür:** LLaMA: 8/3 (aufgerundet auf multiple_of). |
 | `expert.hidden_dim` | Ganzzahl (oder None) | `None` | ≥ 1 | Fortgeschritten | **Was:** Exakte Breite der versteckten Schicht (überschreibt hidden_mult).<br>**Nutzen:** Für exakte Nachbauten bekannter Architekturen.<br>**Wofür:** Gewichte-Import, exakte Parameterzahlen. |
 | `expert.multiple_of` | Ganzzahl | `1` | ≥ 1 | Experte | **Was:** Versteckte Breite auf ein Vielfaches davon aufrunden.<br>**Nutzen:** Vielfache von 64/256 rechnen auf GPUs schneller (Tensor Cores).<br>**Wofür:** Geschwindigkeitsoptimierung (LLaMA: 256). |
@@ -833,6 +853,22 @@ Fabrik-Signatur: `factory(args, d_model)`
 | `aux_loss_coef` | Kommazahl | `0.01` | ≥ 0.0 | Basis | **Was:** Gewicht des Lastverteilungs-Verlusts (Switch-Transformer).<br>**Nutzen:** Bestraft ungleichmäßige Expertennutzung – sonst lernt oft nur ein Experte.<br>**Wofür:** Jedes MoE-Training. 0 = aus. |
 | `z_loss_coef` | Kommazahl | `0.0` | ≥ 0.0 | Experte | **Was:** Gewicht des Router-z-Loss (bestraft große Router-Logits).<br>**Nutzen:** Stabilisiert das Routing numerisch (ST-MoE).<br>**Wofür:** Große MoEs mit Instabilitäten (typisch 1e-3). |
 | `expert_dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Experimentell | **Was:** Wahrscheinlichkeit, im Training eine Experten-Zuweisung zu verwerfen.<br>**Nutzen:** Regularisiert, erzwingt Redundanz zwischen Experten.<br>**Wofür:** Experimente. |
+
+#### `feedforward:kan` (Aliase: `kolmogorov_arnold`) — Stufe Experimentell
+
+**Was:** Kolmogorov-Arnold-FFN (lernbare Kantenfunktionen, FastKAN-Variante).
+
+**Nutzen:** Andere induktive Annahme als MLPs: glatte, interpretierbare 1D-Funktionen pro Verbindung.
+
+**Wofür:** Forschung (Liu et al. 2024), wissenschaftliche Regression.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `hidden_mult` | Kommazahl | `2.0` | ≥ 0.01 | Basis | **Was:** Breite der versteckten KAN-Schicht relativ zu d_model.<br>**Nutzen:** KAN-Schichten haben grid_size-mal mehr Parameter als lineare – daher kleiner als bei MLP.<br>**Wofür:** 1–2. |
+| `grid_size` | Ganzzahl | `8` | ≥ 2 | Basis | **Was:** Anzahl Basisfunktionen pro Eingabe.<br>**Nutzen:** Feinere Funktionen, mehr Parameter (∝ grid_size).<br>**Wofür:** 5–10. |
+| `grid_range` | Liste[Kommazahl] | `[-2.0, 2.0]` | Länge 2 | Experte | **Was:** Wertebereich der Basisfunktions-Zentren (Eingaben werden vorher normalisiert).<br>**Nutzen:** Sollte die typischen Werte abdecken.<br>**Wofür:** [-2, 2]. |
+| `base_activation` | Komponente aus Registry 'activation' (oder None) | `silu` | Auswahl: relu \| leaky_relu \| prelu \| rrelu \| elu \| celu \| selu \| gelu \| quick_gelu \| silu \| swish \| mish \| tanh \| sigmoid \| … | Basis | **Was:** Zusätzlicher Basis-Pfad: lineare Schicht auf act(x) (wie im KAN-Original).<br>**Nutzen:** Stabilisiert das Training, gibt einen glatten Grundverlauf.<br>**Wofür:** silu; None = aus. |
+| `dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Basis | **Was:** Dropout zwischen den KAN-Schichten.<br>**Nutzen:** Regularisierung.<br>**Wofür:** 0–0.1. |
 
 #### `feedforward:none` (Aliase: `keins`, `identity`) — Stufe Experimentell
 
@@ -1365,6 +1401,12 @@ Fabrik-Signatur: `factory(args, in_shape) – in_shape ohne Batch-Dimension`
 | `attention.dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Basis | **Was:** Dropout auf die Attention-Gewichte.<br>**Nutzen:** Regularisiert, indem zufällig Verbindungen gekappt werden.<br>**Wofür:** Kleine Datensätze. Große LLMs: 0. |
 | `attention.head_dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Experimentell | **Was:** Ganze Köpfe im Training zufällig abschalten (DropHead).<br>**Nutzen:** Verhindert, dass sich das Modell auf wenige Köpfe verlässt.<br>**Wofür:** Regularisierung, Robustheit, Pruning-Vorbereitung. |
 | `attention.output_gate` | Ja/Nein | `False` |  | Experimentell | **Was:** Ausgabe jedes Kopfes mit sigmoid(W·x) gaten ('gated attention').<br>**Nutzen:** Reduziert 'Attention Sinks' und Aktivierungsausreißer, verbessert Stabilität.<br>**Wofür:** Neuere LLM-Forschung (Qwen3-Next). |
+| `attention.kv_compression_dim` | Ganzzahl (oder None) | `None` | ≥ 1 | Experte | **Was:** MLA-lite: Keys/Values entstehen aus einem gemeinsamen, komprimierten Latent-Vektor dieser Größe.<br>**Nutzen:** Der KV-Cache speichert nur noch den Latent-Vektor (r statt 2·H_kv·head_dim Werte pro Token) – oft 4–16× weniger Cache-Speicher; zusätzlich weniger Parameter.<br>**Wofür:** Lange Kontexte, Generierung mit großen Batches (DeepSeek-V2/V3 Multi-Head Latent Attention).<br>**Tipp:** Vereinfachte Variante: RoPE wird auf die rekonstruierten Keys angewandt (keine entkoppelten RoPE-Köpfe). |
+| `attention.kv_latent_norm` | Komponente aus Registry 'normalization' | `rmsnorm` | Auswahl: layernorm \| rmsnorm \| batchnorm \| groupnorm \| instancenorm \| scalenorm \| l2norm \| dyt \| identity | Experte | **Was:** Normalisierung des MLA-Latent-Vektors (nur mit kv_compression_dim).<br>**Nutzen:** Stabilisiert die Rekonstruktion von Keys/Values.<br>**Wofür:** DeepSeek: RMSNorm. |
+| `attention.kv_latent_norm.eps` | Kommazahl | `1e-06` | ≥ 0.0 | Experte | **Was:** Kleine Zahl gegen Division durch 0.<br>**Nutzen:** Zu klein → numerische Probleme bei niedriger Präzision; zu groß → verfälschte Normalisierung.<br>**Wofür:** fp16/bf16-Training (dann eher 1e-5 bis 1e-6 statt 1e-8). |
+| `attention.kv_latent_norm.learnable` | Ja/Nein | `True` |  | Experte | **Was:** Lernbare Skala pro Feature.<br>**Nutzen:** Wie γ bei LayerNorm.<br>**Wofür:** Standard: an. |
+| `attention.kv_latent_norm.scale_offset` | Ja/Nein | `False` |  | Experte | **Was:** Skala als (1 + w) parametrisieren, w startet bei 0.<br>**Nutzen:** Weight-Decay zieht die Skala Richtung 1 statt Richtung 0.<br>**Wofür:** Gemma-Stil. |
+| `attention.kv_latent_norm.compute_in_fp32` | Ja/Nein | `True` |  | Experte | **Was:** Normalisierung intern in 32-Bit rechnen.<br>**Nutzen:** Verhindert Genauigkeitsverlust bei fp16/bf16-Training.<br>**Wofür:** Mixed-Precision-Training. |
 | `causal` | Ja/Nein | `False` |  | Basis | **Was:** Kausale Maske.<br>**Nutzen:** Nur Vergangenheit sichtbar.<br>**Wofür:** Generierung. |
 
 #### `layer:squeeze_excitation` (Aliase: `se`) — Stufe Fortgeschritten
@@ -1539,6 +1581,12 @@ Fabrik-Signatur: `factory(args, in_shape) – in_shape ohne Batch-Dimension`
 | `mixer.dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Basis | **Was:** Dropout auf die Attention-Gewichte.<br>**Nutzen:** Regularisiert, indem zufällig Verbindungen gekappt werden.<br>**Wofür:** Kleine Datensätze. Große LLMs: 0. |
 | `mixer.head_dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Experimentell | **Was:** Ganze Köpfe im Training zufällig abschalten (DropHead).<br>**Nutzen:** Verhindert, dass sich das Modell auf wenige Köpfe verlässt.<br>**Wofür:** Regularisierung, Robustheit, Pruning-Vorbereitung. |
 | `mixer.output_gate` | Ja/Nein | `False` |  | Experimentell | **Was:** Ausgabe jedes Kopfes mit sigmoid(W·x) gaten ('gated attention').<br>**Nutzen:** Reduziert 'Attention Sinks' und Aktivierungsausreißer, verbessert Stabilität.<br>**Wofür:** Neuere LLM-Forschung (Qwen3-Next). |
+| `mixer.kv_compression_dim` | Ganzzahl (oder None) | `None` | ≥ 1 | Experte | **Was:** MLA-lite: Keys/Values entstehen aus einem gemeinsamen, komprimierten Latent-Vektor dieser Größe.<br>**Nutzen:** Der KV-Cache speichert nur noch den Latent-Vektor (r statt 2·H_kv·head_dim Werte pro Token) – oft 4–16× weniger Cache-Speicher; zusätzlich weniger Parameter.<br>**Wofür:** Lange Kontexte, Generierung mit großen Batches (DeepSeek-V2/V3 Multi-Head Latent Attention).<br>**Tipp:** Vereinfachte Variante: RoPE wird auf die rekonstruierten Keys angewandt (keine entkoppelten RoPE-Köpfe). |
+| `mixer.kv_latent_norm` | Komponente aus Registry 'normalization' | `rmsnorm` | Auswahl: layernorm \| rmsnorm \| batchnorm \| groupnorm \| instancenorm \| scalenorm \| l2norm \| dyt \| identity | Experte | **Was:** Normalisierung des MLA-Latent-Vektors (nur mit kv_compression_dim).<br>**Nutzen:** Stabilisiert die Rekonstruktion von Keys/Values.<br>**Wofür:** DeepSeek: RMSNorm. |
+| `mixer.kv_latent_norm.eps` | Kommazahl | `1e-06` | ≥ 0.0 | Experte | **Was:** Kleine Zahl gegen Division durch 0.<br>**Nutzen:** Zu klein → numerische Probleme bei niedriger Präzision; zu groß → verfälschte Normalisierung.<br>**Wofür:** fp16/bf16-Training (dann eher 1e-5 bis 1e-6 statt 1e-8). |
+| `mixer.kv_latent_norm.learnable` | Ja/Nein | `True` |  | Experte | **Was:** Lernbare Skala pro Feature.<br>**Nutzen:** Wie γ bei LayerNorm.<br>**Wofür:** Standard: an. |
+| `mixer.kv_latent_norm.scale_offset` | Ja/Nein | `False` |  | Experte | **Was:** Skala als (1 + w) parametrisieren, w startet bei 0.<br>**Nutzen:** Weight-Decay zieht die Skala Richtung 1 statt Richtung 0.<br>**Wofür:** Gemma-Stil. |
+| `mixer.kv_latent_norm.compute_in_fp32` | Ja/Nein | `True` |  | Experte | **Was:** Normalisierung intern in 32-Bit rechnen.<br>**Nutzen:** Verhindert Genauigkeitsverlust bei fp16/bf16-Training.<br>**Wofür:** Mixed-Precision-Training. |
 | `cross_attention` | Unter-Konfiguration Attention | ⟶ AttentionConfig |  | Fortgeschritten | **Was:** Cross-Attention der Decoder-Blöcke (nur encoder_decoder).<br>**Nutzen:** Lässt den Decoder auf die Encoder-Ausgabe schauen.<br>**Wofür:** Übersetzung, Zusammenfassung, Seq2Seq. |
 | `cross_attention.num_heads` | Ganzzahl | `8` | ≥ 1 | Fortgeschritten | **Was:** Anzahl paralleler Attention-Köpfe.<br>**Nutzen:** Jeder Kopf kann andere Beziehungen lernen (Syntax, Nähe, Bezüge ...).<br>**Wofür:** Alle Attention-Modelle.<br>**Tipp:** Faustregel: head_dim (= d_model / num_heads) zwischen 32 und 128. |
 | `cross_attention.num_kv_heads` | Ganzzahl (oder None) | `None` | ≥ 1 | Fortgeschritten | **Was:** Anzahl Key/Value-Köpfe (Grouped-Query-Attention). None = num_heads.<br>**Nutzen:** Weniger KV-Köpfe sparen Parameter und vor allem KV-Cache-Speicher bei der Generierung.<br>**Wofür:** Große Sprachmodelle (LLaMA-2-70B: 8 KV-Köpfe bei 64 Köpfen). 1 = Multi-Query-Attention.<br>**Tipp:** num_heads muss durch num_kv_heads teilbar sein. |
@@ -1558,7 +1606,13 @@ Fabrik-Signatur: `factory(args, in_shape) – in_shape ohne Batch-Dimension`
 | `cross_attention.dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Dropout auf die Attention-Gewichte.<br>**Nutzen:** Regularisiert, indem zufällig Verbindungen gekappt werden.<br>**Wofür:** Kleine Datensätze. Große LLMs: 0. |
 | `cross_attention.head_dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Experimentell | **Was:** Ganze Köpfe im Training zufällig abschalten (DropHead).<br>**Nutzen:** Verhindert, dass sich das Modell auf wenige Köpfe verlässt.<br>**Wofür:** Regularisierung, Robustheit, Pruning-Vorbereitung. |
 | `cross_attention.output_gate` | Ja/Nein | `False` |  | Experimentell | **Was:** Ausgabe jedes Kopfes mit sigmoid(W·x) gaten ('gated attention').<br>**Nutzen:** Reduziert 'Attention Sinks' und Aktivierungsausreißer, verbessert Stabilität.<br>**Wofür:** Neuere LLM-Forschung (Qwen3-Next). |
-| `ffn` | Komponente aus Registry 'feedforward' | `glu` | Auswahl: mlp \| glu \| moe \| none | Basis | **Was:** Feed-Forward-Teil (mlp, glu/SwiGLU, moe, none).<br>**Nutzen:** Positionsweise Verarbeitung – hier steckt die meiste Kapazität.<br>**Wofür:** glu (SwiGLU) ist moderner Standard; moe für sehr große Kapazität. |
+| `cross_attention.kv_compression_dim` | Ganzzahl (oder None) | `None` | ≥ 1 | Experte | **Was:** MLA-lite: Keys/Values entstehen aus einem gemeinsamen, komprimierten Latent-Vektor dieser Größe.<br>**Nutzen:** Der KV-Cache speichert nur noch den Latent-Vektor (r statt 2·H_kv·head_dim Werte pro Token) – oft 4–16× weniger Cache-Speicher; zusätzlich weniger Parameter.<br>**Wofür:** Lange Kontexte, Generierung mit großen Batches (DeepSeek-V2/V3 Multi-Head Latent Attention).<br>**Tipp:** Vereinfachte Variante: RoPE wird auf die rekonstruierten Keys angewandt (keine entkoppelten RoPE-Köpfe). |
+| `cross_attention.kv_latent_norm` | Komponente aus Registry 'normalization' | `rmsnorm` | Auswahl: layernorm \| rmsnorm \| batchnorm \| groupnorm \| instancenorm \| scalenorm \| l2norm \| dyt \| identity | Experte | **Was:** Normalisierung des MLA-Latent-Vektors (nur mit kv_compression_dim).<br>**Nutzen:** Stabilisiert die Rekonstruktion von Keys/Values.<br>**Wofür:** DeepSeek: RMSNorm. |
+| `cross_attention.kv_latent_norm.eps` | Kommazahl | `1e-06` | ≥ 0.0 | Experte | **Was:** Kleine Zahl gegen Division durch 0.<br>**Nutzen:** Zu klein → numerische Probleme bei niedriger Präzision; zu groß → verfälschte Normalisierung.<br>**Wofür:** fp16/bf16-Training (dann eher 1e-5 bis 1e-6 statt 1e-8). |
+| `cross_attention.kv_latent_norm.learnable` | Ja/Nein | `True` |  | Experte | **Was:** Lernbare Skala pro Feature.<br>**Nutzen:** Wie γ bei LayerNorm.<br>**Wofür:** Standard: an. |
+| `cross_attention.kv_latent_norm.scale_offset` | Ja/Nein | `False` |  | Experte | **Was:** Skala als (1 + w) parametrisieren, w startet bei 0.<br>**Nutzen:** Weight-Decay zieht die Skala Richtung 1 statt Richtung 0.<br>**Wofür:** Gemma-Stil. |
+| `cross_attention.kv_latent_norm.compute_in_fp32` | Ja/Nein | `True` |  | Experte | **Was:** Normalisierung intern in 32-Bit rechnen.<br>**Nutzen:** Verhindert Genauigkeitsverlust bei fp16/bf16-Training.<br>**Wofür:** Mixed-Precision-Training. |
+| `ffn` | Komponente aus Registry 'feedforward' | `glu` | Auswahl: mlp \| glu \| moe \| kan \| none | Basis | **Was:** Feed-Forward-Teil (mlp, glu/SwiGLU, moe, none).<br>**Nutzen:** Positionsweise Verarbeitung – hier steckt die meiste Kapazität.<br>**Wofür:** glu (SwiGLU) ist moderner Standard; moe für sehr große Kapazität. |
 | `ffn.hidden_mult` | Kommazahl | `2.6666666666666665` | ≥ 0.01 | Basis | **Was:** Breite relativ zu d_model (GLU hat 3 Matrizen → Standard 8/3 hält die Parameter wie MLP mit 4).<br>**Nutzen:** Mehr Breite = mehr Kapazität.<br>**Wofür:** LLaMA: 8/3 (aufgerundet auf multiple_of). |
 | `ffn.hidden_dim` | Ganzzahl (oder None) | `None` | ≥ 1 | Fortgeschritten | **Was:** Exakte Breite der versteckten Schicht (überschreibt hidden_mult).<br>**Nutzen:** Für exakte Nachbauten bekannter Architekturen.<br>**Wofür:** Gewichte-Import, exakte Parameterzahlen. |
 | `ffn.multiple_of` | Ganzzahl | `1` | ≥ 1 | Experte | **Was:** Versteckte Breite auf ein Vielfaches davon aufrunden.<br>**Nutzen:** Vielfache von 64/256 rechnen auf GPUs schneller (Tensor Cores).<br>**Wofür:** Geschwindigkeitsoptimierung (LLaMA: 256). |
@@ -1909,6 +1963,12 @@ Fabrik-Signatur: `factory(args, d_model) -> forward(x, key_padding_mask, positio
 | `dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Basis | **Was:** Dropout auf die Attention-Gewichte.<br>**Nutzen:** Regularisiert, indem zufällig Verbindungen gekappt werden.<br>**Wofür:** Kleine Datensätze. Große LLMs: 0. |
 | `head_dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Experimentell | **Was:** Ganze Köpfe im Training zufällig abschalten (DropHead).<br>**Nutzen:** Verhindert, dass sich das Modell auf wenige Köpfe verlässt.<br>**Wofür:** Regularisierung, Robustheit, Pruning-Vorbereitung. |
 | `output_gate` | Ja/Nein | `False` |  | Experimentell | **Was:** Ausgabe jedes Kopfes mit sigmoid(W·x) gaten ('gated attention').<br>**Nutzen:** Reduziert 'Attention Sinks' und Aktivierungsausreißer, verbessert Stabilität.<br>**Wofür:** Neuere LLM-Forschung (Qwen3-Next). |
+| `kv_compression_dim` | Ganzzahl (oder None) | `None` | ≥ 1 | Experte | **Was:** MLA-lite: Keys/Values entstehen aus einem gemeinsamen, komprimierten Latent-Vektor dieser Größe.<br>**Nutzen:** Der KV-Cache speichert nur noch den Latent-Vektor (r statt 2·H_kv·head_dim Werte pro Token) – oft 4–16× weniger Cache-Speicher; zusätzlich weniger Parameter.<br>**Wofür:** Lange Kontexte, Generierung mit großen Batches (DeepSeek-V2/V3 Multi-Head Latent Attention).<br>**Tipp:** Vereinfachte Variante: RoPE wird auf die rekonstruierten Keys angewandt (keine entkoppelten RoPE-Köpfe). |
+| `kv_latent_norm` | Komponente aus Registry 'normalization' | `rmsnorm` | Auswahl: layernorm \| rmsnorm \| batchnorm \| groupnorm \| instancenorm \| scalenorm \| l2norm \| dyt \| identity | Experte | **Was:** Normalisierung des MLA-Latent-Vektors (nur mit kv_compression_dim).<br>**Nutzen:** Stabilisiert die Rekonstruktion von Keys/Values.<br>**Wofür:** DeepSeek: RMSNorm. |
+| `kv_latent_norm.eps` | Kommazahl | `1e-06` | ≥ 0.0 | Experte | **Was:** Kleine Zahl gegen Division durch 0.<br>**Nutzen:** Zu klein → numerische Probleme bei niedriger Präzision; zu groß → verfälschte Normalisierung.<br>**Wofür:** fp16/bf16-Training (dann eher 1e-5 bis 1e-6 statt 1e-8). |
+| `kv_latent_norm.learnable` | Ja/Nein | `True` |  | Experte | **Was:** Lernbare Skala pro Feature.<br>**Nutzen:** Wie γ bei LayerNorm.<br>**Wofür:** Standard: an. |
+| `kv_latent_norm.scale_offset` | Ja/Nein | `False` |  | Experte | **Was:** Skala als (1 + w) parametrisieren, w startet bei 0.<br>**Nutzen:** Weight-Decay zieht die Skala Richtung 1 statt Richtung 0.<br>**Wofür:** Gemma-Stil. |
+| `kv_latent_norm.compute_in_fp32` | Ja/Nein | `True` |  | Experte | **Was:** Normalisierung intern in 32-Bit rechnen.<br>**Nutzen:** Verhindert Genauigkeitsverlust bei fp16/bf16-Training.<br>**Wofür:** Mixed-Precision-Training. |
 
 #### `sequence_mixer:ssm` (Aliase: `mamba`) — Stufe Fortgeschritten
 
@@ -1930,6 +1990,9 @@ Fabrik-Signatur: `factory(args, d_model) -> forward(x, key_padding_mask, positio
 | `bidirectional` | Ja/Nein | `False` |  | Fortgeschritten | **Was:** Zusätzlicher Rückwärts-Scan (wird bei kausalen Modellen ignoriert).<br>**Nutzen:** Kontext von beiden Seiten für Encoder-Aufgaben.<br>**Wofür:** Klassifikation, Tagging. |
 | `conv_bias` | Ja/Nein | `True` |  | Experte | **Was:** Bias der kurzen Faltung.<br>**Nutzen:** Verschiebung.<br>**Wofür:** Standard. |
 | `bias` | Ja/Nein | `False` |  | Experte | **Was:** Bias der Ein-/Ausgangsprojektion.<br>**Nutzen:** Verschiebung.<br>**Wofür:** Mamba: aus. |
+| `scan_mode` | Text | `'auto'` | Auswahl: auto \| parallel \| chunked \| sequential \| mamba_ssm | Basis | **Was:** Algorithmus für den Zustands-Scan h_t = exp(Δ·A)·h_{t-1} + Δ·B·x.<br>**Nutzen:** Der parallele/chunked Scan braucht nur log₂(T) Runden statt T Schleifenschritte – Training oft 10–40× schneller als die Python-Schleife.<br>**Wofür:** auto ist fast immer richtig (CPU: fusionierte Schleife, GPU: chunked); mamba_ssm auf NVIDIA-GPUs mit installiertem Paket. |
+| `scan_chunk_size` | Ganzzahl | `32` | ≥ 1 | Fortgeschritten | **Was:** Blocklänge des chunked-Scans.<br>**Nutzen:** Größer = weniger sequenzielle Überträge, aber mehr Zwischenspeicher pro Runde.<br>**Wofür:** CPU: 16–32; GPU: 64–256. |
+| `scan_backward` | Text | `'fused'` | Auswahl: fused \| scan \| autograd | Experte | **Was:** Wie der Gradient des Scans berechnet wird.<br>**Nutzen:** 'fused' senkt den Aktivierungsspeicher des Scans etwa um den Faktor d_state – wie der offizielle Mamba-Kernel, aber in reinem PyTorch (CPU, GPU, MPS).<br>**Wofür:** Lange Sequenzen / große Batches: fused. Kurze Sequenzen mit viel Speicher: scan. |
 
 #### `sequence_mixer:rnn` — Stufe Fortgeschritten
 
@@ -1941,7 +2004,7 @@ Fabrik-Signatur: `factory(args, d_model) -> forward(x, key_padding_mask, positio
 
 | Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
 |---|---|---|---|---|---|
-| `cell` | Text | `'gru'` | Auswahl: gru \| lstm \| rnn | Basis | **Was:** Rekurrente Zelle.<br>**Nutzen:** GRU: schlank; LSTM: mehr Gedächtnissteuerung.<br>**Wofür:** Hybride, Streaming. |
+| `cell` | Text | `'gru'` | Auswahl: gru \| lstm \| rnn \| mingru | Basis | **Was:** Rekurrente Zelle.<br>**Nutzen:** GRU: schlank; LSTM: mehr Gedächtnissteuerung; minGRU: parallel trainierbar.<br>**Wofür:** Hybride, Streaming. |
 | `bidirectional` | Ja/Nein | `True` |  | Basis | **Was:** Beide Richtungen (nur ohne Kausalität).<br>**Nutzen:** Kontext von beiden Seiten.<br>**Wofür:** Encoder. |
 
 #### `sequence_mixer:conv` — Stufe Fortgeschritten
@@ -2029,8 +2092,11 @@ Fabrik-Signatur: `factory(args, d_model, head_dim, num_heads, max_seq_len)`
 |---|---|---|---|---|---|
 | `theta` | Kommazahl | `10000.0` | ≥ 1.0 | Basis | **Was:** Basisfrequenz θ der Rotationen.<br>**Nutzen:** Größeres θ → längere Kontexte unterscheidbar (LLaMA-3: 500000).<br>**Wofür:** Lange Kontexte → θ erhöhen. |
 | `fraction` | Kommazahl | `1.0` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Anteil der Kopf-Dimensionen, die rotiert werden ('partial rotary').<br>**Nutzen:** Rest bleibt positionsfrei – manche Modelle (GPT-NeoX: 0.25) profitieren davon.<br>**Wofür:** Feintuning von Positions- vs. Inhaltsanteil. |
-| `scaling` | Text | `'none'` | Auswahl: none \| linear \| ntk | Fortgeschritten | **Was:** Verfahren zur Kontextverlängerung.<br>**Nutzen:** Erlaubt Sequenzen länger als im Training.<br>**Wofür:** Kontext-Erweiterung vortrainierter Modelle. |
+| `scaling` | Text | `'none'` | Auswahl: none \| linear \| ntk \| yarn | Fortgeschritten | **Was:** Verfahren zur Kontextverlängerung.<br>**Nutzen:** Erlaubt Sequenzen länger als im Training.<br>**Wofür:** Kontext-Erweiterung vortrainierter Modelle. |
 | `factor` | Kommazahl | `1.0` | ≥ 1.0 | Fortgeschritten | **Was:** Erweiterungsfaktor des Kontexts (z. B. 4 = vierfache Länge).<br>**Nutzen:** Stärke der Skalierung.<br>**Wofür:** Nur mit scaling ≠ none. |
+| `original_context` | Ganzzahl (oder None) | `None` | ≥ 1 | Experte | **Was:** Kontextlänge, mit der ursprünglich trainiert wurde (nur YaRN; None = max_seq_len / factor).<br>**Nutzen:** YaRN entscheidet anhand dieser Länge, welche Frequenzen interpoliert werden.<br>**Wofür:** Vortrainiertes Modell mit 4096 Tokens auf 16k erweitern: 4096, factor 4. |
+| `yarn_beta_fast` | Kommazahl | `32.0` | ≥ 0.0 | Experte | **Was:** YaRN β_fast: ab so vielen Umdrehungen im Originalkontext bleibt eine Frequenz unverändert.<br>**Nutzen:** Schützt die lokale Positionsauflösung.<br>**Wofür:** 32 (Paper). |
+| `yarn_beta_slow` | Kommazahl | `1.0` | ≥ 0.0 | Experte | **Was:** YaRN β_slow: unter so vielen Umdrehungen wird voll interpoliert.<br>**Nutzen:** Niedrige Frequenzen.<br>**Wofür:** 1 (Paper). |
 | `interleaved` | Ja/Nein | `False` |  | Experte | **Was:** Paare benachbarter Dimensionen rotieren (GPT-J) statt Hälften (GPT-NeoX/LLaMA).<br>**Nutzen:** Nur für Kompatibilität mit fremden Gewichten relevant.<br>**Wofür:** Gewichte-Import. |
 
 #### `positional:alibi` — Stufe Basis
@@ -2077,8 +2143,11 @@ Fabrik-Signatur: `factory(args, d_model, head_dim, num_heads, max_seq_len)`
 | `parts.1` | beliebig | `positional:rope()` |  | Basis | **Was:** Rotary Position Embedding (RoPE).<br>**Nutzen:** Relative Positionen, gute Qualität, Kontext erweiterbar.<br>**Wofür:** Standard moderner LLMs (LLaMA, Mistral, Qwen). |
 | `parts.1.theta` | Kommazahl | `10000.0` | ≥ 1.0 | Basis | **Was:** Basisfrequenz θ der Rotationen.<br>**Nutzen:** Größeres θ → längere Kontexte unterscheidbar (LLaMA-3: 500000).<br>**Wofür:** Lange Kontexte → θ erhöhen. |
 | `parts.1.fraction` | Kommazahl | `1.0` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Anteil der Kopf-Dimensionen, die rotiert werden ('partial rotary').<br>**Nutzen:** Rest bleibt positionsfrei – manche Modelle (GPT-NeoX: 0.25) profitieren davon.<br>**Wofür:** Feintuning von Positions- vs. Inhaltsanteil. |
-| `parts.1.scaling` | Text | `'none'` | Auswahl: none \| linear \| ntk | Fortgeschritten | **Was:** Verfahren zur Kontextverlängerung.<br>**Nutzen:** Erlaubt Sequenzen länger als im Training.<br>**Wofür:** Kontext-Erweiterung vortrainierter Modelle. |
+| `parts.1.scaling` | Text | `'none'` | Auswahl: none \| linear \| ntk \| yarn | Fortgeschritten | **Was:** Verfahren zur Kontextverlängerung.<br>**Nutzen:** Erlaubt Sequenzen länger als im Training.<br>**Wofür:** Kontext-Erweiterung vortrainierter Modelle. |
 | `parts.1.factor` | Kommazahl | `1.0` | ≥ 1.0 | Fortgeschritten | **Was:** Erweiterungsfaktor des Kontexts (z. B. 4 = vierfache Länge).<br>**Nutzen:** Stärke der Skalierung.<br>**Wofür:** Nur mit scaling ≠ none. |
+| `parts.1.original_context` | Ganzzahl (oder None) | `None` | ≥ 1 | Experte | **Was:** Kontextlänge, mit der ursprünglich trainiert wurde (nur YaRN; None = max_seq_len / factor).<br>**Nutzen:** YaRN entscheidet anhand dieser Länge, welche Frequenzen interpoliert werden.<br>**Wofür:** Vortrainiertes Modell mit 4096 Tokens auf 16k erweitern: 4096, factor 4. |
+| `parts.1.yarn_beta_fast` | Kommazahl | `32.0` | ≥ 0.0 | Experte | **Was:** YaRN β_fast: ab so vielen Umdrehungen im Originalkontext bleibt eine Frequenz unverändert.<br>**Nutzen:** Schützt die lokale Positionsauflösung.<br>**Wofür:** 32 (Paper). |
+| `parts.1.yarn_beta_slow` | Kommazahl | `1.0` | ≥ 0.0 | Experte | **Was:** YaRN β_slow: unter so vielen Umdrehungen wird voll interpoliert.<br>**Nutzen:** Niedrige Frequenzen.<br>**Wofür:** 1 (Paper). |
 | `parts.1.interleaved` | Ja/Nein | `False` |  | Experte | **Was:** Paare benachbarter Dimensionen rotieren (GPT-J) statt Hälften (GPT-NeoX/LLaMA).<br>**Nutzen:** Nur für Kompatibilität mit fremden Gewichten relevant.<br>**Wofür:** Gewichte-Import. |
 
 
@@ -3154,6 +3223,12 @@ Fabrik-Signatur: `factory(args) -> BaseModel`
 | `block.mixer.dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Basis | **Was:** Dropout auf die Attention-Gewichte.<br>**Nutzen:** Regularisiert, indem zufällig Verbindungen gekappt werden.<br>**Wofür:** Kleine Datensätze. Große LLMs: 0. |
 | `block.mixer.head_dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Experimentell | **Was:** Ganze Köpfe im Training zufällig abschalten (DropHead).<br>**Nutzen:** Verhindert, dass sich das Modell auf wenige Köpfe verlässt.<br>**Wofür:** Regularisierung, Robustheit, Pruning-Vorbereitung. |
 | `block.mixer.output_gate` | Ja/Nein | `False` |  | Experimentell | **Was:** Ausgabe jedes Kopfes mit sigmoid(W·x) gaten ('gated attention').<br>**Nutzen:** Reduziert 'Attention Sinks' und Aktivierungsausreißer, verbessert Stabilität.<br>**Wofür:** Neuere LLM-Forschung (Qwen3-Next). |
+| `block.mixer.kv_compression_dim` | Ganzzahl (oder None) | `None` | ≥ 1 | Experte | **Was:** MLA-lite: Keys/Values entstehen aus einem gemeinsamen, komprimierten Latent-Vektor dieser Größe.<br>**Nutzen:** Der KV-Cache speichert nur noch den Latent-Vektor (r statt 2·H_kv·head_dim Werte pro Token) – oft 4–16× weniger Cache-Speicher; zusätzlich weniger Parameter.<br>**Wofür:** Lange Kontexte, Generierung mit großen Batches (DeepSeek-V2/V3 Multi-Head Latent Attention).<br>**Tipp:** Vereinfachte Variante: RoPE wird auf die rekonstruierten Keys angewandt (keine entkoppelten RoPE-Köpfe). |
+| `block.mixer.kv_latent_norm` | Komponente aus Registry 'normalization' | `rmsnorm` | Auswahl: layernorm \| rmsnorm \| batchnorm \| groupnorm \| instancenorm \| scalenorm \| l2norm \| dyt \| identity | Experte | **Was:** Normalisierung des MLA-Latent-Vektors (nur mit kv_compression_dim).<br>**Nutzen:** Stabilisiert die Rekonstruktion von Keys/Values.<br>**Wofür:** DeepSeek: RMSNorm. |
+| `block.mixer.kv_latent_norm.eps` | Kommazahl | `1e-06` | ≥ 0.0 | Experte | **Was:** Kleine Zahl gegen Division durch 0.<br>**Nutzen:** Zu klein → numerische Probleme bei niedriger Präzision; zu groß → verfälschte Normalisierung.<br>**Wofür:** fp16/bf16-Training (dann eher 1e-5 bis 1e-6 statt 1e-8). |
+| `block.mixer.kv_latent_norm.learnable` | Ja/Nein | `True` |  | Experte | **Was:** Lernbare Skala pro Feature.<br>**Nutzen:** Wie γ bei LayerNorm.<br>**Wofür:** Standard: an. |
+| `block.mixer.kv_latent_norm.scale_offset` | Ja/Nein | `False` |  | Experte | **Was:** Skala als (1 + w) parametrisieren, w startet bei 0.<br>**Nutzen:** Weight-Decay zieht die Skala Richtung 1 statt Richtung 0.<br>**Wofür:** Gemma-Stil. |
+| `block.mixer.kv_latent_norm.compute_in_fp32` | Ja/Nein | `True` |  | Experte | **Was:** Normalisierung intern in 32-Bit rechnen.<br>**Nutzen:** Verhindert Genauigkeitsverlust bei fp16/bf16-Training.<br>**Wofür:** Mixed-Precision-Training. |
 | `block.cross_attention` | Unter-Konfiguration Attention | ⟶ AttentionConfig |  | Fortgeschritten | **Was:** Cross-Attention der Decoder-Blöcke (nur encoder_decoder).<br>**Nutzen:** Lässt den Decoder auf die Encoder-Ausgabe schauen.<br>**Wofür:** Übersetzung, Zusammenfassung, Seq2Seq. |
 | `block.cross_attention.num_heads` | Ganzzahl | `8` | ≥ 1 | Fortgeschritten | **Was:** Anzahl paralleler Attention-Köpfe.<br>**Nutzen:** Jeder Kopf kann andere Beziehungen lernen (Syntax, Nähe, Bezüge ...).<br>**Wofür:** Alle Attention-Modelle.<br>**Tipp:** Faustregel: head_dim (= d_model / num_heads) zwischen 32 und 128. |
 | `block.cross_attention.num_kv_heads` | Ganzzahl (oder None) | `None` | ≥ 1 | Fortgeschritten | **Was:** Anzahl Key/Value-Köpfe (Grouped-Query-Attention). None = num_heads.<br>**Nutzen:** Weniger KV-Köpfe sparen Parameter und vor allem KV-Cache-Speicher bei der Generierung.<br>**Wofür:** Große Sprachmodelle (LLaMA-2-70B: 8 KV-Köpfe bei 64 Köpfen). 1 = Multi-Query-Attention.<br>**Tipp:** num_heads muss durch num_kv_heads teilbar sein. |
@@ -3173,7 +3248,13 @@ Fabrik-Signatur: `factory(args) -> BaseModel`
 | `block.cross_attention.dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Dropout auf die Attention-Gewichte.<br>**Nutzen:** Regularisiert, indem zufällig Verbindungen gekappt werden.<br>**Wofür:** Kleine Datensätze. Große LLMs: 0. |
 | `block.cross_attention.head_dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Experimentell | **Was:** Ganze Köpfe im Training zufällig abschalten (DropHead).<br>**Nutzen:** Verhindert, dass sich das Modell auf wenige Köpfe verlässt.<br>**Wofür:** Regularisierung, Robustheit, Pruning-Vorbereitung. |
 | `block.cross_attention.output_gate` | Ja/Nein | `False` |  | Experimentell | **Was:** Ausgabe jedes Kopfes mit sigmoid(W·x) gaten ('gated attention').<br>**Nutzen:** Reduziert 'Attention Sinks' und Aktivierungsausreißer, verbessert Stabilität.<br>**Wofür:** Neuere LLM-Forschung (Qwen3-Next). |
-| `block.ffn` | Komponente aus Registry 'feedforward' | `glu` | Auswahl: mlp \| glu \| moe \| none | Basis | **Was:** Feed-Forward-Teil (mlp, glu/SwiGLU, moe, none).<br>**Nutzen:** Positionsweise Verarbeitung – hier steckt die meiste Kapazität.<br>**Wofür:** glu (SwiGLU) ist moderner Standard; moe für sehr große Kapazität. |
+| `block.cross_attention.kv_compression_dim` | Ganzzahl (oder None) | `None` | ≥ 1 | Experte | **Was:** MLA-lite: Keys/Values entstehen aus einem gemeinsamen, komprimierten Latent-Vektor dieser Größe.<br>**Nutzen:** Der KV-Cache speichert nur noch den Latent-Vektor (r statt 2·H_kv·head_dim Werte pro Token) – oft 4–16× weniger Cache-Speicher; zusätzlich weniger Parameter.<br>**Wofür:** Lange Kontexte, Generierung mit großen Batches (DeepSeek-V2/V3 Multi-Head Latent Attention).<br>**Tipp:** Vereinfachte Variante: RoPE wird auf die rekonstruierten Keys angewandt (keine entkoppelten RoPE-Köpfe). |
+| `block.cross_attention.kv_latent_norm` | Komponente aus Registry 'normalization' | `rmsnorm` | Auswahl: layernorm \| rmsnorm \| batchnorm \| groupnorm \| instancenorm \| scalenorm \| l2norm \| dyt \| identity | Experte | **Was:** Normalisierung des MLA-Latent-Vektors (nur mit kv_compression_dim).<br>**Nutzen:** Stabilisiert die Rekonstruktion von Keys/Values.<br>**Wofür:** DeepSeek: RMSNorm. |
+| `block.cross_attention.kv_latent_norm.eps` | Kommazahl | `1e-06` | ≥ 0.0 | Experte | **Was:** Kleine Zahl gegen Division durch 0.<br>**Nutzen:** Zu klein → numerische Probleme bei niedriger Präzision; zu groß → verfälschte Normalisierung.<br>**Wofür:** fp16/bf16-Training (dann eher 1e-5 bis 1e-6 statt 1e-8). |
+| `block.cross_attention.kv_latent_norm.learnable` | Ja/Nein | `True` |  | Experte | **Was:** Lernbare Skala pro Feature.<br>**Nutzen:** Wie γ bei LayerNorm.<br>**Wofür:** Standard: an. |
+| `block.cross_attention.kv_latent_norm.scale_offset` | Ja/Nein | `False` |  | Experte | **Was:** Skala als (1 + w) parametrisieren, w startet bei 0.<br>**Nutzen:** Weight-Decay zieht die Skala Richtung 1 statt Richtung 0.<br>**Wofür:** Gemma-Stil. |
+| `block.cross_attention.kv_latent_norm.compute_in_fp32` | Ja/Nein | `True` |  | Experte | **Was:** Normalisierung intern in 32-Bit rechnen.<br>**Nutzen:** Verhindert Genauigkeitsverlust bei fp16/bf16-Training.<br>**Wofür:** Mixed-Precision-Training. |
+| `block.ffn` | Komponente aus Registry 'feedforward' | `glu` | Auswahl: mlp \| glu \| moe \| kan \| none | Basis | **Was:** Feed-Forward-Teil (mlp, glu/SwiGLU, moe, none).<br>**Nutzen:** Positionsweise Verarbeitung – hier steckt die meiste Kapazität.<br>**Wofür:** glu (SwiGLU) ist moderner Standard; moe für sehr große Kapazität. |
 | `block.ffn.hidden_mult` | Kommazahl | `2.6666666666666665` | ≥ 0.01 | Basis | **Was:** Breite relativ zu d_model (GLU hat 3 Matrizen → Standard 8/3 hält die Parameter wie MLP mit 4).<br>**Nutzen:** Mehr Breite = mehr Kapazität.<br>**Wofür:** LLaMA: 8/3 (aufgerundet auf multiple_of). |
 | `block.ffn.hidden_dim` | Ganzzahl (oder None) | `None` | ≥ 1 | Fortgeschritten | **Was:** Exakte Breite der versteckten Schicht (überschreibt hidden_mult).<br>**Nutzen:** Für exakte Nachbauten bekannter Architekturen.<br>**Wofür:** Gewichte-Import, exakte Parameterzahlen. |
 | `block.ffn.multiple_of` | Ganzzahl | `1` | ≥ 1 | Experte | **Was:** Versteckte Breite auf ein Vielfaches davon aufrunden.<br>**Nutzen:** Vielfache von 64/256 rechnen auf GPUs schneller (Tensor Cores).<br>**Wofür:** Geschwindigkeitsoptimierung (LLaMA: 256). |
@@ -3199,8 +3280,11 @@ Fabrik-Signatur: `factory(args) -> BaseModel`
 | `positional` | Komponente aus Registry 'positional' | `rope` | Auswahl: none \| sinusoidal \| learned \| rope \| alibi \| relative_bias \| combined | Basis | **Was:** Positionskodierung.<br>**Nutzen:** Gibt dem Modell Reihenfolge-Information.<br>**Wofür:** rope (Text), learned (ViT), sinusoidal. |
 | `positional.theta` | Kommazahl | `10000.0` | ≥ 1.0 | Basis | **Was:** Basisfrequenz θ der Rotationen.<br>**Nutzen:** Größeres θ → längere Kontexte unterscheidbar (LLaMA-3: 500000).<br>**Wofür:** Lange Kontexte → θ erhöhen. |
 | `positional.fraction` | Kommazahl | `1.0` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Anteil der Kopf-Dimensionen, die rotiert werden ('partial rotary').<br>**Nutzen:** Rest bleibt positionsfrei – manche Modelle (GPT-NeoX: 0.25) profitieren davon.<br>**Wofür:** Feintuning von Positions- vs. Inhaltsanteil. |
-| `positional.scaling` | Text | `'none'` | Auswahl: none \| linear \| ntk | Fortgeschritten | **Was:** Verfahren zur Kontextverlängerung.<br>**Nutzen:** Erlaubt Sequenzen länger als im Training.<br>**Wofür:** Kontext-Erweiterung vortrainierter Modelle. |
+| `positional.scaling` | Text | `'none'` | Auswahl: none \| linear \| ntk \| yarn | Fortgeschritten | **Was:** Verfahren zur Kontextverlängerung.<br>**Nutzen:** Erlaubt Sequenzen länger als im Training.<br>**Wofür:** Kontext-Erweiterung vortrainierter Modelle. |
 | `positional.factor` | Kommazahl | `1.0` | ≥ 1.0 | Fortgeschritten | **Was:** Erweiterungsfaktor des Kontexts (z. B. 4 = vierfache Länge).<br>**Nutzen:** Stärke der Skalierung.<br>**Wofür:** Nur mit scaling ≠ none. |
+| `positional.original_context` | Ganzzahl (oder None) | `None` | ≥ 1 | Experte | **Was:** Kontextlänge, mit der ursprünglich trainiert wurde (nur YaRN; None = max_seq_len / factor).<br>**Nutzen:** YaRN entscheidet anhand dieser Länge, welche Frequenzen interpoliert werden.<br>**Wofür:** Vortrainiertes Modell mit 4096 Tokens auf 16k erweitern: 4096, factor 4. |
+| `positional.yarn_beta_fast` | Kommazahl | `32.0` | ≥ 0.0 | Experte | **Was:** YaRN β_fast: ab so vielen Umdrehungen im Originalkontext bleibt eine Frequenz unverändert.<br>**Nutzen:** Schützt die lokale Positionsauflösung.<br>**Wofür:** 32 (Paper). |
+| `positional.yarn_beta_slow` | Kommazahl | `1.0` | ≥ 0.0 | Experte | **Was:** YaRN β_slow: unter so vielen Umdrehungen wird voll interpoliert.<br>**Nutzen:** Niedrige Frequenzen.<br>**Wofür:** 1 (Paper). |
 | `positional.interleaved` | Ja/Nein | `False` |  | Experte | **Was:** Paare benachbarter Dimensionen rotieren (GPT-J) statt Hälften (GPT-NeoX/LLaMA).<br>**Nutzen:** Nur für Kompatibilität mit fremden Gewichten relevant.<br>**Wofür:** Gewichte-Import. |
 | `embedding_dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Basis | **Was:** Dropout nach dem Embedding.<br>**Nutzen:** Regularisiert Eingaberepräsentationen.<br>**Wofür:** Kleine Datensätze. |
 | `embedding_scale` | Ja/Nein (oder None) | `None` |  | Experte | **Was:** Embeddings mit √d_model multiplizieren (None = automatisch: an bei 'sinusoidal').<br>**Nutzen:** Balanciert Token- gegen Positionssignal: ohne Skalierung gehen kleine Token-Embeddings im festen Sinus-Signal (Amplitude 1) unter (Original-Transformer skaliert deshalb).<br>**Wofür:** Sinusoidale Positionen, Gemma. |
@@ -3265,6 +3349,9 @@ Fabrik-Signatur: `factory(args) -> BaseModel`
 | `block.mixer.bidirectional` | Ja/Nein | `False` |  | Fortgeschritten | **Was:** Zusätzlicher Rückwärts-Scan (wird bei kausalen Modellen ignoriert).<br>**Nutzen:** Kontext von beiden Seiten für Encoder-Aufgaben.<br>**Wofür:** Klassifikation, Tagging. |
 | `block.mixer.conv_bias` | Ja/Nein | `True` |  | Experte | **Was:** Bias der kurzen Faltung.<br>**Nutzen:** Verschiebung.<br>**Wofür:** Standard. |
 | `block.mixer.bias` | Ja/Nein | `False` |  | Experte | **Was:** Bias der Ein-/Ausgangsprojektion.<br>**Nutzen:** Verschiebung.<br>**Wofür:** Mamba: aus. |
+| `block.mixer.scan_mode` | Text | `'auto'` | Auswahl: auto \| parallel \| chunked \| sequential \| mamba_ssm | Fortgeschritten | **Was:** Algorithmus für den Zustands-Scan h_t = exp(Δ·A)·h_{t-1} + Δ·B·x.<br>**Nutzen:** Der parallele/chunked Scan braucht nur log₂(T) Runden statt T Schleifenschritte – Training oft 10–40× schneller als die Python-Schleife.<br>**Wofür:** auto ist fast immer richtig (CPU: fusionierte Schleife, GPU: chunked); mamba_ssm auf NVIDIA-GPUs mit installiertem Paket. |
+| `block.mixer.scan_chunk_size` | Ganzzahl | `32` | ≥ 1 | Fortgeschritten | **Was:** Blocklänge des chunked-Scans.<br>**Nutzen:** Größer = weniger sequenzielle Überträge, aber mehr Zwischenspeicher pro Runde.<br>**Wofür:** CPU: 16–32; GPU: 64–256. |
+| `block.mixer.scan_backward` | Text | `'fused'` | Auswahl: fused \| scan \| autograd | Experte | **Was:** Wie der Gradient des Scans berechnet wird.<br>**Nutzen:** 'fused' senkt den Aktivierungsspeicher des Scans etwa um den Faktor d_state – wie der offizielle Mamba-Kernel, aber in reinem PyTorch (CPU, GPU, MPS).<br>**Wofür:** Lange Sequenzen / große Batches: fused. Kurze Sequenzen mit viel Speicher: scan. |
 | `block.cross_attention` | Unter-Konfiguration Attention | ⟶ AttentionConfig |  | Fortgeschritten | **Was:** Cross-Attention der Decoder-Blöcke (nur encoder_decoder).<br>**Nutzen:** Lässt den Decoder auf die Encoder-Ausgabe schauen.<br>**Wofür:** Übersetzung, Zusammenfassung, Seq2Seq. |
 | `block.cross_attention.num_heads` | Ganzzahl | `8` | ≥ 1 | Fortgeschritten | **Was:** Anzahl paralleler Attention-Köpfe.<br>**Nutzen:** Jeder Kopf kann andere Beziehungen lernen (Syntax, Nähe, Bezüge ...).<br>**Wofür:** Alle Attention-Modelle.<br>**Tipp:** Faustregel: head_dim (= d_model / num_heads) zwischen 32 und 128. |
 | `block.cross_attention.num_kv_heads` | Ganzzahl (oder None) | `None` | ≥ 1 | Fortgeschritten | **Was:** Anzahl Key/Value-Köpfe (Grouped-Query-Attention). None = num_heads.<br>**Nutzen:** Weniger KV-Köpfe sparen Parameter und vor allem KV-Cache-Speicher bei der Generierung.<br>**Wofür:** Große Sprachmodelle (LLaMA-2-70B: 8 KV-Köpfe bei 64 Köpfen). 1 = Multi-Query-Attention.<br>**Tipp:** num_heads muss durch num_kv_heads teilbar sein. |
@@ -3284,7 +3371,13 @@ Fabrik-Signatur: `factory(args) -> BaseModel`
 | `block.cross_attention.dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Dropout auf die Attention-Gewichte.<br>**Nutzen:** Regularisiert, indem zufällig Verbindungen gekappt werden.<br>**Wofür:** Kleine Datensätze. Große LLMs: 0. |
 | `block.cross_attention.head_dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Experimentell | **Was:** Ganze Köpfe im Training zufällig abschalten (DropHead).<br>**Nutzen:** Verhindert, dass sich das Modell auf wenige Köpfe verlässt.<br>**Wofür:** Regularisierung, Robustheit, Pruning-Vorbereitung. |
 | `block.cross_attention.output_gate` | Ja/Nein | `False` |  | Experimentell | **Was:** Ausgabe jedes Kopfes mit sigmoid(W·x) gaten ('gated attention').<br>**Nutzen:** Reduziert 'Attention Sinks' und Aktivierungsausreißer, verbessert Stabilität.<br>**Wofür:** Neuere LLM-Forschung (Qwen3-Next). |
-| `block.ffn` | Komponente aus Registry 'feedforward' | `none` | Auswahl: mlp \| glu \| moe \| none | Basis | **Was:** Feed-Forward-Teil (mlp, glu/SwiGLU, moe, none).<br>**Nutzen:** Positionsweise Verarbeitung – hier steckt die meiste Kapazität.<br>**Wofür:** glu (SwiGLU) ist moderner Standard; moe für sehr große Kapazität. |
+| `block.cross_attention.kv_compression_dim` | Ganzzahl (oder None) | `None` | ≥ 1 | Experte | **Was:** MLA-lite: Keys/Values entstehen aus einem gemeinsamen, komprimierten Latent-Vektor dieser Größe.<br>**Nutzen:** Der KV-Cache speichert nur noch den Latent-Vektor (r statt 2·H_kv·head_dim Werte pro Token) – oft 4–16× weniger Cache-Speicher; zusätzlich weniger Parameter.<br>**Wofür:** Lange Kontexte, Generierung mit großen Batches (DeepSeek-V2/V3 Multi-Head Latent Attention).<br>**Tipp:** Vereinfachte Variante: RoPE wird auf die rekonstruierten Keys angewandt (keine entkoppelten RoPE-Köpfe). |
+| `block.cross_attention.kv_latent_norm` | Komponente aus Registry 'normalization' | `rmsnorm` | Auswahl: layernorm \| rmsnorm \| batchnorm \| groupnorm \| instancenorm \| scalenorm \| l2norm \| dyt \| identity | Experte | **Was:** Normalisierung des MLA-Latent-Vektors (nur mit kv_compression_dim).<br>**Nutzen:** Stabilisiert die Rekonstruktion von Keys/Values.<br>**Wofür:** DeepSeek: RMSNorm. |
+| `block.cross_attention.kv_latent_norm.eps` | Kommazahl | `1e-06` | ≥ 0.0 | Experte | **Was:** Kleine Zahl gegen Division durch 0.<br>**Nutzen:** Zu klein → numerische Probleme bei niedriger Präzision; zu groß → verfälschte Normalisierung.<br>**Wofür:** fp16/bf16-Training (dann eher 1e-5 bis 1e-6 statt 1e-8). |
+| `block.cross_attention.kv_latent_norm.learnable` | Ja/Nein | `True` |  | Experte | **Was:** Lernbare Skala pro Feature.<br>**Nutzen:** Wie γ bei LayerNorm.<br>**Wofür:** Standard: an. |
+| `block.cross_attention.kv_latent_norm.scale_offset` | Ja/Nein | `False` |  | Experte | **Was:** Skala als (1 + w) parametrisieren, w startet bei 0.<br>**Nutzen:** Weight-Decay zieht die Skala Richtung 1 statt Richtung 0.<br>**Wofür:** Gemma-Stil. |
+| `block.cross_attention.kv_latent_norm.compute_in_fp32` | Ja/Nein | `True` |  | Experte | **Was:** Normalisierung intern in 32-Bit rechnen.<br>**Nutzen:** Verhindert Genauigkeitsverlust bei fp16/bf16-Training.<br>**Wofür:** Mixed-Precision-Training. |
+| `block.ffn` | Komponente aus Registry 'feedforward' | `none` | Auswahl: mlp \| glu \| moe \| kan \| none | Basis | **Was:** Feed-Forward-Teil (mlp, glu/SwiGLU, moe, none).<br>**Nutzen:** Positionsweise Verarbeitung – hier steckt die meiste Kapazität.<br>**Wofür:** glu (SwiGLU) ist moderner Standard; moe für sehr große Kapazität. |
 | `block.norm` | Komponente aus Registry 'normalization' | `rmsnorm` | Auswahl: layernorm \| rmsnorm \| batchnorm \| groupnorm \| instancenorm \| scalenorm \| l2norm \| dyt \| identity | Basis | **Was:** Normalisierung in den Residual-Zweigen.<br>**Nutzen:** Stabilisiert das Training.<br>**Wofür:** rmsnorm (modern), layernorm (klassisch). |
 | `block.norm.eps` | Kommazahl | `1e-06` | ≥ 0.0 | Experte | **Was:** Kleine Zahl gegen Division durch 0.<br>**Nutzen:** Zu klein → numerische Probleme bei niedriger Präzision; zu groß → verfälschte Normalisierung.<br>**Wofür:** fp16/bf16-Training (dann eher 1e-5 bis 1e-6 statt 1e-8). |
 | `block.norm.learnable` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Lernbare Skala pro Feature.<br>**Nutzen:** Wie γ bei LayerNorm.<br>**Wofür:** Standard: an. |
@@ -3365,6 +3458,9 @@ Fabrik-Signatur: `factory(args) -> BaseModel`
 | `block.mixer.bidirectional` | Ja/Nein | `False` |  | Fortgeschritten | **Was:** Zusätzlicher Rückwärts-Scan (wird bei kausalen Modellen ignoriert).<br>**Nutzen:** Kontext von beiden Seiten für Encoder-Aufgaben.<br>**Wofür:** Klassifikation, Tagging. |
 | `block.mixer.conv_bias` | Ja/Nein | `True` |  | Experte | **Was:** Bias der kurzen Faltung.<br>**Nutzen:** Verschiebung.<br>**Wofür:** Standard. |
 | `block.mixer.bias` | Ja/Nein | `False` |  | Experte | **Was:** Bias der Ein-/Ausgangsprojektion.<br>**Nutzen:** Verschiebung.<br>**Wofür:** Mamba: aus. |
+| `block.mixer.scan_mode` | Text | `'auto'` | Auswahl: auto \| parallel \| chunked \| sequential \| mamba_ssm | Fortgeschritten | **Was:** Algorithmus für den Zustands-Scan h_t = exp(Δ·A)·h_{t-1} + Δ·B·x.<br>**Nutzen:** Der parallele/chunked Scan braucht nur log₂(T) Runden statt T Schleifenschritte – Training oft 10–40× schneller als die Python-Schleife.<br>**Wofür:** auto ist fast immer richtig (CPU: fusionierte Schleife, GPU: chunked); mamba_ssm auf NVIDIA-GPUs mit installiertem Paket. |
+| `block.mixer.scan_chunk_size` | Ganzzahl | `32` | ≥ 1 | Fortgeschritten | **Was:** Blocklänge des chunked-Scans.<br>**Nutzen:** Größer = weniger sequenzielle Überträge, aber mehr Zwischenspeicher pro Runde.<br>**Wofür:** CPU: 16–32; GPU: 64–256. |
+| `block.mixer.scan_backward` | Text | `'fused'` | Auswahl: fused \| scan \| autograd | Experte | **Was:** Wie der Gradient des Scans berechnet wird.<br>**Nutzen:** 'fused' senkt den Aktivierungsspeicher des Scans etwa um den Faktor d_state – wie der offizielle Mamba-Kernel, aber in reinem PyTorch (CPU, GPU, MPS).<br>**Wofür:** Lange Sequenzen / große Batches: fused. Kurze Sequenzen mit viel Speicher: scan. |
 | `block.cross_attention` | Unter-Konfiguration Attention | ⟶ AttentionConfig |  | Fortgeschritten | **Was:** Cross-Attention der Decoder-Blöcke (nur encoder_decoder).<br>**Nutzen:** Lässt den Decoder auf die Encoder-Ausgabe schauen.<br>**Wofür:** Übersetzung, Zusammenfassung, Seq2Seq. |
 | `block.cross_attention.num_heads` | Ganzzahl | `8` | ≥ 1 | Fortgeschritten | **Was:** Anzahl paralleler Attention-Köpfe.<br>**Nutzen:** Jeder Kopf kann andere Beziehungen lernen (Syntax, Nähe, Bezüge ...).<br>**Wofür:** Alle Attention-Modelle.<br>**Tipp:** Faustregel: head_dim (= d_model / num_heads) zwischen 32 und 128. |
 | `block.cross_attention.num_kv_heads` | Ganzzahl (oder None) | `None` | ≥ 1 | Fortgeschritten | **Was:** Anzahl Key/Value-Köpfe (Grouped-Query-Attention). None = num_heads.<br>**Nutzen:** Weniger KV-Köpfe sparen Parameter und vor allem KV-Cache-Speicher bei der Generierung.<br>**Wofür:** Große Sprachmodelle (LLaMA-2-70B: 8 KV-Köpfe bei 64 Köpfen). 1 = Multi-Query-Attention.<br>**Tipp:** num_heads muss durch num_kv_heads teilbar sein. |
@@ -3384,7 +3480,13 @@ Fabrik-Signatur: `factory(args) -> BaseModel`
 | `block.cross_attention.dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Dropout auf die Attention-Gewichte.<br>**Nutzen:** Regularisiert, indem zufällig Verbindungen gekappt werden.<br>**Wofür:** Kleine Datensätze. Große LLMs: 0. |
 | `block.cross_attention.head_dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Experimentell | **Was:** Ganze Köpfe im Training zufällig abschalten (DropHead).<br>**Nutzen:** Verhindert, dass sich das Modell auf wenige Köpfe verlässt.<br>**Wofür:** Regularisierung, Robustheit, Pruning-Vorbereitung. |
 | `block.cross_attention.output_gate` | Ja/Nein | `False` |  | Experimentell | **Was:** Ausgabe jedes Kopfes mit sigmoid(W·x) gaten ('gated attention').<br>**Nutzen:** Reduziert 'Attention Sinks' und Aktivierungsausreißer, verbessert Stabilität.<br>**Wofür:** Neuere LLM-Forschung (Qwen3-Next). |
-| `block.ffn` | Komponente aus Registry 'feedforward' | `glu` | Auswahl: mlp \| glu \| moe \| none | Basis | **Was:** Feed-Forward-Teil (mlp, glu/SwiGLU, moe, none).<br>**Nutzen:** Positionsweise Verarbeitung – hier steckt die meiste Kapazität.<br>**Wofür:** glu (SwiGLU) ist moderner Standard; moe für sehr große Kapazität. |
+| `block.cross_attention.kv_compression_dim` | Ganzzahl (oder None) | `None` | ≥ 1 | Experte | **Was:** MLA-lite: Keys/Values entstehen aus einem gemeinsamen, komprimierten Latent-Vektor dieser Größe.<br>**Nutzen:** Der KV-Cache speichert nur noch den Latent-Vektor (r statt 2·H_kv·head_dim Werte pro Token) – oft 4–16× weniger Cache-Speicher; zusätzlich weniger Parameter.<br>**Wofür:** Lange Kontexte, Generierung mit großen Batches (DeepSeek-V2/V3 Multi-Head Latent Attention).<br>**Tipp:** Vereinfachte Variante: RoPE wird auf die rekonstruierten Keys angewandt (keine entkoppelten RoPE-Köpfe). |
+| `block.cross_attention.kv_latent_norm` | Komponente aus Registry 'normalization' | `rmsnorm` | Auswahl: layernorm \| rmsnorm \| batchnorm \| groupnorm \| instancenorm \| scalenorm \| l2norm \| dyt \| identity | Experte | **Was:** Normalisierung des MLA-Latent-Vektors (nur mit kv_compression_dim).<br>**Nutzen:** Stabilisiert die Rekonstruktion von Keys/Values.<br>**Wofür:** DeepSeek: RMSNorm. |
+| `block.cross_attention.kv_latent_norm.eps` | Kommazahl | `1e-06` | ≥ 0.0 | Experte | **Was:** Kleine Zahl gegen Division durch 0.<br>**Nutzen:** Zu klein → numerische Probleme bei niedriger Präzision; zu groß → verfälschte Normalisierung.<br>**Wofür:** fp16/bf16-Training (dann eher 1e-5 bis 1e-6 statt 1e-8). |
+| `block.cross_attention.kv_latent_norm.learnable` | Ja/Nein | `True` |  | Experte | **Was:** Lernbare Skala pro Feature.<br>**Nutzen:** Wie γ bei LayerNorm.<br>**Wofür:** Standard: an. |
+| `block.cross_attention.kv_latent_norm.scale_offset` | Ja/Nein | `False` |  | Experte | **Was:** Skala als (1 + w) parametrisieren, w startet bei 0.<br>**Nutzen:** Weight-Decay zieht die Skala Richtung 1 statt Richtung 0.<br>**Wofür:** Gemma-Stil. |
+| `block.cross_attention.kv_latent_norm.compute_in_fp32` | Ja/Nein | `True` |  | Experte | **Was:** Normalisierung intern in 32-Bit rechnen.<br>**Nutzen:** Verhindert Genauigkeitsverlust bei fp16/bf16-Training.<br>**Wofür:** Mixed-Precision-Training. |
+| `block.ffn` | Komponente aus Registry 'feedforward' | `glu` | Auswahl: mlp \| glu \| moe \| kan \| none | Basis | **Was:** Feed-Forward-Teil (mlp, glu/SwiGLU, moe, none).<br>**Nutzen:** Positionsweise Verarbeitung – hier steckt die meiste Kapazität.<br>**Wofür:** glu (SwiGLU) ist moderner Standard; moe für sehr große Kapazität. |
 | `block.ffn.hidden_mult` | Kommazahl | `2.6666666666666665` | ≥ 0.01 | Basis | **Was:** Breite relativ zu d_model (GLU hat 3 Matrizen → Standard 8/3 hält die Parameter wie MLP mit 4).<br>**Nutzen:** Mehr Breite = mehr Kapazität.<br>**Wofür:** LLaMA: 8/3 (aufgerundet auf multiple_of). |
 | `block.ffn.hidden_dim` | Ganzzahl (oder None) | `None` | ≥ 1 | Fortgeschritten | **Was:** Exakte Breite der versteckten Schicht (überschreibt hidden_mult).<br>**Nutzen:** Für exakte Nachbauten bekannter Architekturen.<br>**Wofür:** Gewichte-Import, exakte Parameterzahlen. |
 | `block.ffn.multiple_of` | Ganzzahl | `1` | ≥ 1 | Experte | **Was:** Versteckte Breite auf ein Vielfaches davon aufrunden.<br>**Nutzen:** Vielfache von 64/256 rechnen auf GPUs schneller (Tensor Cores).<br>**Wofür:** Geschwindigkeitsoptimierung (LLaMA: 256). |
@@ -3410,8 +3512,11 @@ Fabrik-Signatur: `factory(args) -> BaseModel`
 | `positional` | Komponente aus Registry 'positional' | `rope` | Auswahl: none \| sinusoidal \| learned \| rope \| alibi \| relative_bias \| combined | Basis | **Was:** Positionskodierung.<br>**Nutzen:** Gibt dem Modell Reihenfolge-Information.<br>**Wofür:** rope (Text), learned (ViT), sinusoidal. |
 | `positional.theta` | Kommazahl | `10000.0` | ≥ 1.0 | Basis | **Was:** Basisfrequenz θ der Rotationen.<br>**Nutzen:** Größeres θ → längere Kontexte unterscheidbar (LLaMA-3: 500000).<br>**Wofür:** Lange Kontexte → θ erhöhen. |
 | `positional.fraction` | Kommazahl | `1.0` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Anteil der Kopf-Dimensionen, die rotiert werden ('partial rotary').<br>**Nutzen:** Rest bleibt positionsfrei – manche Modelle (GPT-NeoX: 0.25) profitieren davon.<br>**Wofür:** Feintuning von Positions- vs. Inhaltsanteil. |
-| `positional.scaling` | Text | `'none'` | Auswahl: none \| linear \| ntk | Fortgeschritten | **Was:** Verfahren zur Kontextverlängerung.<br>**Nutzen:** Erlaubt Sequenzen länger als im Training.<br>**Wofür:** Kontext-Erweiterung vortrainierter Modelle. |
+| `positional.scaling` | Text | `'none'` | Auswahl: none \| linear \| ntk \| yarn | Fortgeschritten | **Was:** Verfahren zur Kontextverlängerung.<br>**Nutzen:** Erlaubt Sequenzen länger als im Training.<br>**Wofür:** Kontext-Erweiterung vortrainierter Modelle. |
 | `positional.factor` | Kommazahl | `1.0` | ≥ 1.0 | Fortgeschritten | **Was:** Erweiterungsfaktor des Kontexts (z. B. 4 = vierfache Länge).<br>**Nutzen:** Stärke der Skalierung.<br>**Wofür:** Nur mit scaling ≠ none. |
+| `positional.original_context` | Ganzzahl (oder None) | `None` | ≥ 1 | Experte | **Was:** Kontextlänge, mit der ursprünglich trainiert wurde (nur YaRN; None = max_seq_len / factor).<br>**Nutzen:** YaRN entscheidet anhand dieser Länge, welche Frequenzen interpoliert werden.<br>**Wofür:** Vortrainiertes Modell mit 4096 Tokens auf 16k erweitern: 4096, factor 4. |
+| `positional.yarn_beta_fast` | Kommazahl | `32.0` | ≥ 0.0 | Experte | **Was:** YaRN β_fast: ab so vielen Umdrehungen im Originalkontext bleibt eine Frequenz unverändert.<br>**Nutzen:** Schützt die lokale Positionsauflösung.<br>**Wofür:** 32 (Paper). |
+| `positional.yarn_beta_slow` | Kommazahl | `1.0` | ≥ 0.0 | Experte | **Was:** YaRN β_slow: unter so vielen Umdrehungen wird voll interpoliert.<br>**Nutzen:** Niedrige Frequenzen.<br>**Wofür:** 1 (Paper). |
 | `positional.interleaved` | Ja/Nein | `False` |  | Experte | **Was:** Paare benachbarter Dimensionen rotieren (GPT-J) statt Hälften (GPT-NeoX/LLaMA).<br>**Nutzen:** Nur für Kompatibilität mit fremden Gewichten relevant.<br>**Wofür:** Gewichte-Import. |
 | `embedding_dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Basis | **Was:** Dropout nach dem Embedding.<br>**Nutzen:** Regularisiert Eingaberepräsentationen.<br>**Wofür:** Kleine Datensätze. |
 | `embedding_scale` | Ja/Nein (oder None) | `None` |  | Experte | **Was:** Embeddings mit √d_model multiplizieren (None = automatisch: an bei 'sinusoidal').<br>**Nutzen:** Balanciert Token- gegen Positionssignal: ohne Skalierung gehen kleine Token-Embeddings im festen Sinus-Signal (Amplitude 1) unter (Original-Transformer skaliert deshalb).<br>**Wofür:** Sinusoidale Positionen, Gemma. |
@@ -3982,6 +4087,26 @@ Fabrik-Signatur: `factory(args, param_groups) -> torch.optim.Optimizer`
 | `lr` | Kommazahl | `0.0001` | ≥ 0.0 | Basis | **Was:** Lernrate (Lion braucht ~3–10× kleinere Lernraten als AdamW).<br>**Nutzen:** Schrittweite.<br>**Wofür:** 1e-4…3e-4. |
 | `weight_decay` | Kommazahl | `0.1` | ≥ 0.0 | Basis | **Was:** Entkoppelter Gewichtsverfall (Lion braucht ~3–10× größeren WD als AdamW).<br>**Nutzen:** Regularisierung.<br>**Wofür:** 0.1…1. |
 | `betas` | Liste[Kommazahl] | `[0.9, 0.99]` | Bereich 0.0 … 1.0 · Länge 2 | Fortgeschritten | **Was:** β₁ (Interpolation für Update), β₂ (Momentum-Update).<br>**Nutzen:** Glättung.<br>**Wofür:** [0.9, 0.99]. |
+
+#### `optimizer:adamw8bit` (Aliase: `adam8bit`) — Stufe Fortgeschritten
+
+**Was:** AdamW mit 8-Bit-Zuständen (blockweise logarithmisch quantisiert).
+
+**Nutzen:** Optimierer-Speicher sinkt von 8 auf ~2 Byte pro Parameter – bei großen Modellen oft der größte Posten.
+
+**Wofür:** Große Modelle / Feintuning mit knappem Speicher; Verhalten praktisch wie AdamW.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `lr` | Kommazahl | `0.001` | ≥ 0.0 | Basis | **Was:** Lernrate – Schrittweite der Gewichtsänderungen.<br>**Nutzen:** Wichtigster Hyperparameter: zu groß → Divergenz, zu klein → quälend langsam.<br>**Wofür:** Jedes Training.<br>**Tipp:** Adam/AdamW: 1e-4…1e-3 (Transformer 3e-4); SGD: 0.01…0.1; Feintuning: 1e-5. |
+| `weight_decay` | Kommazahl | `0.01` | ≥ 0.0 | Basis | **Was:** Entkoppelter Gewichtsverfall (AdamW).<br>**Nutzen:** Korrekte Regularisierung für adaptive Optimierer – der Grund, AdamW statt Adam zu nehmen.<br>**Wofür:** 0.01…0.1 (LLMs 0.1). |
+| `betas` | Liste[Kommazahl] | `[0.9, 0.999]` | Bereich 0.0 … 1.0 · Länge 2 | Fortgeschritten | **Was:** Abklingraten für 1. Moment (Richtung) und 2. Moment (Skalierung).<br>**Nutzen:** β₂ kleiner (0.95) stabilisiert große Modelle; β₁ steuert die Glättung.<br>**Wofür:** LLMs: [0.9, 0.95]; Standard: [0.9, 0.999]. |
+| `eps` | Kommazahl | `1e-08` | ≥ 0.0 | Experte | **Was:** Stabilisator im Nenner.<br>**Nutzen:** Verhindert Division durch ~0; größer = vorsichtigere Updates.<br>**Wofür:** fp16: 1e-6…1e-5. |
+| `amsgrad` | Ja/Nein | `False` |  | Experte | **Was:** AMSGrad-Variante (monotones 2. Moment).<br>**Nutzen:** Theoretische Konvergenzgarantie, praktisch selten besser.<br>**Wofür:** Experimente. |
+| `fused` | Ja/Nein (oder None) | `None` |  | Experte | **Was:** Fusionierte CUDA-Implementierung (None = PyTorch entscheidet).<br>**Nutzen:** Schneller auf GPUs.<br>**Wofür:** Geschwindigkeit auf CUDA. |
+| `block_size` | Ganzzahl | `256` | ≥ 16 | Experte | **Was:** Blockgröße der 8-Bit-Quantisierung der Optimierer-Zustände.<br>**Nutzen:** Jeder Block hat eine eigene Skala – kleiner = genauer, minimal mehr Speicher.<br>**Wofür:** 256. |
+| `min_8bit_size` | Ganzzahl | `4096` | ≥ 0 | Experte | **Was:** Parameter mit weniger Elementen behalten 32-Bit-Zustände.<br>**Nutzen:** Kleine Tensoren (Biases, Normen) sparen kaum, sind aber empfindlich.<br>**Wofür:** 4096. |
+| `dynamic_range` | Kommazahl | `14.0` | Bereich 2.0 … 40.0 | Experimentell | **Was:** Dynamikbereich der logarithmischen Quantisierung (natürlicher Log; 14 ≈ Faktor 10⁶ pro Block).<br>**Nutzen:** Größer = auch sehr kleine Werte darstellbar, aber gröbere Stufen.<br>**Wofür:** 14 (m), doppelt für v. |
 
 #### `optimizer:muon` — Stufe Experimentell
 
@@ -4845,6 +4970,239 @@ Fabrik-Signatur: `factory(args) -> RLAlgorithm mit run(trainer, rl_cfg)`
 | `beta_start` | Kommazahl | `0.4` | Bereich 0.0 … 1.0 | Experte | **Was:** Start der Importance-Sampling-Korrektur (steigt auf 1).<br>**Nutzen:** Korrigiert den Priorisierungs-Bias.<br>**Wofür:** 0.4. |
 
 
+### Registry `module_op`
+
+<a id="registry-module-op"></a>
+
+**Modul-Operationen** – Eingriffe in ganze Schichten/Module (ersetzen, umbauen, einfrieren, Datenfluss verändern …). Jede Schicht jeder Art einzeln anpassen – auch nach dem Bau, ohne Code.
+
+Fabrik-Signatur: `factory(args) -> callable(model, name, module, ctx)`
+
+#### `module_op:freeze` — Stufe Basis
+
+**Was:** Alle Parameter des Moduls einfrieren.
+
+**Nutzen:** Schützt Wissen, spart Gradienten.
+
+**Wofür:** Transfer-Learning.
+
+#### `module_op:unfreeze` — Stufe Basis
+
+**Was:** Alle Parameter des Moduls auftauen.
+
+**Nutzen:** Hebt freeze auf.
+
+**Wofür:** 'Alles einfrieren außer …'.
+
+#### `module_op:replace_activation` — Stufe Basis
+
+**Was:** Aktivierungsmodul ersetzen.
+
+**Nutzen:** Andere Nichtlinearität in einzelnen Schichten.
+
+**Wofür:** Ablationen, Experimente.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `activation` | Komponente aus Registry 'activation' | `gelu` | Auswahl: relu \| leaky_relu \| prelu \| rrelu \| elu \| celu \| selu \| gelu \| quick_gelu \| silu \| swish \| mish \| tanh \| sigmoid \| … | Basis | **Was:** Neue Aktivierung.<br>**Nutzen:** Austausch der Nichtlinearität einzelner Schichten.<br>**Wofür:** silu, gelu, relu … |
+| `activation.approximate` | Text | `'none'` | Auswahl: none \| tanh | Fortgeschritten | **Was:** Berechnungsart der GELU.<br>**Nutzen:** Die tanh-Näherung ist auf mancher Hardware schneller, numerisch minimal anders.<br>**Wofür:** Kompatibilität mit vortrainierten Gewichten (GPT-2 nutzt tanh). |
+
+#### `module_op:replace_norm` — Stufe Basis
+
+**Was:** Normalisierungsmodul ersetzen.
+
+**Nutzen:** Andere Norm in einzelnen Schichten.
+
+**Wofür:** LayerNorm → RMSNorm.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `norm` | Komponente aus Registry 'normalization' | `rmsnorm` | Auswahl: layernorm \| rmsnorm \| batchnorm \| groupnorm \| instancenorm \| scalenorm \| l2norm \| dyt \| identity | Basis | **Was:** Neue Normalisierung.<br>**Nutzen:** Austausch einzelner Normschichten.<br>**Wofür:** rmsnorm, layernorm … |
+| `norm.eps` | Kommazahl | `1e-06` | ≥ 0.0 | Experte | **Was:** Kleine Zahl gegen Division durch 0.<br>**Nutzen:** Zu klein → numerische Probleme bei niedriger Präzision; zu groß → verfälschte Normalisierung.<br>**Wofür:** fp16/bf16-Training (dann eher 1e-5 bis 1e-6 statt 1e-8). |
+| `norm.learnable` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Lernbare Skala pro Feature.<br>**Nutzen:** Wie γ bei LayerNorm.<br>**Wofür:** Standard: an. |
+| `norm.scale_offset` | Ja/Nein | `False` |  | Experte | **Was:** Skala als (1 + w) parametrisieren, w startet bei 0.<br>**Nutzen:** Weight-Decay zieht die Skala Richtung 1 statt Richtung 0.<br>**Wofür:** Gemma-Stil. |
+| `norm.compute_in_fp32` | Ja/Nein | `True` |  | Experte | **Was:** Normalisierung intern in 32-Bit rechnen.<br>**Nutzen:** Verhindert Genauigkeitsverlust bei fp16/bf16-Training.<br>**Wofür:** Mixed-Precision-Training. |
+| `num_features` | Ganzzahl (oder None) | `None` | ≥ 1 | Experte | **Was:** Merkmalsbreite (None = vom alten Modul übernehmen).<br>**Nutzen:** Nur nötig, wenn nicht erkennbar.<br>**Wofür:** None. |
+
+#### `module_op:identity` (Aliase: `entfernen`) — Stufe Basis
+
+**Was:** Modul durch Identität ersetzen (entfernen).
+
+**Nutzen:** Ablationen: Was passiert ohne diese Schicht?
+
+**Wofür:** Form muss erhalten bleiben (z. B. Dropout, Norm, Aktivierung, ganzer Residual-Block).
+
+#### `module_op:set_attr` — Stufe Basis
+
+**Was:** Beliebiges Attribut setzen.
+
+**Nutzen:** Feinste Eingriffe in gebaute Module.
+
+**Wofür:** Dropout.p, eps, scale …
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `attribute` | Text | `'p'` |  | Basis | **Was:** Attributname (auch Punkt-Pfad, z. B. 'attn.scale').<br>**Nutzen:** Verändert Eigenschaften gebauter Module, die im Forward gelesen werden.<br>**Wofür:** Dropout 'p', Norm 'eps', Attention 'scale', LeakyReLU 'negative_slope'. |
+| `value` | Ganzzahl oder Kommazahl oder Ja/Nein oder Text (oder None) | `0.0` |  | Basis | **Was:** Neuer Wert.<br>**Nutzen:** Wird unverändert gesetzt.<br>**Wofür:** Je nach Attribut. |
+| `must_exist` | Ja/Nein | `True` |  | Experte | **Was:** Fehler, wenn das Attribut nicht existiert.<br>**Nutzen:** Schützt vor Tippfehlern.<br>**Wofür:** an. |
+
+#### `module_op:dtype` — Stufe Fortgeschritten
+
+**Was:** Datentyp des Moduls ändern.
+
+**Nutzen:** Gemischte Präzision pro Schicht.
+
+**Wofür:** Normen/Router in fp32.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `dtype` | Text | `'float32'` | Auswahl: float32 \| bfloat16 \| float16 \| float64 | Basis | **Was:** Datentyp der Parameter dieses Moduls.<br>**Nutzen:** Empfindliche Teile (Normen, Router) in fp32 halten, Rest in bf16.<br>**Wofür:** float32 für Normen. |
+
+#### `module_op:quantize` — Stufe Fortgeschritten
+
+**Was:** Lineare Schichten in diesem Modul quantisieren.
+
+**Nutzen:** Gezielte Kompression einzelner Teile.
+
+**Wofür:** Große FFNs.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `format` | Text | `'int8'` | Auswahl: int8 \| int4 \| nf4 | Basis | **Was:** Quantisierungsformat (eigene Implementierung).<br>**Nutzen:** Speicher dieses Moduls verkleinern.<br>**Wofür:** int8. |
+| `group_size` | Ganzzahl (oder None) | `128` | ≥ 8 | Basis | **Was:** Gruppengröße (None = pro Kanal).<br>**Nutzen:** Genauigkeit vs. Skalen-Speicher.<br>**Wofür:** 128. |
+
+#### `module_op:lora` — Stufe Fortgeschritten
+
+**Was:** LoRA-Adapter für die linearen Schichten dieses Moduls.
+
+**Nutzen:** Adapter nur dort, wo gewünscht.
+
+**Wofür:** Feintuning ausgewählter Schichten.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `rank` | Ganzzahl | `8` | ≥ 1 | Basis | **Was:** Rang.<br>**Nutzen:** Adapter-Kapazität.<br>**Wofür:** 8–32. |
+| `alpha` | Kommazahl | `16.0` | ≥ 0.0 | Basis | **Was:** Skalierung α.<br>**Nutzen:** Faktor α/r.<br>**Wofür:** 2·rank. |
+| `dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Basis | **Was:** Dropout.<br>**Nutzen:** Regularisierung.<br>**Wofür:** 0–0.1. |
+| `use_dora` | Ja/Nein | `False` |  | Experimentell | **Was:** DoRA.<br>**Nutzen:** Betrag + Richtung.<br>**Wofür:** Experimente. |
+| `freeze_module` | Ja/Nein | `True` |  | Basis | **Was:** Basisgewichte dieses Moduls einfrieren.<br>**Nutzen:** Nur die Adapter lernen.<br>**Wofür:** an. |
+
+#### `module_op:spectral_norm` — Stufe Fortgeschritten
+
+**Was:** Spektralnormierung des Gewichts.
+
+**Nutzen:** Begrenzt die Lipschitz-Konstante → stabile GANs/Diskriminatoren.
+
+**Wofür:** GAN-Diskriminatoren.
+
+#### `module_op:weight_norm` — Stufe Fortgeschritten
+
+**Was:** Gewichtsnormierung (Richtung + Betrag).
+
+**Nutzen:** Schnellere, stabilere Optimierung.
+
+**Wofür:** Audio-/RL-Netze.
+
+#### `module_op:checkpoint` — Stufe Fortgeschritten
+
+**Was:** Gradient-Checkpointing für dieses Modul.
+
+**Nutzen:** Spart Aktivierungsspeicher genau hier.
+
+**Wofür:** Speicherintensive Teile.
+
+#### `module_op:init` — Stufe Basis
+
+**Was:** Alle Parameter des Moduls neu initialisieren.
+
+**Nutzen:** Gezielte Startwerte.
+
+**Wofür:** Neuer Kopf, Re-Init.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `weight` | Komponente aus Registry 'initializer' | `xavier_uniform` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Basis | **Was:** Initialisierer für Gewichte (≥ 2 Dimensionen).<br>**Nutzen:** Neue Startwerte.<br>**Wofür:** xavier_uniform, orthogonal … |
+| `weight.gain` | Kommazahl | `1.0` | ≥ 0.0 | Basis | **Was:** Skalierungsfaktor der Streuung.<br>**Nutzen:** Kompensiert die Varianzänderung durch die Aktivierung.<br>**Wofür:** Wird ignoriert, wenn 'nonlinearity' gesetzt ist (dann automatisch berechnet). |
+| `weight.nonlinearity` | Text (oder None) | `None` | Auswahl: linear \| conv1d \| conv2d \| conv3d \| sigmoid \| tanh \| relu \| leaky_relu \| selu | Fortgeschritten | **Was:** Aktivierung, für die der Gain automatisch berechnet wird.<br>**Nutzen:** z. B. relu → √2, tanh → 5/3.<br>**Wofür:** Wenn die nachfolgende Aktivierung bekannt ist. |
+| `bias` | Komponente aus Registry 'initializer' (oder None) | `zeros` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Basis | **Was:** Initialisierer für Biases/1D-Parameter (None = unverändert).<br>**Nutzen:** Startwerte.<br>**Wofür:** zeros. |
+
+#### `module_op:reset` — Stufe Basis
+
+**Was:** PyTorch-Standard-Initialisierung (reset_parameters).
+
+**Nutzen:** Zurück auf Anfang.
+
+**Wofür:** Re-Init einzelner Schichten.
+
+#### `module_op:copy_from` (Aliase: `uebernehmen`) — Stufe Basis
+
+**Was:** Gewichte eines anderen Moduls gleicher Struktur übernehmen.
+
+**Nutzen:** Übernahme ganzer Schichten (alle Tensoren auf einmal).
+
+**Wofür:** Schichten klonen, Block-Wiederholung.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `source` | Text | `''` |  | Basis | **Was:** Name des Quellmoduls mit gleicher Struktur (z. B. 'blocks.0').<br>**Nutzen:** Übernimmt alle Gewichte und Puffer eines anderen Moduls.<br>**Wofür:** Schichten klonen, Warm-Start. |
+| `mode` | Text | `'replace'` | Auswahl: replace \| interpolate | Basis | **Was:** Art der Übernahme.<br>**Nutzen:** Vollständig oder anteilig.<br>**Wofür:** replace. |
+| `alpha` | Kommazahl | `0.5` | Bereich 0.0 … 1.0 | Basis | **Was:** Anteil der Quelle (interpolate).<br>**Nutzen:** Mischung.<br>**Wofür:** 0.5. |
+
+#### `module_op:scale_output` — Stufe Basis
+
+**Was:** Ausgabe mit Faktor multiplizieren (Hook).
+
+**Nutzen:** Beitrag einzelner Module dämpfen/verstärken.
+
+**Wofür:** Ablationen.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `factor` | Kommazahl | `1.0` |  | Basis | **Was:** Faktor auf die Ausgabe.<br>**Nutzen:** Dämpft/verstärkt den Beitrag des Moduls.<br>**Wofür:** 0.5. |
+
+#### `module_op:output_noise` — Stufe Fortgeschritten
+
+**Was:** Rauschen auf die Ausgabe (Hook).
+
+**Nutzen:** Robustheit, Regularisierung.
+
+**Wofür:** Experimente.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `std` | Kommazahl | `0.01` | ≥ 0.0 | Basis | **Was:** Standardabweichung.<br>**Nutzen:** Stärke des Rauschens.<br>**Wofür:** 0.01–0.1. |
+| `only_training` | Ja/Nein | `True` |  | Basis | **Was:** Nur im Training.<br>**Nutzen:** Inferenz bleibt deterministisch.<br>**Wofür:** an. |
+
+#### `module_op:clamp_output` — Stufe Fortgeschritten
+
+**Was:** Ausgabe begrenzen (Hook).
+
+**Nutzen:** Gegen Aktivierungsausreißer.
+
+**Wofür:** Stabilisierung.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `min` | Kommazahl (oder None) | `None` |  | Basis | **Was:** Untergrenze.<br>**Nutzen:** Begrenzt Aktivierungen.<br>**Wofür:** -10. |
+| `max` | Kommazahl (oder None) | `None` |  | Basis | **Was:** Obergrenze.<br>**Nutzen:** Begrenzt Ausreißer.<br>**Wofür:** 10. |
+
+#### `module_op:stop_gradient` — Stufe Fortgeschritten
+
+**Was:** Gradient an der Ausgabe abschneiden (Hook).
+
+**Nutzen:** Alles davor lernt nicht über diesen Pfad.
+
+**Wofür:** Experimente.
+
+#### `module_op:record` — Stufe Basis
+
+**Was:** Statistik der Ausgabe aufzeichnen (Mittelwert, Std, Max) → ModuleSurgeon.activation_report().
+
+**Nutzen:** Analyse: Wo explodieren oder verschwinden Aktivierungen?
+
+**Wofür:** Debugging, Interpretierbarkeit.
+
+
 ### Registry `tensor_op`
 
 <a id="registry-tensor-op"></a>
@@ -5004,6 +5362,21 @@ Fabrik-Signatur: `factory(args) -> TensorOp`
 | Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
 |---|---|---|---|---|---|
 | `function` | Komponente aus Registry 'tensor_function' | `identity` | Auswahl: identity \| abs \| sign \| normalize_rows \| flip \| shuffle | Basis | **Was:** Eigene Funktion aus der Registry 'tensor_function'.<br>**Nutzen:** Beliebige Manipulation.<br>**Wofür:** Eigene Registrierung. |
+
+#### `tensor_op:copy` (Aliase: `kopieren`, `uebernehmen`) — Stufe Basis
+
+**Was:** Werte aus einem anderen Parameter übernehmen (kopieren, addieren, mitteln, interpolieren).
+
+**Nutzen:** Übernahme von Gewichten zwischen Schichten – ganz oder ausschnittsweise.
+
+**Wofür:** Gleiche Startgewichte für mehrere Schichten, Wissenstransfer zwischen Köpfen.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `source` | Text | `''` |  | Basis | **Was:** Name des Quell-Parameters (z. B. 'blocks.0.mixer.attn.q_proj.weight').<br>**Nutzen:** Werte eines anderen Tensors übernehmen (statt nur Einstellungen).<br>**Wofür:** Schichten gleich initialisieren, Gewichte von Schicht 0 in Schicht 5 übernehmen. |
+| `source_index` | Text (oder None) | `None` |  | Fortgeschritten | **Was:** Ausschnitt der Quelle (Python-Syntax wie 'index').<br>**Nutzen:** Nur Teile übernehmen (z. B. einen Kopf).<br>**Wofür:** '0:8, :'. |
+| `mode` | Text | `'replace'` | Auswahl: replace \| add \| mean \| interpolate | Basis | **Was:** Wie Quelle und Ziel kombiniert werden.<br>**Nutzen:** Vom Kopieren bis zum sanften Angleichen.<br>**Wofür:** replace. |
+| `alpha` | Kommazahl | `0.5` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Anteil der Quelle bei mode = interpolate.<br>**Nutzen:** Mischungsverhältnis.<br>**Wofür:** 0.5. |
 
 #### `tensor_op:tie` — Stufe Fortgeschritten
 
@@ -5439,6 +5812,22 @@ Fabrik-Signatur: `factory(args) -> dict (ProjectConfig)`
 #### `preset:sprachmodell_speichersparend` — Stufe Basis
 
 **Was:** Größeres Sprachmodell mit allen Speicher-Weichen: GQA, Gradient-Checkpointing, bf16-Autocast, Akkumulation.
+
+**Nutzen:** Anwendungsgebiet: Sprachmodelle, Textverständnis, Übersetzung.
+
+**Wofür:** Modell 'transformer', Daten 'text'.
+
+#### `preset:sprachmodell_qlora` — Stufe Basis
+
+**Was:** Feintuning wie QLoRA: Basis in nf4 (4 Bit) eingefroren, nur LoRA-Adapter + Normen lernen, 8-Bit-AdamW.
+
+**Nutzen:** Anwendungsgebiet: Sprachmodelle, Textverständnis, Übersetzung.
+
+**Wofür:** Modell 'transformer', Daten 'text'.
+
+#### `preset:sprachmodell_ram_streaming` — Stufe Basis
+
+**Was:** Großes Modell auf kleiner GPU trainieren: Blöcke samt Optimierer-Zuständen im RAM, blockweise gestreamt.
 
 **Nutzen:** Anwendungsgebiet: Sprachmodelle, Textverständnis, Übersetzung.
 

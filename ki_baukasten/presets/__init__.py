@@ -136,6 +136,33 @@ def sprachmodell_speichersparend(a=None) -> dict:
         _TEXT, t, memory={"mixed_precision": "bf16", "gradient_checkpointing": True})
 
 
+def sprachmodell_qlora(a=None) -> dict:
+    t = copy.deepcopy(_LM_TRAIN)
+    t.update(optimizer={"name": "adamw8bit", "args": {"lr": 2e-3}}, max_steps=200)
+    return _project(
+        "sprachmodell_qlora", "sprache",
+        "Feintuning wie QLoRA: Basis in nf4 (4 Bit) eingefroren, nur LoRA-Adapter + Normen lernen, 8-Bit-AdamW.",
+        {"name": "transformer", "args": {"d_model": 256, "n_layers": 6, "max_seq_len": 128,
+                                         "block": _lm_block(6, mixer={"name": "attention",
+                                                                      "args": {"num_heads": 8, "num_kv_heads": 2}}),
+                                         "positional": "rope"}},
+        _TEXT, t, memory={"quantization": "nf4", "quant_group_size": 64,
+                          "lora": {"enabled": True, "rank": 16, "alpha": 32.0, "train_also": "norm"}})
+
+
+def sprachmodell_ram_streaming(a=None) -> dict:
+    t = copy.deepcopy(_LM_TRAIN)
+    t.update(optimizer={"name": "adamw8bit", "args": {"lr": 1e-3}}, max_steps=200)
+    return _project(
+        "sprachmodell_ram_streaming", "sprache",
+        "Großes Modell auf kleiner GPU trainieren: Blöcke samt Optimierer-Zuständen im RAM, blockweise gestreamt.",
+        {"name": "transformer", "args": {"d_model": 512, "n_layers": 8, "max_seq_len": 128,
+                                         "block": _lm_block(8, mixer={"name": "attention",
+                                                                      "args": {"num_heads": 8, "num_kv_heads": 2}}),
+                                         "positional": "rope"}},
+        _TEXT, t, memory={"offload": {"mode": "stream", "layers": "*"}, "mixed_precision": "bf16"})
+
+
 def text_klassifikation(a=None) -> dict:
     return _project(
         "text_klassifikation", "sprache", "Encoder-Transformer (BERT-artig) mit CLS-Token zur Sequenzklassifikation.",
@@ -471,7 +498,7 @@ def forschung_experimentell(a=None) -> dict:
 
 _ALL = [
     sprachmodell_mini, sprachmodell_moe, sprachmodell_mamba, sprachmodell_hybrid, sprachmodell_speichersparend,
-    text_klassifikation, bert_vortraining, uebersetzung_seq2seq,
+    sprachmodell_qlora, sprachmodell_ram_streaming, text_klassifikation, bert_vortraining, uebersetzung_seq2seq,
     bildklassifikation_cnn, bildklassifikation_vit, bildklassifikation_mobil, vae_bilder,
     zeitreihen_lstm, zeitreihen_transformer, sequenz_gedaechtnis_rnn,
     tabellen_klassifikation, tabellen_regression,
