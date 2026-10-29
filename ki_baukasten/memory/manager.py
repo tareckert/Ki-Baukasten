@@ -32,7 +32,7 @@ from torch.utils.checkpoint import checkpoint
 from ..core import ConfigError, select_indices
 from .config import MemoryConfig
 from .lora import apply_lora
-from .offload import OffloadManager, select_offload_blocks
+from .offload import OffloadManager, SplitManager, select_offload_blocks
 from .quant import quantize_model, quantize_torchao
 from .streaming import enable_block_streaming
 
@@ -198,7 +198,11 @@ class MemoryManager:
             enable_gradient_checkpointing(model, c.checkpoint_layers)
         if c.offload.mode == "stream":
             blocks = [m for _, m in select_offload_blocks(model, c.offload)]
-            self.streams = enable_block_streaming(model, blocks, self.device, c.offload.pin_memory, c.offload.prefetch)
+            self.streams = enable_block_streaming(model, blocks, self.device, c.offload.pin_memory, c.offload.prefetch,
+                                                  c.offload.storage, c.offload.directory)
+        elif c.offload.mode == "split":
+            self.offloader = SplitManager(model, c.offload, self.device)  # type: ignore[assignment]
+            self.offloader.attach()
         elif c.offload.mode != "none":
             self.offloader = OffloadManager(model, c.offload, self.device)
             self.offloader.attach()

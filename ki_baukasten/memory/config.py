@@ -51,6 +51,8 @@ class OffloadConfig(BaseConfig):
         "disk": "Blöcke liegen auf der Festplatte (Memory-Map), werden pro Forward geladen (Inferenz/eingefroren)",
         "stream": "TRAINIERBAR: Gewichte, Gradienten und Optimierer-Zustände im RAM, Blöcke werden in "
                   "Forward und Backward gestreamt",
+        "split": "Blöcke aufteilen: die gewählten Blöcke (layers) rechnen auf split_device (z. B. CPU), der Rest "
+                 "auf dem Hauptgerät – trainierbar, wie 'device_map' bei großen Modellen",
     }, tooltip=T(
         "Auslagerungsmodus.",
         "Tauscht Geschwindigkeit gegen Speicher: disk spart am meisten, ist aber am langsamsten; stream erlaubt "
@@ -68,6 +70,21 @@ class OffloadConfig(BaseConfig):
         "Welche der automatisch gefundenen Blöcke ausgelagert werden (Selektor wie bei layer_overrides).",
         "Feiner Kompromiss: nur so viele Blöcke auslagern, wie nötig – der Rest rechnet ohne Übertragung.",
         "'*' = alle, '0:12' = die ersten 12, '::2' = jeder zweite. Nur mit targets='auto'.",
+    ), level=Level.ADVANCED)
+    storage = Param("ram", choices={
+        "ram": "eingefrorene Gewichte der gestreamten Blöcke im CPU-RAM",
+        "disk": "eingefrorene Gewichte/Puffer auf der Festplatte (Memory-Map) – für Modelle größer als der RAM",
+    }, tooltip=T(
+        "Ablageort der eingefrorenen Gewichte im Modus 'stream'.",
+        "Mit 'disk' passt auch ein Modell, das größer als der RAM ist: z. B. QLoRA/LoRA-Feintuning, bei dem nur "
+        "die kleinen Adapter im RAM liegen und die Basis Block für Block von der SSD gelesen wird.",
+        "Sehr große Modelle auf kleinen Rechnern. Schnelle SSD empfohlen (directory).",
+        "Trainierbare Gewichte, Gradienten und Optimierer-Zustände bleiben immer im RAM.",
+    ), level=Level.ADVANCED)
+    split_device = Param("cpu", tooltip=T(
+        "Zweites Rechengerät für den Modus 'split' (z. B. 'cpu', 'cuda:1').",
+        "Blöcke, die nicht auf das Hauptgerät passen, rechnen dort – langsamer, aber es läuft.",
+        "GPU zu klein: hintere Blöcke auf der CPU; zwei GPUs: Modell aufteilen.",
     ), level=Level.ADVANCED)
     prefetch = Param(False, tooltip=T(
         "Nächsten Block auf einem eigenen CUDA-Stream vorladen, während der aktuelle rechnet (nur stream + CUDA).",
@@ -180,6 +197,19 @@ class MemoryConfig(BaseConfig):
         "Maximaler Anteil des GPU-Speichers für diesen Prozess.", "Mehrere Prozesse auf einer GPU.", "0.5."))
     empty_cache_every_n_steps = Param(None, type=int, min=1, group="Gerät", level=Level.EXPERT, tooltip=T(
         "GPU-Cache alle n Schritte leeren.", "Gegen Fragmentierung bei variablen Formen.", "Selten nötig."))
+    oom_strategy = Param("batch_teilen", choices={
+        "fehler": "bei Speichermangel abbrechen (klassisch)",
+        "batch_teilen": "Batch automatisch halbieren und mit Gradientenakkumulation weiterrechnen (gleiches Ergebnis)",
+    }, group="Planung", tooltip=T(
+        "Was bei Speichermangel (Out-of-Memory) während Training/Vorhersage passiert.",
+        "'batch_teilen' teilt den Batch so oft wie nötig in kleinere Stücke; durch Akkumulation bleibt die "
+        "effektive Batchgröße – und damit das Training – gleich. Das Training bricht nicht mehr mitten ab.",
+        "Unbekannte Hardware, schwankende Sequenzlängen, Notfall-Ausführung.",
+        "Erkennt CUDA-/MPS-/CPU-Speicherfehler. Mehr Teilstücke = langsamer.",
+    ))
+    oom_max_splits = Param(64, min=1, group="Planung", level=Level.ADVANCED, tooltip=T(
+        "Höchstens so viele Teilstücke pro Batch.", "Begrenzt die Verlangsamung; danach wird der Fehler gemeldet.",
+        "16–64."))
     memory_budget_gb = Param(None, type=float, min=0.0, group="Planung", tooltip=T(
         "Verfügbarer Speicher in GB für die Speicherschätzung (None = automatisch erkennen).",
         "Die Schätzung prüft, ob das Training hineinpasst, und schlägt Einstellungen vor.",

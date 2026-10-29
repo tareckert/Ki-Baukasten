@@ -39,12 +39,22 @@ Kosten & Tipps
 * ``prefetch`` (experimentell, nur CUDA) lädt den nächsten Block auf einem
   eigenen CUDA-Stream, während der aktuelle rechnet.
 * Größere Batches amortisieren die Übertragung besser (Rechnen pro Byte steigt).
+
+Eingefrorene Gewichte auf der Festplatte (``storage="disk"``)
+------------------------------------------------------------
+Passt selbst der RAM nicht, legt ``offload.storage = "disk"`` alle **eingefrorenen**
+Gewichte und Puffer der gestreamten Blöcke (z. B. die Basis bei LoRA/QLoRA, eingefrorene
+Schichten) als Datei ab und liest sie per Memory-Map nur für die Berechnung des Blocks.
+Trainierbare Gewichte, ihre Gradienten und Optimierer-Zustände bleiben im RAM. Das
+Betriebssystem lädt nur die gerade benötigten Seiten und kann sie jederzeit wieder freigeben.
+``state_dict()`` liefert weiterhin alle Gewichte (aus der Datei gelesen).
 """
 
 from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -67,8 +77,24 @@ class StreamState:
     _prefetched: dict[str, torch.Tensor] | None = field(default=None, repr=False)
     _event: Any = field(default=None, repr=False)
     transfers: int = 0                         # Statistik: Anzahl Gewichts-Übertragungen
+    disk: "DiskWeights | None" = None          # eingefrorene Gewichte auf der Festplatte (storage="disk")
 
     # ------------------------------------------------------------ Übertragung
+    def _source(self) -> dict[str, torch.Tensor]:
+        """Alle Gewichte + Puffer des Blocks (im RAM bzw. per Memory-Map von der Festplatte)."""
+        m = self.module
+        assert m is not None
+        src = {n: p.detach() for n, p in m.named_parameters()}
+        src.update(dict(m.named_buffers()))
+        if self.disk is not None:
+            params = dict(m.named_parameters())
+            for n in self.disk.names:
+                if n in params and params[n].requires_grad:
+                    raise RuntimeError(f"'{n}' liegt eingefroren auf der Festplatte (offload.storage='disk'), soll "
+                                       "aber trainiert werden – storage='ram' nutzen oder die Schicht eingefroren lassen.")
+            src.update(self.disk.tensors())
+        return src
+
     def _copy(self, requires_grad: bool) -> dict[str, torch.Tensor]:
         """Gewichte + Puffer des Blocks als Tensoren auf dem Rechengerät."""
         m = self.module
@@ -81,8 +107,7 @@ class StreamState:
                     t.record_stream(torch.cuda.current_stream(self.device))
             self._prefetched, self._event = None, None
         else:
-            tensors = {n: p.detach().to(self.device, non_blocking=True) for n, p in m.named_parameters()}
-            tensors.update({n: b.to(self.device, non_blocking=True) for n, b in m.named_buffers()})
+            tensors = {n: t.to(self.device, non_blocking=True) for n, t in self._source().items()}
         self.transfers += 1
         out = {}
         params, buffers = dict(m.named_parameters()), dict(m.named_buffers())
@@ -91,7 +116,7 @@ class StreamState:
                 t = t.detach()
                 if requires_grad and params[n].requires_grad:
                     t.requires_grad_(True)
-            elif t.data_ptr() == buffers[n].data_ptr():
+            elif n in buffers and t.data_ptr() == buffers[n].data_ptr():
                 t = t.clone()  # gleiches Gerät: Original-Puffer nicht unkontrolliert verändern
             out[n] = t
         return out
@@ -103,8 +128,7 @@ class StreamState:
         stream = _copy_stream(self.device)
         stream.wait_stream(torch.cuda.current_stream(self.device))
         with torch.cuda.stream(stream):
-            tensors = {n: p.detach().to(self.device, non_blocking=True) for n, p in self.module.named_parameters()}
-            tensors.update({n: b.to(self.device, non_blocking=True) for n, b in self.module.named_buffers()})
+            tensors = {n: t.to(self.device, non_blocking=True) for n, t in self._source().items()}
             event = torch.cuda.Event()
             event.record(stream)
         self._prefetched, self._event = tensors, event
@@ -168,8 +192,9 @@ class _StreamFunction(torch.autograd.Function):
         with torch.no_grad():
             out = _run(module, st, tensors, args, kwargs)
         # Puffer (BatchNorm-Statistiken …) zurück in den RAM schreiben.
+        on_disk = set(st.disk.names) if st.disk is not None else set()
         for name, buf in module.named_buffers():
-            if name in tensors and tensors[name].data_ptr() != buf.data_ptr():
+            if name in tensors and name not in on_disk and tensors[name].data_ptr() != buf.data_ptr():
                 buf.copy_(tensors[name])
         out_flat, out_spec = tree_flatten(out)
         if not all(isinstance(t, torch.Tensor) for t in out_flat):
@@ -254,9 +279,61 @@ def _streamed_class(cls: type) -> type:
     return new_cls
 
 
+class DiskWeights:
+    """Eingefrorene Gewichte/Puffer eines Blocks als Datei, gelesen per Memory-Map."""
+
+    _KEEP_IN_RAM = ("running_mean", "running_var", "num_batches_tracked")   # werden im Forward aktualisiert
+
+    def __init__(self, module: nn.Module, path: Path):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        frozen = {n: p for n, p in module.named_parameters() if not p.requires_grad}
+        bufs = {n: b for n, b in module.named_buffers() if not n.endswith(self._KEEP_IN_RAM)}
+        torch.save({n: t.detach().cpu().contiguous() for n, t in {**frozen, **bufs}.items()}, self.path)
+        self.names = list(frozen) + list(bufs)
+        self._mm: dict[str, torch.Tensor] | None = None
+        for n, p in frozen.items():
+            p.data = torch.empty(0, dtype=p.dtype)
+        for n, b in bufs.items():
+            owner, attr = _owner(module, n)
+            owner._buffers[attr] = torch.empty(0, dtype=b.dtype)
+        module._register_state_dict_hook(self._state_dict_hook)
+
+    def tensors(self) -> dict[str, torch.Tensor]:
+        if self._mm is None:
+            self._mm = torch.load(self.path, map_location="cpu", mmap=True, weights_only=True)
+        return self._mm
+
+    def _state_dict_hook(self, module: nn.Module, state: dict, prefix: str, local_metadata: Any) -> None:
+        for n, t in self.tensors().items():
+            if prefix + n in state:
+                state[prefix + n] = t
+
+    def restore(self, module: nn.Module, device: torch.device) -> None:
+        params = dict(module.named_parameters())
+        for n, t in self.tensors().items():
+            if n in params:
+                params[n].data = t.clone().to(device)
+            else:
+                owner, attr = _owner(module, n)
+                owner._buffers[attr] = t.clone().to(device)
+
+
+def _owner(root: nn.Module, dotted: str) -> tuple[nn.Module, str]:
+    parts = dotted.split(".")
+    mod = root
+    for part in parts[:-1]:
+        mod = getattr(mod, part)
+    return mod, parts[-1]
+
+
 def enable_block_streaming(model: nn.Module, blocks: list[nn.Module], device: torch.device,
-                           pin_memory: bool = True, prefetch: bool = False) -> list[StreamState]:
+                           pin_memory: bool = True, prefetch: bool = False, storage: str = "ram",
+                           directory: str | Path = "offload_cache") -> list[StreamState]:
     """Lagert ``blocks`` trainierbar in den RAM aus (Rest des Modells auf ``device``).
+
+    Args:
+        storage: ``ram`` (Standard) oder ``disk`` – eingefrorene Gewichte der Blöcke auf die Festplatte.
 
     Returns:
         Die ``StreamState``-Objekte (u. a. mit Übertragungsstatistik ``transfers``).
@@ -264,14 +341,16 @@ def enable_block_streaming(model: nn.Module, blocks: list[nn.Module], device: to
     ids = {id(b) for b in blocks}
     _move_rest(model, ids, device)
     states = []
-    for b in blocks:
+    for i, b in enumerate(blocks):
         if getattr(b, "_ki_checkpointed", False):
             b.__class__ = b.__class__.__mro__[1]  # Streaming rechnet ohnehin neu – Checkpointing entfällt
         b.to("cpu")
+        disk = DiskWeights(b, Path(directory) / f"stream_block_{i:04d}.pt") if storage == "disk" else None
         if pin_memory and device.type == "cuda":
             for p in b.parameters():
-                p.data = p.data.pin_memory()
-        st = StreamState(device=device, prefetch=prefetch, module=b)
+                if p.numel():
+                    p.data = p.data.pin_memory()
+        st = StreamState(device=device, prefetch=prefetch, module=b, disk=disk)
         b._ki_stream = st
         if not getattr(b, "_ki_streamed", False):
             b.__class__ = _streamed_class(type(b))
@@ -285,6 +364,9 @@ def disable_block_streaming(blocks: list[nn.Module], device: torch.device) -> No
     """Macht ``enable_block_streaming`` rückgängig (Blöcke wieder normal auf ``device``)."""
     for b in blocks:
         if getattr(b, "_ki_streamed", False):
+            st = b._ki_stream
+            if st.disk is not None:
+                st.disk.restore(b, torch.device("cpu"))
             b.__class__ = b.__class__.__mro__[1]
             del b._ki_stream
         b.to(device)

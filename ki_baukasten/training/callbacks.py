@@ -121,6 +121,22 @@ class GradualUnfreezeConfig(BaseConfig):
     every_epochs = Param(1, min=1, tooltip=T("Alle n Epochen eine Gruppe mehr auftauen.", "Tempo.", "1."))
 
 
+class LISAConfig(BaseConfig):
+    __title__ = "LISA (schichtweises Stichproben-Training)"
+    active_blocks = Param(2, min=1, tooltip=T(
+        "So viele zufällig gewählte Blöcke sind gleichzeitig trainierbar.",
+        "Gradienten und Optimierer-Zustände gibt es nur für diese Blöcke – der Speicherbedarf fürs Training sinkt "
+        "auf einen Bruchteil, ähnlich LoRA, aber mit vollen Gewichten.",
+        "Feintuning großer Modelle auf kleiner Hardware (LISA, Pan et al. 2024).", "1–4."))
+    every_n_steps = Param(20, min=1, tooltip=T(
+        "Alle n Schritte werden neue Blöcke gezogen.", "Mit der Zeit lernt jeder Block mit.", "10–50."))
+    always_trainable = Param("embed|head|final_norm|lm_head", type=str, nullable=True, tooltip=T(
+        "Regex: Parameter außerhalb der Blöcke, die immer trainierbar bleiben (None = keine).",
+        "Embedding und Ausgabeschicht sind laut LISA besonders wichtig.", "Standard übernehmen."))
+    seed = Param(0, min=0, tooltip=T("Zufalls-Seed der Blockauswahl.", "Reproduzierbarkeit.", "0."),
+                 level=Level.ADVANCED)
+
+
 # ===========================================================================
 # Implementierungen
 # ===========================================================================
@@ -260,6 +276,59 @@ class GradualUnfreeze(Callback):
         self._apply(trainer, n)
 
 
+class LISA(Callback):
+    """Nur wenige, zufällig wechselnde Blöcke trainieren; Optimierer-Zustände der anderen freigeben."""
+
+    def __init__(self, a: LISAConfig):
+        self.a = a
+        self.blocks: list = []
+        self.original: dict[int, bool] = {}
+        self.active: list[int] = []
+        self.history: list[list[int]] = []
+
+    def on_train_start(self, trainer):
+        import random as _random
+
+        self.rng = _random.Random(self.a.seed)
+        model = getattr(trainer.model, "_orig_mod", trainer.model)
+        self.blocks = model.checkpointable_blocks() if hasattr(model, "checkpointable_blocks") else []
+        if not self.blocks:
+            trainer.log("LISA: Modell meldet keine Blöcke – Callback ohne Wirkung.")
+            return
+        in_blocks = {id(p) for b in self.blocks for p in b.parameters()}
+        rx = re.compile(self.a.always_trainable) if self.a.always_trainable else None
+        for name, p in model.named_parameters():
+            self.original[id(p)] = p.requires_grad
+            if id(p) not in in_blocks and p.requires_grad and not (rx and rx.search(name)):
+                p.requires_grad_(False)          # alles außerhalb der Blöcke außer 'always_trainable' einfrieren
+        self._sample(trainer)
+
+    def _sample(self, trainer):
+        n = min(self.a.active_blocks, len(self.blocks))
+        self.active = sorted(self.rng.sample(range(len(self.blocks)), n))
+        self.history.append(self.active)
+        for i, block in enumerate(self.blocks):
+            on = i in self.active
+            for p in block.parameters():
+                if self.original.get(id(p), False):
+                    p.requires_grad_(on)
+                    if not on:
+                        p.grad = None
+                        for opt in trainer.optimizers.values():
+                            opt.state.pop(p, None)       # Optimierer-Zustand freigeben
+        trainer.log(f"LISA: trainierbare Blöcke {self.active}")
+
+    def on_step_end(self, trainer, metrics):
+        if self.blocks and trainer.global_step % self.a.every_n_steps == 0:
+            self._sample(trainer)
+
+    def on_train_end(self, trainer):
+        model = getattr(trainer.model, "_orig_mod", trainer.model)
+        for p in model.parameters():
+            if id(p) in self.original:
+                p.requires_grad_(self.original[id(p)])
+
+
 R = CALLBACKS.register
 R("early_stopping", lambda a: EarlyStopping(a), config=EarlyStoppingConfig, tooltip=T(
     "Training beenden, wenn sich die Validierung nicht mehr verbessert.", "Gegen Überanpassung, spart Zeit.",
@@ -275,5 +344,9 @@ R("gradient_monitor", lambda a: GradientMonitor(a), config=GradientMonitorConfig
     "Gradienten-Normen je Parameter überwachen.", "Findet explodierende/verschwindende Gradienten.", "Debugging."))
 R("time_limit", lambda a: TimeLimit(a), config=TimeLimitConfig, tooltip=T(
     "Training nach fester Zeit beenden.", "Zeitbudgets einhalten.", "Cluster, Experimente."))
+R("lisa", lambda a: LISA(a), config=LISAConfig, level=Level.ADVANCED, tooltip=T(
+    "LISA: immer nur wenige, zufällig wechselnde Blöcke trainieren.",
+    "Spart Gradienten- und Optimierer-Speicher fast wie LoRA, trainiert aber die vollen Gewichte.",
+    "Feintuning großer Modelle, wenn das volle Training nicht in den Speicher passt."))
 R("gradual_unfreeze", lambda a: GradualUnfreeze(a), config=GradualUnfreezeConfig, level=Level.EXPERIMENTAL, tooltip=T(
     "Schichten schrittweise auftauen.", "Schonendes Feintuning.", "Transfer-Learning (ULMFiT)."))

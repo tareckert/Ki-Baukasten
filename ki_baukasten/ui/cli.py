@@ -29,6 +29,7 @@ importieren     fremdes Modell laden (pt2, TorchScript, state_dict, safetensors,
 komprimieren    Modell eindampfen (Pruning, Low-Rank, Quantisierung, Heilen) mit Bericht
 zielsysteme     Geräteprofile + Übersicht, ob/wie das Modell darauf passt
 reduzieren      Empfehlung für ein Zielsystem anzeigen und anwenden (+ Export)
+notfall         passt trotzdem nicht? stückweise ausführen (SSD/RAM-Auslagerung, Aufteilen, LISA …)
 schueler        Lehrer-Schüler: kleineres Modell per Distillation trainieren
 probelauf       Forward/Backward mit allen Wegen, Statistiken, Warnungen (+ Testlauf)
 moeglichkeiten  Katalog aller Möglichkeiten (Speicher, Tempo, Kompression, Training …)
@@ -350,6 +351,21 @@ def cmd_reduzieren(a: argparse.Namespace) -> None:
             print(f"Exportiert nach: {a.export}.*")
 
 
+def cmd_notfall(a: argparse.Namespace) -> None:
+    from ..analysis.fallback import options_text
+
+    p = _project(a.quelle, a.setze)
+    opts = p.fallback_options(a.ziel, a.budget_mb, a.training)
+    budget = p._budget_mb(a.ziel, a.budget_mb)
+    print(options_text(opts, budget, limit=None if a.alle else 8))
+    if a.anwenden:
+        chosen = p.apply_fallback(a.anwenden, a.ziel, a.budget_mb, a.training)
+        print(f"\nEingeschaltet: {chosen.title}" + (f"\nNutzung: {chosen.usage}" if chosen.usage else ""))
+        if a.speichern:
+            p.config.save(a.speichern, only_changed=True)
+            print(f"Konfiguration gespeichert: {a.speichern}")
+
+
 def cmd_schueler(a: argparse.Namespace) -> None:
     p = _load_or_build(a.quelle, a.setze, train=a.trainieren)
     student = p.distill(width=a.breite, depth=a.tiefe, steps=a.schritte, feature_weight=a.features)
@@ -574,6 +590,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--export", help="danach im passenden Format exportieren (Pfad ohne Endung)")
     sp.add_argument("--speichern", help="reduziertes Projekt speichern")
     sp.set_defaults(fn=cmd_reduzieren)
+
+    sp = sub.add_parser("notfall", help="Notfall-Ausführung, wenn das Modell nicht passt")
+    with_source(sp)
+    sp.add_argument("--ziel", help="Zielsystem (Budget aus dem Profil), z. B. laptop_gpu")
+    sp.add_argument("--budget-mb", type=float, help="verfügbarer Gerätespeicher in MB")
+    sp.add_argument("--training", action="store_true", help="Optionen fürs Training statt für die Inferenz")
+    sp.add_argument("--anwenden", metavar="KENNUNG", help="Option einschalten ('auto' = schnellste passende)")
+    sp.add_argument("--alle", action="store_true", help="alle Optionen zeigen")
+    sp.add_argument("--speichern", help="Konfiguration nach dem Anwenden speichern")
+    sp.set_defaults(fn=cmd_notfall)
 
     sp = sub.add_parser("schueler", help="kleineres Schüler-Modell per Distillation")
     sp.add_argument("quelle")

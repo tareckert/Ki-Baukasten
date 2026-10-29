@@ -520,6 +520,7 @@ class Project:
             val_data = val_data if val_data is not None else bundle.val
             if self.config.data.name == "anomaly":
                 val_data = None  # Anomalie-Testmenge hat Labels → separat mit anomaly_report() auswerten
+        self._fit_warning()
         self.trainer = Trainer(self.model, self.config.training, self.config.memory, self.surgeon,
                                teacher=self._teacher)
         self.model = self.trainer.model
@@ -535,6 +536,24 @@ class Project:
             except Exception as exc:  # noqa: BLE001 - Übersicht darf das Training nie scheitern lassen
                 print(f"  (Reduktions-Übersicht nicht verfügbar: {exc})")
         return self.history
+
+    def _fit_warning(self) -> None:
+        """Mit gesetztem ``memory.memory_budget_gb``: vor dem Training prüfen und Notfall-Optionen nennen."""
+        if not (self.config.memory.memory_budget_gb and self.config.training.verbose):
+            return
+        try:
+            report = self.memory_report()
+            if report.fits() is False:
+                from .analysis.fallback import options_text
+
+                budget = self.config.memory.memory_budget_gb * 1024
+                opts = [o for o in self.fallback_options(budget_mb=budget, training=True) if o.fits][:3]
+                print(f"  ⚠ Training passt voraussichtlich nicht ins Budget ({report.total_bytes / 2**20:.0f} MB > "
+                      f"{budget:.0f} MB).")
+                if opts:
+                    print("  " + options_text(opts, budget).replace("\n", "\n  "))
+        except Exception:  # noqa: BLE001 - Prüfung darf das Training nie verhindern
+            pass
 
     # ================================================================ Zielsysteme
     def _example_input(self) -> Any:
@@ -563,7 +582,8 @@ class Project:
         """Reduktions-Empfehlung für ein Zielsystem (siehe ``analysis.targets.TARGETS``)."""
         from .analysis.targets import recommend
 
-        return recommend(self._ensure_model(), target, self._macs(), self._can_heal())
+        return recommend(self._ensure_model(), target, self._macs(), self._can_heal(),
+                         activations_mb=self._activations_mb(False))
 
     def deployment_overview(self, targets: list[str] | None = None) -> str:
         """Tabelle: passt das Modell auf die Zielsysteme – und wie wird es passend?"""
@@ -572,8 +592,85 @@ class Project:
         return overview(self._ensure_model(), targets or list(self.config.deployment.targets), self._macs(),
                         self._can_heal())
 
-    def reduce_for(self, target: str, export: str | Path | None = None, allow_student: bool = True) -> "Project":
+    def _budget_mb(self, target: str | None = None, budget_mb: float | None = None) -> float:
+        from .analysis.targets import TARGETS
+        from .memory.estimator import detect_budget
+
+        if budget_mb is not None:
+            return float(budget_mb)
+        if target is not None:
+            if target not in TARGETS:
+                raise ConfigError(f"Unbekanntes Zielsystem '{target}'. Verfügbar: {', '.join(TARGETS)}.")
+            return TARGETS[target].memory_mb
+        if self.config.memory.memory_budget_gb:
+            return self.config.memory.memory_budget_gb * 1024
+        detected = detect_budget(self._device())
+        if detected is None:
+            raise ConfigError("Kein Speicherbudget bekannt – target=…, budget_mb=… oder memory.memory_budget_gb setzen.")
+        return detected / 2**20
+
+    def _activations_mb(self, training: bool) -> float:
+        """Aktivierungsspeicher: Training für den ganzen Batch, Inferenz grob pro Beispiel."""
+        try:
+            report = self.memory_report()
+            act = (report.activations_bytes or 0.0) / 2**20
+        except Exception:  # noqa: BLE001
+            return 0.0
+        if training:
+            return act
+        return act * 0.25 / max(1, report.batch_size)   # Inferenz speichert nichts für den Backward
+
+    def fallback_options(self, target: str | None = None, budget_mb: float | None = None, training: bool = False,
+                         scale: float = 1.0) -> list:
+        """Notfall-Ausführung: alle Wege, das Modell trotz Speichermangel laufen zu lassen (mit Schätzung).
+
+        Args:
+            target:    Zielsystem (Budget aus dessen Profil) – oder ``budget_mb`` direkt angeben.
+            training:  Optionen fürs Training statt für die Inferenz.
+        """
+        from .analysis.fallback import execution_options
+
+        model = self._ensure_model()
+        t = self.config.training
+        budget = self._budget_mb(target, budget_mb)
+        gpu = (target is not None and ("gpu" in target or target == "apple_silicon")) or \
+            (target is None and self._device().type != "cpu")
+        return execution_options(model, budget, training, self._activations_mb(training), scale=scale,
+                                 batch_size=t.batch_size if training else 1, gpu_target=gpu, callbacks=[c.to_dict() for c in t.callbacks],
+                                 gradient_accumulation_steps=t.gradient_accumulation_steps)
+
+    def apply_fallback(self, key: str = "auto", target: str | None = None, budget_mb: float | None = None,
+                       training: bool = False, allow_quality_loss: bool = False) -> Any:
+        """Schaltet eine Notfall-Option ein (``auto`` = schnellste passende ohne Qualitätsverlust).
+
+        Returns:
+            Die angewandte ``ExecutionOption`` (mit Nutzungshinweis). Rückgängig mit ``undo()``.
+        """
+        from .analysis.fallback import best_option
+
+        options = self.fallback_options(target, budget_mb, training)
+        if key == "auto":
+            chosen = best_option(options, allow_quality_loss) or best_option(options, True)
+            if chosen is None:
+                raise ConfigError("Keine Notfall-Option passt in das Budget – kleineres Grundmodell, Schüler-Modell "
+                                  "(distill) oder mehr Geräte (cluster) wählen.")
+        else:
+            matches = [o for o in options if o.key == key]
+            if not matches:
+                raise ConfigError(f"Unbekannte Notfall-Option '{key}'. Verfügbar: {', '.join(o.key for o in options)}.")
+            chosen = matches[0]
+        if chosen.changes:
+            self.update(chosen.changes)
+        self._note(f"Notfall-Ausführung '{chosen.key}' eingeschaltet: {chosen.title}"
+                   + (f" – {chosen.usage}" if chosen.usage else ""))
+        return chosen
+
+    def reduce_for(self, target: str, export: str | Path | None = None, allow_student: bool = True,
+                   fallback: str | None = "auto") -> "Project":
         """Wendet die Empfehlung für ``target`` an: ggf. Schüler-Modell (Distillation), dann Kompression.
+
+        Passt das Ergebnis trotzdem nicht, wird mit ``fallback`` (``auto`` oder eine Kennung aus
+        ``fallback_options``) eine Notfall-Ausführung eingeschaltet – z. B. Schicht für Schicht von der SSD.
 
         Returns:
             Das reduzierte Projekt (``self`` oder – bei Schüler-Empfehlung – ein neues Schüler-Projekt).
@@ -595,6 +692,14 @@ class Project:
         steps = [s for s in steps if s["name"] != "skip"]
         if steps:
             project.compress(steps)
+        if fallback and not rec.fits_after:
+            from .analysis.benchmark import model_size_bytes
+
+            if model_size_bytes(project._ensure_model()) / 2**20 > rec.target.memory_mb:
+                try:
+                    project.apply_fallback(fallback, target=target)
+                except ConfigError as exc:
+                    project._note(f"Keine Notfall-Ausführung möglich: {exc}")
         if export is not None:
             fmt = "onnx" if "ONNX" in rec.target.export.split("/")[0] and _has_onnx() else "export"
             project.export(export, fmt)
@@ -750,15 +855,32 @@ class Project:
             return torch.device("cpu")
 
     @torch.no_grad()
-    def predict(self, inputs: Any, **kwargs: Any) -> Any:
-        """Vorhersage im Eval-Modus (mit gemischter Präzision, falls konfiguriert)."""
+    def predict(self, inputs: Any, chunk_size: int | None = None, **kwargs: Any) -> Any:
+        """Vorhersage im Eval-Modus (mit gemischter Präzision, falls konfiguriert).
+
+        Args:
+            chunk_size: Eingaben stückweise verarbeiten (je so viele Beispiele) – spart Aktivierungsspeicher.
+                        Bei ``memory.oom_strategy = "batch_teilen"`` wird bei Speichermangel automatisch
+                        weiter geteilt.
+        """
+        from .memory.execution import run_chunked
+
         model = self._ensure_model()
         was = model.training
         model.eval()
         mem = self.trainer.mem if self.trainer is not None else MemoryManager(self.config.memory)
-        with mem.autocast():
-            out = call_model(model, to_device(inputs, self._device()), **kwargs)
-        model.train(was)
+        device = self._device()
+        mc = self.config.memory
+
+        def run(part: Any) -> Any:
+            with mem.autocast():
+                return call_model(model, to_device(part, device), **kwargs)
+
+        try:
+            out, _ = run_chunked(run, inputs, chunk_size, on_oom=mc.oom_strategy == "batch_teilen",
+                                 max_splits=mc.oom_max_splits)
+        finally:
+            model.train(was)
         return out
 
     def generate(self, prompt: str | torch.Tensor, **generation: Any) -> Any:
@@ -883,19 +1005,24 @@ class Project:
         return d
 
     @classmethod
-    def load(cls, directory: str | Path) -> "Project":
-        """Lädt ein mit ``save`` gespeichertes Projekt (inkl. Gewichten)."""
+    def load(cls, directory: str | Path, mmap: bool = False) -> "Project":
+        """Lädt ein mit ``save`` gespeichertes Projekt (inkl. Gewichten).
+
+        Args:
+            mmap: Gewichte per Memory-Map einbinden statt zu kopieren – das Betriebssystem lädt nur, was
+                  gebraucht wird (für Modelle nahe an der RAM-Grenze; Inferenz).
+        """
         d = Path(directory)
         p = cls.from_file(d / "projekt.json")
         p.config.auto_fit_dims = False  # gespeicherte Werte sind bereits angepasst
         model = p.build()
         weights = d / "modell.pt"
         if weights.exists():
-            state = torch.load(weights, map_location="cpu", weights_only=True)
+            state = torch.load(weights, map_location="cpu", weights_only=True, mmap=mmap)
             if any(k.endswith(".qweight") or ".lora_" in k for k in state):
                 # Quantisierte/LoRA-Modelle: gleiche Struktur herstellen, dann laden.
                 MemoryManager(p.config.memory).apply_structure(model, training=False)
-            model.load_state_dict(state)
+            model.load_state_dict(state, assign=mmap)
             if p.config.memory.param_dtype != "float32":  # z. B. nach Kompressions-Schritt 'dtype'
                 from .memory.manager import DTYPES
                 model.to(DTYPES[p.config.memory.param_dtype])

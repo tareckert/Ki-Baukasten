@@ -113,13 +113,21 @@ class Recommendation:
     latency_after_ms: float | None = None
     fits_after: bool = True
     notes: list[str] = field(default_factory=list)
+    fallbacks: list = field(default_factory=list)   # Notfall-Ausführung, falls es trotz Verkleinern nicht passt
 
     def short(self) -> str:
         parts = [s["name"] + (f"({next(iter(s.get('args', {}).values()))})" if s.get("args") else "")
                  for s in self.steps]
         if self.student:
             parts.insert(0, f"Schüler(Breite {self.student['width']:.2f}, Tiefe {self.student['depth']:.2f})")
-        return " → ".join(parts) or "nichts nötig"
+        text = " → ".join(parts) or "nichts nötig"
+        if not self.fits_after and self.fallbacks:
+            from .fallback import best_option
+
+            best = best_option(self.fallbacks)
+            if best is not None:
+                text += f" + Notfall: {best.key}"
+        return text
 
     def __str__(self) -> str:
         t = self.target
@@ -135,6 +143,14 @@ class Recommendation:
         for n in self.notes + ([t.notes] if t.notes else []):
             lines.append(f"  Hinweis:    {n}")
         lines.append(f"  Anwenden:   projekt.reduce_for(\"{t.key}\")")
+        if not self.fits_after and self.fallbacks:
+            fitting = [o for o in self.fallbacks if o.fits and o.key != "normal"][:3]
+            lines.append("  Passt trotz Verkleinern nicht? Dann stückweise ausführen (Notfall-Optionen):")
+            for o in fitting or self.fallbacks[:2]:
+                lines.append(f"    {'✓' if o.fits else '✗'} {o.key:<18} {o.title} – Gerät ≈ "
+                             f"{format_number(o.peak_mb, 1)} MB, ≈ {o.slowdown:.1f}× langsamer")
+            lines.append(f"  Notfall anwenden: projekt.reduce_for(\"{t.key}\", fallback=\"auto\") oder "
+                         f"projekt.apply_fallback(\"<kennung>\", target=\"{t.key}\")")
         return "\n".join(lines)
 
 
@@ -143,7 +159,7 @@ def _has(model: nn.Module, cls_name: str) -> bool:
 
 
 def recommend(model: nn.Module, target: str | TargetProfile, macs: int | None = None, can_heal: bool = True,
-              size_bytes: int | None = None) -> Recommendation:
+              size_bytes: int | None = None, activations_mb: float = 0.0) -> Recommendation:
     """Reduktions-Empfehlung für ``model`` auf ``target`` (Profil-Schlüssel oder ``TargetProfile``)."""
     from .benchmark import model_size_bytes
 
@@ -216,6 +232,12 @@ def recommend(model: nn.Module, target: str | TargetProfile, macs: int | None = 
                                                            or rec.latency_after_ms <= t.latency_ms * 1.1)
     if _has(model, "AttentionMixer") and t.key not in ("rechenzentrum_gpu",):
         rec.notes.append("Bei der Generierung KV-Cache in int8: generate(..., cache={'dtype': 'int8'}).")
+    if rec.size_after_mb > t.memory_mb:
+        from .fallback import execution_options
+
+        rec.fallbacks = execution_options(model, t.memory_mb, training=False, activations_mb=activations_mb,
+                                          scale=rec.size_after_mb / max(size_mb, 1e-9),
+                                          gpu_target="gpu" in t.key or t.key == "apple_silicon")
     return rec
 
 

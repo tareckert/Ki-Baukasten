@@ -224,6 +224,11 @@ class GenerationConfig(BaseConfig):
         "Immer an; aus nur zum Vergleichen. Mixer ohne Cache-Unterstützung schalten ihn automatisch ab.",
     ), group="Cache")
     cache = NestedParam(KVCacheConfig, group="Cache", level=Level.ADVANCED)
+    prefill_chunk = Param(None, type=int, min=1, group="Cache", level=Level.ADVANCED, tooltip=T(
+        "Langen Prompt in Stücken dieser Länge vorverarbeiten (Chunked Prefill, None = am Stück).",
+        "Spitzenbedarf der Attention sinkt von Länge² auf Stück × Länge – lange Kontexte passen auch auf kleine "
+        "Geräte. Das Ergebnis ist identisch.",
+        "Lange Prompts, wenig Speicher.", "256–2048; nur mit Cache und ohne attention_mask."))
 
 
 def _filter_logits(logits: torch.Tensor, g: GenerationConfig) -> torch.Tensor:
@@ -624,6 +629,11 @@ class Transformer(BaseModel):
         def prefill(tokens: torch.Tensor, m: torch.Tensor | None) -> torch.Tensor:
             nonlocal cache
             cache = self.new_cache(g.cache)
+            step = g.prefill_chunk
+            if step and m is None and tokens.shape[1] > step:
+                for i in range(0, tokens.shape[1], step):          # Chunked Prefill: Cache stückweise füllen
+                    out = self(tokens[:, i:i + step], cache=cache)
+                return out[:, -1, :].float()
             return self(tokens, attention_mask=m, cache=cache)[:, -1, :].float()
 
         if use_cache:

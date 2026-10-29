@@ -19,6 +19,13 @@ Grenzen (ehrlich dokumentiert)
   ausgelagerter Blöcke gibt es den Modus ``stream`` (``memory.streaming``).
 * Der Festplattenmodus nutzt ``torch.load(mmap=True)`` – das Betriebssystem
   lädt nur, was gebraucht wird.
+
+Aufteilen auf zwei Geräte (``mode="split"``)
+--------------------------------------------
+``SplitManager`` legt die gewählten Blöcke dauerhaft auf ``split_device`` (z. B. die CPU)
+und rechnet sie dort; Eingaben werden vor dem Block dorthin und Ausgaben danach zurück
+verschoben. Das ist trainierbar (``Tensor.to`` ist differenzierbar) und entspricht dem
+``device_map`` großer Modell-Bibliotheken: langsamer als alles auf der GPU, aber es läuft.
 """
 
 from __future__ import annotations
@@ -29,6 +36,8 @@ from pathlib import Path
 
 import torch
 from torch import nn
+
+from torch.utils._pytree import tree_map
 
 from ..core import ConfigError, select_indices
 from .config import OffloadConfig
@@ -167,3 +176,47 @@ def _owner(root: nn.Module, dotted: str) -> tuple[nn.Module, str]:
     for p in parts[:-1]:
         mod = getattr(mod, p)
     return mod, parts[-1]
+
+
+class SplitManager:
+    """Gewählte Blöcke auf einem zweiten Gerät rechnen (``offload.mode = "split"``)."""
+
+    def __init__(self, model: nn.Module, cfg: OffloadConfig, device: torch.device):
+        self.model, self.cfg, self.device = model, cfg, device
+        self.split_device = torch.device(cfg.split_device)
+        self.blocks: list[tuple[str, nn.Module]] = []
+        self.handles: list = []
+
+    def attach(self) -> nn.Module:
+        self.blocks = select_offload_blocks(self.model, self.cfg)
+        ids = {id(m) for _, m in self.blocks}
+        OffloadManager(self.model, self.cfg, self.device)._move_rest(self.model, ids)
+        for _, block in self.blocks:
+            block.to(self.split_device)
+            self.handles.append(block.register_forward_pre_hook(self._to(self.split_device), with_kwargs=True))
+            self.handles.append(block.register_forward_hook(self._back()))
+        return self.model
+
+    @staticmethod
+    def _move(obj, device):
+        return tree_map(lambda t: t.to(device) if isinstance(t, torch.Tensor) else t, obj)
+
+    def _to(self, device):
+        def hook(module, args, kwargs):
+            return self._move(args, device), self._move(kwargs, device)
+        return hook
+
+    def _back(self):
+        def hook(module, args, output):
+            return self._move(output, self.device)
+        return hook
+
+    def placement(self) -> dict[str, str]:
+        """Welcher Block auf welchem Gerät liegt."""
+        return {name: str(self.split_device) for name, _ in self.blocks}
+
+    def detach(self) -> None:
+        for h in self.handles:
+            h.remove()
+        self.handles.clear()
+        self.model.to(self.device)

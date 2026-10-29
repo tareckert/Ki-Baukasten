@@ -15,6 +15,8 @@ Was der Trainer übernimmt
   Datenaugmentation: Mixup, Eingaberauschen
 * Lernraten-Zeitpläne (pro Schritt), EMA der Gewichte
 * Evaluierung, Logging, Callbacks, Curriculum, Checkpoints (speichern/fortsetzen)
+* Speichermangel (``memory.oom_strategy = "batch_teilen"``): Batch automatisch teilen und
+  per Akkumulation weiterrechnen – das Training bricht nicht ab, das Ergebnis bleibt gleich
 
 Ablauf eines Optimierungsschritts (``optimize``)
 ------------------------------------------------
@@ -41,6 +43,7 @@ from torch import nn
 
 from ..core import ConfigError, TrainingError, format_number
 from ..memory import MemoryConfig, MemoryManager
+from ..memory.execution import batch_len, free_memory, is_oom, split_batch
 from .config import TrainingConfig
 from .data_utils import (CurriculumSampler, as_dataset, difficulty_of, make_loader, split_dataset, to_device)
 from .losses import build_losses
@@ -151,6 +154,12 @@ class Trainer:
         self.should_stop = False
         self._micro: dict[str, int] = defaultdict(int)
         self._pending: set[str] = set()
+        self._split = 1                          # >1 nach Speichermangel: Batch wird in so viele Stücke geteilt
+
+    @property
+    def accumulation(self) -> int:
+        """Effektive Akkumulationsschritte (Einstellung × automatische Batch-Teilung)."""
+        return self.cfg.gradient_accumulation_steps * self._split
 
     # ===================================================================== Aufbau
     def log(self, text: str) -> None:
@@ -283,11 +292,11 @@ class Trainer:
                 loss = loss + fn()
         if not torch.isfinite(loss.detach()):
             return self._handle_nan(key, "Verlust")
-        scaled = loss / self.cfg.gradient_accumulation_steps
+        scaled = loss / self.accumulation
         (self.scaler.scale(scaled) if self.scaler is not None else scaled).backward()
         self._micro[key] += 1
         self._pending.add(key)
-        if self._micro[key] % self.cfg.gradient_accumulation_steps:
+        if self._micro[key] % self.accumulation:
             return False
         return self._step(key, closure)
 
@@ -390,7 +399,7 @@ class Trainer:
     def flush(self) -> None:
         """Führt angefangene Akkumulationszyklen aus (z. B. am Epochenende)."""
         for key in list(self._pending):
-            if self._micro[key] % self.cfg.gradient_accumulation_steps:
+            if self._micro[key] % self.accumulation:
                 self._micro[key] = 0
                 self._step(key, None)
 
@@ -448,7 +457,7 @@ class Trainer:
             for batch in train_loader:
                 batch = to_device(batch, self.device, non_blocking=c.pin_memory)
                 before = self.global_step
-                metrics = self.paradigm.training_step(self, batch)
+                metrics = self._train_step(batch)
                 for k, v in metrics.items():
                     if isinstance(v, (int, float)) and math.isfinite(v):
                         running[k].append(float(v))
@@ -471,6 +480,31 @@ class Trainer:
             cb.on_train_end(self)
         self.log(f"■ Training beendet nach {self.global_step} Schritten ({time.time() - start:.1f} s).")
         return self.history
+
+    def _train_step(self, batch: Any) -> dict[str, Any]:
+        """Ein Trainingsschritt – bei Speichermangel automatisch in kleinere Stücke geteilt."""
+        mc = self.mem.cfg
+        while True:
+            try:
+                if self._split == 1:
+                    return self.paradigm.training_step(self, batch)
+                collected: dict[str, list[float]] = defaultdict(list)
+                for part in split_batch(batch, self._split):
+                    for k, v in self.paradigm.training_step(self, part).items():
+                        if isinstance(v, (int, float)):
+                            collected[k].append(float(v))
+                return {k: sum(v) / len(v) for k, v in collected.items()}
+            except Exception as exc:  # noqa: BLE001 - nur Speicherfehler werden behandelt
+                n = batch_len(batch)
+                if mc.oom_strategy != "batch_teilen" or not is_oom(exc) or self._split >= min(mc.oom_max_splits, n):
+                    raise
+                self.zero_grad()
+                self._micro.clear()
+                self._pending.clear()
+                free_memory()
+                self._split *= 2
+                self.log(f"⚠ Speichermangel – Batch wird ab jetzt in {self._split} Stücke geteilt "
+                         f"(effektive Batchgröße bleibt gleich, Akkumulation {self.accumulation}).")
 
     def _after_step(self, running: dict[str, list[float]], start: float, val_loader: Any) -> None:
         c = self.cfg

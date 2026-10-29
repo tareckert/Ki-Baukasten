@@ -776,8 +776,87 @@ class BaukastenGUI(tk.Tk):
         btns = ttk.Frame(win, padding=6)
         btns.pack(fill="x")
         ttk.Button(btns, text="Empfehlung anwenden (verkleinern)", command=apply).pack(side="left", padx=4)
+        b = ttk.Button(btns, text="Notfall-Ausführung…", command=lambda: self.fallback_dialog(names[var.get()]))
+        b.pack(side="left", padx=4)
+        HoverTip(b, lambda: "Passt das Modell trotz Verkleinern nicht? Dann stückweise ausführen: Schicht für Schicht "
+                            "von der SSD, Blöcke im RAM, Teile auf der CPU, LISA, QLoRA …")
         ttk.Button(btns, text="Exportieren…", command=export).pack(side="left", padx=4)
         show()
+
+    def fallback_dialog(self, target: str | None = None) -> None:
+        """Notfall-Optionen (stückweise Ausführung) für ein Zielsystem bzw. Budget wählen und einschalten."""
+        from ..analysis.targets import TARGETS
+
+        win = tk.Toplevel(self)
+        win.title("Notfall-Ausführung – wenn das Modell nicht passt")
+        win.geometry("980x560")
+        top = ttk.Frame(win, padding=6)
+        top.pack(fill="x")
+        ttk.Label(top, text="Zielsystem:").pack(side="left")
+        tvar = tk.StringVar(value=target or "laptop_gpu")
+        ttk.Combobox(top, textvariable=tvar, values=list(TARGETS), width=20, state="readonly").pack(side="left", padx=4)
+        ttk.Label(top, text="oder Budget (MB):").pack(side="left", padx=(8, 0))
+        bvar = tk.StringVar(value="")
+        ttk.Entry(top, textvariable=bvar, width=8).pack(side="left", padx=4)
+        mvar = tk.StringVar(value="Inferenz")
+        ttk.Combobox(top, textvariable=mvar, values=["Inferenz", "Training"], width=10, state="readonly").pack(
+            side="left", padx=4)
+        cols = ("passt", "geraet", "tempo", "titel")
+        tree = ttk.Treeview(win, columns=cols, show="headings", height=12)
+        for c, w, t in zip(cols, (50, 110, 90, 640), ("passt", "Gerät (MB)", "langsamer", "Option")):
+            tree.heading(c, text=t)
+            tree.column(c, width=w, anchor="w")
+        tree.pack(fill="both", expand=True, padx=6)
+        detail = tk.Text(win, height=8, wrap="word", font=("TkFixedFont", 9))
+        detail.pack(fill="x", padx=6, pady=4)
+        options: dict[str, Any] = {}
+
+        def params() -> tuple[str | None, float | None, bool]:
+            budget = float(bvar.get().replace(",", ".")) if bvar.get().strip() else None
+            return (None if budget is not None else tvar.get()), budget, mvar.get() == "Training"
+
+        def refresh(_e=None):
+            tree.delete(*tree.get_children())
+            options.clear()
+            try:
+                tgt, budget, training = params()
+                for o in self.project.fallback_options(tgt, budget, training):
+                    options[o.key] = o
+                    tree.insert("", "end", iid=o.key, values=("✓" if o.fits else "✗", f"{o.peak_mb:.1f}",
+                                                             f"{o.slowdown:.1f}×", o.title))
+            except Exception as exc:  # noqa: BLE001
+                detail.delete("1.0", "end")
+                detail.insert("1.0", f"Nicht möglich: {exc}")
+
+        def select(_e=None):
+            sel = tree.selection()
+            if sel:
+                detail.delete("1.0", "end")
+                detail.insert("1.0", str(options[sel[0]]))
+
+        def apply():
+            sel = tree.selection()
+            if not sel:
+                return
+            tgt, budget, training = params()
+            try:
+                chosen = self.project.apply_fallback(sel[0], tgt, budget, training)
+            except ConfigError as exc:
+                messagebox.showerror("Notfall-Ausführung", str(exc), parent=win)
+                return
+            self.log_write(f"✓ Notfall-Ausführung '{chosen.key}' eingeschaltet: {chosen.title}\n"
+                           + (f"  Nutzung: {chosen.usage}\n" if chosen.usage else ""))
+            self.refresh_tree()
+            self.select_path(self.current_path if self._exists(self.current_path) else "")
+
+        tree.bind("<<TreeviewSelect>>", select)
+        bar = ttk.Frame(win, padding=6)
+        bar.pack(fill="x")
+        ttk.Button(bar, text="Neu berechnen", command=refresh).pack(side="left", padx=4)
+        ttk.Button(bar, text="Gewählte Option einschalten", command=apply).pack(side="left", padx=4)
+        ttk.Label(bar, text="Zahlen sind grobe Schätzungen · Rückgängig mit ↶", foreground="#666").pack(side="left",
+                                                                                                    padx=12)
+        refresh()
 
     def undo(self) -> None:
         if self.project.undo():
