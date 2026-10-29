@@ -186,6 +186,10 @@ class MemoryConfig(BaseConfig):
     compile_mode = Param("default", choices=["default", "reduce-overhead", "max-autotune"], group="Geschwindigkeit",
                          level=Level.EXPERT, tooltip=T("Modus von torch.compile.", "Mehr Optimierung = längeres Kompilieren.",
                                                        "default."))
+    cudnn_benchmark = Param(False, group="Geschwindigkeit", level=Level.ADVANCED, tooltip=T(
+        "cuDNN probiert für jede Eingabeform den schnellsten Faltungs-Algorithmus aus.",
+        "Spürbar schnellere CNNs bei gleichbleibenden Bildgrößen.", "CNN-Training auf NVIDIA-GPUs.",
+        "Bei ständig wechselnden Formen eher langsamer."))
     matmul_precision = Param("highest", choices={
         "highest": "volle fp32-Genauigkeit", "high": "TF32 erlaubt (schneller auf Ampere+)",
         "medium": "bf16-Zwischenergebnisse erlaubt (am schnellsten)",

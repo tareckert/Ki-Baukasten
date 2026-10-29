@@ -137,6 +137,16 @@ class LISAConfig(BaseConfig):
                  level=Level.ADVANCED)
 
 
+class SWAConfig(BaseConfig):
+    __title__ = "SWA (Stochastic Weight Averaging)"
+    start_fraction = Param(0.75, min=0.0, max=1.0, tooltip=T(
+        "Ab diesem Anteil des Trainings werden die Gewichte gemittelt.", "Mittelt über die späte, flache Phase.",
+        "0.6–0.8."))
+    every_n_steps = Param(1, min=1, tooltip=T("Mittelungsintervall in Schritten.", "Seltener = billiger.", "1–100."))
+    apply_at_end = Param(True, tooltip=T(
+        "Am Ende die gemittelten Gewichte übernehmen.", "Das gemittelte Modell generalisiert meist besser.", "an."))
+
+
 # ===========================================================================
 # Implementierungen
 # ===========================================================================
@@ -276,6 +286,39 @@ class GradualUnfreeze(Callback):
         self._apply(trainer, n)
 
 
+class SWA(Callback):
+    """Gleichgewichteter Mittelwert der Gewichte in der späten Trainingsphase (Izmailov et al. 2018)."""
+
+    def __init__(self, a: SWAConfig):
+        self.a, self.avg, self.n = a, None, 0
+
+    def on_step_end(self, trainer, metrics):
+        if trainer.global_step < self.a.start_fraction * max(1, trainer.total_steps):
+            return
+        if trainer.global_step % self.a.every_n_steps:
+            return
+        import torch
+
+        with torch.no_grad():
+            params = [p.detach().float() for p in trainer.model.parameters()]
+            if self.avg is None:
+                self.avg = [p.clone() for p in params]
+            else:
+                for avg, p in zip(self.avg, params):
+                    avg.add_(p - avg, alpha=1.0 / (self.n + 1))
+        self.n += 1
+
+    def on_train_end(self, trainer):
+        if self.avg is None or not self.a.apply_at_end:
+            return
+        import torch
+
+        with torch.no_grad():
+            for p, avg in zip(trainer.model.parameters(), self.avg):
+                p.copy_(avg.to(p.dtype))
+        trainer.log(f"SWA: Mittel aus {self.n} Gewichtsständen übernommen (BatchNorm-Statistiken ggf. neu bestimmen).")
+
+
 class LISA(Callback):
     """Nur wenige, zufällig wechselnde Blöcke trainieren; Optimierer-Zustände der anderen freigeben."""
 
@@ -344,6 +387,9 @@ R("gradient_monitor", lambda a: GradientMonitor(a), config=GradientMonitorConfig
     "Gradienten-Normen je Parameter überwachen.", "Findet explodierende/verschwindende Gradienten.", "Debugging."))
 R("time_limit", lambda a: TimeLimit(a), config=TimeLimitConfig, tooltip=T(
     "Training nach fester Zeit beenden.", "Zeitbudgets einhalten.", "Cluster, Experimente."))
+R("swa", lambda a: SWA(a), config=SWAConfig, level=Level.ADVANCED, tooltip=T(
+    "Stochastic Weight Averaging: Gewichte der späten Trainingsphase mitteln.",
+    "Flachere Minima, bessere Generalisierung – fast ohne Mehrkosten.", "Bild-/Tabellenmodelle, lange Trainings."))
 R("lisa", lambda a: LISA(a), config=LISAConfig, level=Level.ADVANCED, tooltip=T(
     "LISA: immer nur wenige, zufällig wechselnde Blöcke trainieren.",
     "Spart Gradienten- und Optimierer-Speicher fast wie LoRA, trainiert aber die vollen Gewichte.",

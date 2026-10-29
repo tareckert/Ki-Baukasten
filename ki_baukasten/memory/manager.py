@@ -158,6 +158,8 @@ class MemoryManager:
         if c.cpu_threads:
             torch.set_num_threads(c.cpu_threads)
         torch.set_float32_matmul_precision(c.matmul_precision)
+        if c.cudnn_benchmark:
+            torch.backends.cudnn.benchmark = True
         if c.max_memory_fraction and self.device.type == "cuda":
             torch.cuda.set_per_process_memory_fraction(c.max_memory_fraction, self.device)
 

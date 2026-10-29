@@ -166,6 +166,17 @@ class Trainer:
         self._pending: set[str] = set()
         self._split = 1                          # >1 nach Speichermangel: Batch wird in so viele Stücke geteilt
         self._seen = [0, 0, time.time()]         # Beispiele, Tokens, Zeitpunkt seit der letzten Ausgabe
+        self._loss_ema: float | None = None      # Spitzen-Schutz: gleitender Mittelwert des Verlusts
+        self._guard_steps = 0
+        self._good_state: tuple | None = None    # Sicherungsstand für spike_action = rollback
+        self._grok: dict[int, torch.Tensor] = {}
+        self._slow: dict[int, torch.Tensor] = {}
+        self._la_count: dict[str, int] = defaultdict(int)
+        self._dp_sum: dict[int, torch.Tensor] = {}
+        if self.cfg.privacy.enabled:
+            if self.scaler is not None:
+                raise ConfigError("DP-SGD (training.privacy) ist nicht mit fp16-Loss-Scaling kombinierbar.")
+            self._split = max(1, self.cfg.batch_size)   # jedes Beispiel einzeln rechnen (Gradient pro Beispiel)
 
     @property
     def accumulation(self) -> int:
@@ -249,8 +260,19 @@ class Trainer:
         return target.collect_aux_losses() if hasattr(target, "collect_aux_losses") else None
 
     def augment(self, inputs: Any, targets: Any) -> tuple[Any, Any]:
-        """Eingaberauschen und Mixup (nur für Gleitkomma-Tensoren)."""
+        """Augmentierung (Spiegeln, Ausschnitt, Ausradieren, CutMix, Token-Rauschen), Eingaberauschen, Mixup."""
         r = self.cfg.regularization
+        a = self.cfg.augmentation
+        if isinstance(inputs, torch.Tensor) and not inputs.is_floating_point() and inputs.dim() == 2 and a.token_noise:
+            vocab = self._num_classes_attr("vocab_size")
+            if vocab:
+                swap = torch.rand(inputs.shape, device=inputs.device) < a.token_noise
+                inputs = torch.where(swap, torch.randint_like(inputs, vocab), inputs)
+        if isinstance(inputs, torch.Tensor) and inputs.is_floating_point() and inputs.dim() == 4:
+            inputs = self._augment_images(inputs)
+            if a.cutmix_alpha > 0 and isinstance(targets, torch.Tensor) and inputs.shape[0] > 1 and \
+                    (r.mixup_alpha <= 0 or torch.rand(()) < 0.5):
+                return self._cutmix(inputs, targets, a.cutmix_alpha)
         if isinstance(inputs, torch.Tensor) and inputs.is_floating_point():
             if r.input_noise_std > 0:
                 inputs = inputs + torch.randn_like(inputs) * r.input_noise_std
@@ -265,6 +287,54 @@ class Trainer:
                 else:
                     targets = lam * targets + (1 - lam) * targets[perm]
         return inputs, targets
+
+    def _augment_images(self, x: torch.Tensor) -> torch.Tensor:
+        a = self.cfg.augmentation
+        n = x.shape[0]
+        if a.hflip:
+            flip = torch.rand(n, device=x.device) < 0.5
+            x = torch.where(flip[:, None, None, None], x.flip(-1), x)
+        if a.vflip:
+            flip = torch.rand(n, device=x.device) < 0.5
+            x = torch.where(flip[:, None, None, None], x.flip(-2), x)
+        if a.crop_padding:
+            pad = a.crop_padding
+            h, w = x.shape[-2:]
+            padded = torch.nn.functional.pad(x, (pad, pad, pad, pad), mode="reflect" if pad < min(h, w) else "constant")
+            dy = torch.randint(0, 2 * pad + 1, (n,)).tolist()
+            dx = torch.randint(0, 2 * pad + 1, (n,)).tolist()
+            x = torch.stack([padded[i, :, dy[i]:dy[i] + h, dx[i]:dx[i] + w] for i in range(n)])
+        if a.random_erasing:
+            h, w = x.shape[-2:]
+            x = x.clone()
+            for i in range(n):
+                if float(torch.rand(())) < a.random_erasing:
+                    eh, ew = max(1, int(h * float(torch.empty(()).uniform_(0.1, 0.4)))), \
+                        max(1, int(w * float(torch.empty(()).uniform_(0.1, 0.4))))
+                    y0, x0 = int(torch.randint(0, h - eh + 1, ())), int(torch.randint(0, w - ew + 1, ()))
+                    x[i, :, y0:y0 + eh, x0:x0 + ew] = 0.0
+        return x
+
+    def _cutmix(self, x: torch.Tensor, targets: torch.Tensor, alpha: float) -> tuple[torch.Tensor, torch.Tensor]:
+        lam = float(torch.distributions.Beta(alpha, alpha).sample())
+        h, w = x.shape[-2:]
+        ch, cw = int(h * (1 - lam) ** 0.5), int(w * (1 - lam) ** 0.5)
+        cy, cx = int(torch.randint(0, h, ())), int(torch.randint(0, w, ()))
+        y0, y1 = max(0, cy - ch // 2), min(h, cy + ch // 2)
+        x0, x1 = max(0, cx - cw // 2), min(w, cx + cw // 2)
+        perm = torch.randperm(x.shape[0], device=x.device)
+        x = x.clone()
+        x[:, :, y0:y1, x0:x1] = x[perm, :, y0:y1, x0:x1]
+        lam = 1 - (y1 - y0) * (x1 - x0) / (h * w)
+        if not targets.is_floating_point():
+            onehot = torch.nn.functional.one_hot(targets.long(), self._num_classes(targets)).float()
+            return x, lam * onehot + (1 - lam) * onehot[perm]
+        return x, lam * targets + (1 - lam) * targets[perm]
+
+    def _num_classes_attr(self, attr: str) -> int | None:
+        cfg = getattr(getattr(self.model, "_orig_mod", self.model), "config", None)
+        v = getattr(cfg, attr, None) if cfg is not None else None
+        return v if isinstance(v, int) and v > 1 else None
 
     def _num_classes(self, targets: torch.Tensor) -> int:
         cfg = getattr(getattr(self.model, "_orig_mod", self.model), "config", None)
@@ -308,6 +378,10 @@ class Trainer:
                 loss = loss + fn()
         if not torch.isfinite(loss.detach()):
             return self._handle_nan(key, "Verlust")
+        if self.cfg.stability.spike_guard and key == self.paradigm.primary_key and self._is_spike(float(loss.detach())):
+            return self._handle_spike(key, float(loss.detach()))
+        if self.cfg.privacy.enabled:
+            return self._dp_backward(loss, key, closure)
         scaled = loss / self.accumulation
         last = (self._micro[key] + 1) % self.accumulation == 0
         with self.dist.no_sync(self.model, skip=not last):
@@ -317,6 +391,79 @@ class Trainer:
         if self._micro[key] % self.accumulation:
             return False
         return self._step(key, closure)
+
+    # ------------------------------------------------------------ Stabilität: Verlust-Spitzen
+    def _is_spike(self, value: float) -> bool:
+        sg = self.cfg.stability
+        spike = (self._loss_ema is not None and self._guard_steps >= sg.spike_warmup
+                 and value > sg.spike_factor * max(self._loss_ema, 1e-8))
+        if not spike:
+            self._loss_ema = value if self._loss_ema is None else \
+                sg.spike_window * self._loss_ema + (1 - sg.spike_window) * value
+            self._guard_steps += 1
+        return spike
+
+    def _handle_spike(self, key: str, value: float) -> bool:
+        sg = self.cfg.stability
+        self.zero_grad()
+        self._micro.clear()
+        self._pending.clear()
+        if sg.spike_action == "rollback" and self._good_state is not None:
+            model_state, opt_states = self._good_state
+            target = getattr(self.model, "_orig_mod", self.model)
+            target.load_state_dict(model_state)
+            for k, o in self.optimizers.items():
+                o.load_state_dict(opt_states[k])
+            for k, o in self.optimizers.items():
+                for g in o.param_groups:
+                    g["lr"] *= sg.rollback_lr_factor
+                sched = self.schedulers.get(k)
+                if sched is not None and hasattr(sched, "base_lrs"):
+                    sched.base_lrs = [b * sg.rollback_lr_factor for b in sched.base_lrs]
+            self.log(f"⚠ Verlust-Spitze ({value:.4g} > {sg.spike_factor}× Mittel {self._loss_ema:.4g}) – zurück auf "
+                     f"den letzten guten Stand, Lernrate × {sg.rollback_lr_factor}.", "warnung")
+        else:
+            self.log(f"⚠ Verlust-Spitze ({value:.4g} > {sg.spike_factor}× Mittel {self._loss_ema:.4g}) – Schritt "
+                     "übersprungen.", "warnung")
+        return False
+
+    def _save_good_state(self) -> None:
+        import copy as _copy
+
+        target = getattr(self.model, "_orig_mod", self.model)
+        model_state = {k: v.detach().to("cpu", copy=True) for k, v in target.state_dict().items()}
+        self._good_state = (model_state, {k: _copy.deepcopy(o.state_dict()) for k, o in self.optimizers.items()})
+
+    # ------------------------------------------------------------ Datenschutz: DP-SGD
+    def _dp_backward(self, loss: torch.Tensor, key: str, closure: Any) -> bool:
+        """Gradient eines einzelnen Beispiels begrenzen und aufsummieren; beim Schritt Rauschen hinzufügen."""
+        pc = self.cfg.privacy
+        loss.backward()
+        params = [p for p in self.group_params[key] if p.grad is not None]
+        norm = torch.sqrt(sum(p.grad.float().square().sum() for p in params)) if params else torch.zeros(())
+        factor = min(1.0, pc.clip_norm / (float(norm) + 1e-6))
+        for p in params:
+            acc = self._dp_sum.get(id(p))
+            g = p.grad * factor
+            self._dp_sum[id(p)] = g if acc is None else acc + g
+            p.grad = None
+        self._micro[key] += 1
+        self._pending.add(key)
+        if self._micro[key] % self.accumulation:
+            return False
+        n = self.accumulation
+        for p in self.group_params[key]:
+            acc = self._dp_sum.pop(id(p), None)
+            if acc is not None:
+                noise = torch.randn_like(acc) * (pc.noise_multiplier * pc.clip_norm)
+                p.grad = (acc + noise) / n
+        return self._step(key, closure)
+
+    def step_with_grads(self, key: str = "main") -> bool:
+        """Optimierungsschritt mit bereits gesetzten ``p.grad`` (z. B. geschätzte Gradienten bei Evolution
+        Strategies) – inklusive Clipping, Zeitplan, EMA und aller Erweiterungen."""
+        self._pending.add(key)
+        return self._step(key, None)
 
     def _handle_nan(self, key: str, what: str) -> bool:
         policy = self.cfg.nan_policy
@@ -363,6 +510,7 @@ class Trainer:
                 self._pending.discard(key)
                 return False
             return self._handle_nan(key, "Gradient")
+        self._modify_gradients(params)
         r = self.cfg.regularization
         if r.gradient_noise_std > 0:
             std = r.gradient_noise_std / (1 + self.global_step) ** r.gradient_noise_decay
@@ -380,6 +528,11 @@ class Trainer:
             cb.on_before_step(self, key)
         if r.sam_rho > 0 and closure is not None:
             self._sam(params, closure, r.sam_rho)
+        ox = self.cfg.optimizer_extras
+        if ox.lookahead_k:
+            for p in params:
+                if id(p) not in self._slow:
+                    self._slow[id(p)] = p.detach().clone()
         if self.scaler is not None:
             self.scaler.step(opt)
             self.scaler.update()
@@ -387,6 +540,14 @@ class Trainer:
             opt.step()
         opt.zero_grad(set_to_none=True)
         self._pending.discard(key)
+        if ox.lookahead_k:
+            self._la_count[key] += 1
+            if self._la_count[key] % ox.lookahead_k == 0:
+                with torch.no_grad():
+                    for p in params:
+                        slow = self._slow[id(p)]
+                        slow.add_(p.detach() - slow, alpha=ox.lookahead_alpha)
+                        p.copy_(slow)
         if key in self.schedulers:
             self.schedulers[key].step()
         if self.surgeon is not None:
@@ -399,8 +560,32 @@ class Trainer:
             e = self.cfg.ema
             if self.ema is not None and self.global_step >= e.start_step and self.global_step % e.update_every == 0:
                 self.ema.update(self.model)
+            sg = self.cfg.stability
+            if sg.spike_guard and sg.spike_action == "rollback" and (
+                    self._good_state is None or self.global_step % sg.rollback_every == 0):
+                self._save_good_state()
             self.mem.after_step(self.global_step)
         return True
+
+    @torch.no_grad()
+    def _modify_gradients(self, params: list[nn.Parameter]) -> None:
+        """Gradient Centralization und Grokfast (training.optimizer_extras)."""
+        ox = self.cfg.optimizer_extras
+        if ox.gradient_centralization:
+            for p in params:
+                g = p.grad
+                if g is not None and g.dim() > 1:
+                    g.sub_(g.mean(dim=tuple(range(1, g.dim())), keepdim=True))
+        if ox.grokfast_alpha is not None:
+            a, lam = ox.grokfast_alpha, ox.grokfast_lambda
+            for p in params:
+                g = p.grad
+                if g is None:
+                    continue
+                ema = self._grok.get(id(p))
+                ema = g.detach().clone() if ema is None else ema.mul_(a).add_(g, alpha=1 - a)
+                self._grok[id(p)] = ema
+                g.add_(ema, alpha=lam)
 
     @torch.no_grad()
     def _log_weights(self) -> None:
@@ -461,6 +646,10 @@ class Trainer:
                 diffs = [difficulty_of(ds[i], c.curriculum.strategy) for i in range(len(ds))]
                 sampler = CurriculumSampler(diffs, c.curriculum.start_fraction, c.curriculum.full_after_fraction,
                                             lambda: self.global_step / max(1, self.total_steps), c.shuffle, c.seed or 0)
+            if c.balance_classes and sampler is None:
+                sampler = _balanced_sampler(ds, c.seed or 0)
+                if sampler is None:
+                    self.log("⚠ balance_classes: keine ganzzahligen Klassen-Ziele gefunden – ignoriert.", "warnung")
             train_loader = make_loader(ds, c.batch_size, c.shuffle, c.drop_last, c.num_workers, c.pin_memory, sampler)
         else:
             train_loader = train
@@ -693,6 +882,28 @@ class Trainer:
             self.epoch = state.get("epoch", 0)
             self.history = state.get("history", [])
         return state
+
+
+def _balanced_sampler(ds: Any, seed: int) -> Any:
+    """``WeightedRandomSampler`` mit Gewicht 1/Häufigkeit der Klasse (oder ``None`` ohne Klassen-Ziele)."""
+    from torch.utils.data import Subset, WeightedRandomSampler
+
+    from .data_utils import DictDataset
+
+    indices = None
+    base = ds
+    if isinstance(ds, Subset):
+        base, indices = ds.dataset, list(ds.indices)
+    data = getattr(base, "data", None) if isinstance(base, DictDataset) else None
+    targets = data.get("targets") if isinstance(data, dict) else None
+    if not isinstance(targets, torch.Tensor) or targets.is_floating_point() or targets.dim() != 1:
+        return None
+    if indices is not None:
+        targets = targets[indices]
+    counts = torch.bincount(targets.long().clamp_min(0))
+    weights = 1.0 / counts.clamp_min(1).float()[targets.long().clamp_min(0)]
+    return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True,
+                                 generator=torch.Generator().manual_seed(seed))
 
 
 def _batch_size(batch: Any) -> int:

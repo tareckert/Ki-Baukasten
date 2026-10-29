@@ -115,12 +115,20 @@ def _select(obj: Any, key: str | None) -> Any:
     return obj[key]
 
 
-def auto_loss(pred: torch.Tensor, target: torch.Tensor, task: str = "auto") -> torch.Tensor:
-    """Wählt einen sinnvollen Standardverlust anhand von Aufgabe und Datentypen."""
+def auto_loss(pred: torch.Tensor, target: torch.Tensor, task: str = "auto", label_smoothing: float = 0.0,
+              soft: bool = False) -> torch.Tensor:
+    """Wählt einen sinnvollen Standardverlust anhand von Aufgabe und Datentypen.
+
+    ``soft=True``: Ziele sind Wahrscheinlichkeiten (z. B. nach Mixup/CutMix) → Kreuzentropie mit weichen Zielen.
+    """
+    if soft and target.shape == pred.shape:
+        return F.cross_entropy(pred.float().reshape(-1, pred.shape[-1]), target.float().reshape(-1, pred.shape[-1]),
+                               label_smoothing=label_smoothing)
     if task == "classification" or (task == "auto" and not target.is_floating_point()
                                     and pred.dim() == target.dim() + 1):
         logits = pred.reshape(-1, pred.shape[-1])
-        return F.cross_entropy(logits.float(), target.reshape(-1).long(), ignore_index=-100)
+        return F.cross_entropy(logits.float(), target.reshape(-1).long(), ignore_index=-100,
+                               label_smoothing=label_smoothing)
     if task == "multilabel":
         return F.binary_cross_entropy_with_logits(pred.float(), target.float().reshape(pred.shape))
     t = target.float()
@@ -184,6 +192,10 @@ class SupervisedConfig(BaseConfig):
     }, tooltip=T(
         "Art der überwachten Aufgabe (nur relevant, wenn keine eigenen Verluste gesetzt sind).",
         "Bestimmt Standardverlust und Metriken.", "Meist 'auto'."))
+    label_smoothing = Param(0.0, min=0.0, max=0.5, tooltip=T(
+        "Label Smoothing für den Standard-Klassifikationsverlust (Anteil der Zielwahrscheinlichkeit, der gleichmäßig "
+        "auf alle Klassen verteilt wird).", "Verhindert übermäßig selbstsichere Vorhersagen, bessere Kalibrierung.",
+        "Klassifikation: 0.05–0.1."))
 
 
 class Supervised(Paradigm):
@@ -199,16 +211,19 @@ class Supervised(Paradigm):
             keys = [k for k in out if k in targets]
             if not keys:
                 raise TrainingError("Ausgabe und Ziele haben keine gemeinsamen Schlüssel.")
-            return sum(auto_loss(out[k], targets[k], self.cfg.task) for k in keys)
+            return sum(auto_loss(out[k], targets[k], self.cfg.task, self.cfg.label_smoothing) for k in keys)
         return auto_loss(main_output(out), targets if not isinstance(targets, dict) else main_output(targets),
-                         self.cfg.task)
+                         self.cfg.task, self.cfg.label_smoothing, getattr(self, "_soft", False))
 
     def compute(self, trainer, batch, train):
         inputs, targets = batch["inputs"], batch.get("targets")
         if targets is None:
             raise TrainingError("Paradigma 'supervised' braucht 'targets' im Batch.")
+        self._soft = False
         if train:
+            was_int = isinstance(targets, torch.Tensor) and not targets.is_floating_point()
             inputs, targets = trainer.augment(inputs, targets)
+            self._soft = was_int and isinstance(targets, torch.Tensor) and targets.is_floating_point()
         with trainer.autocast():
             out = call_model(trainer.model, inputs, attention_mask=batch.get("attention_mask"),
                              lengths=batch.get("lengths"))
@@ -937,6 +952,83 @@ class DPO(Paradigm):
 # Registrierung
 # ===========================================================================
 
+class EvolutionStrategiesConfig(BaseConfig):
+    __title__ = "Evolution Strategies (gradientenfrei)"
+    base = Param("auto", choices={
+        "auto": "aus dem Batch ableiten (targets vorhanden → supervised, sonst causal_lm)",
+        "supervised": "Verlust wie beim überwachten Lernen", "causal_lm": "Verlust wie beim Sprachmodell"},
+        tooltip=T("Woraus die Fitness (−Verlust) berechnet wird.", "ES optimiert jede berechenbare Zielgröße.", "auto."))
+    pairs = Param(8, min=1, tooltip=T(
+        "Anzahl Störungspaare (±ε) pro Schritt – Population = 2 × pairs.",
+        "Mehr Paare = genauere Schätzung der Richtung, mehr Forward-Durchläufe.", "4–64."))
+    sigma = Param(0.02, min=0.0, tooltip=T(
+        "Stärke der zufälligen Störung der Gewichte.", "Zu klein: verrauscht; zu groß: ungenau.", "0.01–0.05."))
+    rank_shaping = Param(True, tooltip=T(
+        "Fitness-Formung über Ränge statt Rohwerte (OpenAI-ES).", "Robust gegen Ausreißer und Skalen.", "an."),
+        level=Level.ADVANCED)
+
+
+class EvolutionStrategies(Paradigm):
+    """OpenAI-ES (Salimans et al. 2017): Gradient aus antithetischen Zufallsstörungen schätzen – kein Backward.
+
+    Funktioniert auch mit nicht differenzierbaren Zielen und ist trivial parallelisierbar. Der geschätzte
+    Gradient läuft durch den normalen Optimierer (Adam & Co.), Zeitplan, Clipping usw.
+    """
+
+    def _loss(self, trainer, batch) -> torch.Tensor:
+        base = self.cfg.base
+        if base == "auto":
+            base = "supervised" if isinstance(batch, dict) and batch.get("targets") is not None else "causal_lm"
+        if not hasattr(self, "_inner") or self._inner_name != base:
+            self._inner = PARADIGMS.build(base)
+            self._inner_name = base
+        loss, _ = self._inner.compute(trainer, batch, False)
+        return loss.detach().float()
+
+    @torch.no_grad()
+    def training_step(self, trainer, batch):
+        params = [p for p in trainer.group_params[self.primary_key] if p.requires_grad]
+        sigma, pairs = self.cfg.sigma, self.cfg.pairs
+        base_loss = float(self._loss(trainer, batch))
+        seeds = torch.randint(0, 2**31 - 1, (pairs,)).tolist()
+        diffs = []
+        for seed in seeds:
+            gen = torch.Generator(device=params[0].device).manual_seed(seed)
+            eps = [torch.randn(p.shape, generator=gen, device=p.device, dtype=p.dtype) for p in params]
+            for p, e in zip(params, eps):
+                p.add_(e, alpha=sigma)
+            plus = float(self._loss(trainer, batch))
+            for p, e in zip(params, eps):
+                p.add_(e, alpha=-2 * sigma)
+            minus = float(self._loss(trainer, batch))
+            for p, e in zip(params, eps):
+                p.add_(e, alpha=sigma)
+            diffs.append((plus, minus))
+        if self.cfg.rank_shaping:
+            flat = [v for pm in diffs for v in pm]
+            order = sorted(range(len(flat)), key=flat.__getitem__)
+            ranks = [0.0] * len(flat)
+            for r, i in enumerate(order):
+                ranks[i] = r / max(1, len(flat) - 1) - 0.5
+            weights = [ranks[2 * i] - ranks[2 * i + 1] for i in range(pairs)]
+        else:
+            weights = [plus - minus for plus, minus in diffs]
+        grads = [torch.zeros_like(p) for p in params]
+        for seed, w in zip(seeds, weights):
+            gen = torch.Generator(device=params[0].device).manual_seed(seed)
+            for g, p in zip(grads, params):
+                g.add_(torch.randn(p.shape, generator=gen, device=p.device, dtype=p.dtype), alpha=w)
+        scale = 1.0 / (2 * pairs * sigma) if not self.cfg.rank_shaping else 1.0 / (pairs * sigma)
+        for p, g in zip(params, grads):
+            p.grad = g * scale
+        trainer.step_with_grads(self.primary_key)
+        spread = sum(abs(a - b) for a, b in diffs) / pairs
+        return {"loss": base_loss, "es_streuung": spread}
+
+    def validation_step(self, trainer, batch):
+        return {"loss": float(self._loss(trainer, batch))}
+
+
 R = PARADIGMS.register
 R("supervised", lambda a: Supervised(a), config=SupervisedConfig, aliases=("ueberwacht",), tooltip=T(
     "Überwachtes Lernen: Eingabe → Ziel.", "Der Klassiker für Klassifikation und Regression.",
@@ -967,3 +1059,8 @@ R("preference", lambda a: Preference(a), config=PreferenceConfig, aliases=("rewa
 R("dpo", lambda a: DPO(a), config=DPOConfig, level=Level.ADVANCED, tags=("nlp",), tooltip=T(
     "Direct Preference Optimization.", "Präferenzlernen ohne separates Reward-Modell/RL.",
     "Ausrichtung von Sprachmodellen."))
+R("evolution_strategies", lambda a: EvolutionStrategies(a), config=EvolutionStrategiesConfig, aliases=("es",),
+  level=Level.EXPERIMENTAL, tooltip=T(
+      "Evolution Strategies: Gewichte zufällig stören, aus der Fitness die Richtung schätzen (ohne Backward).",
+      "Gradientenfrei – für nicht differenzierbare Ziele, sehr gut parallelisierbar (OpenAI-ES).",
+      "Kleine Modelle, Forschung, robuste Optimierung; langsamer als Backprop bei großen Netzen."))

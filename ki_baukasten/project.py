@@ -45,6 +45,7 @@ from .tensor import ModuleRuleConfig, ModuleSurgeon, TensorRuleConfig, TensorSur
 from .training import Trainer, TrainingConfig
 from .training.data_utils import to_device
 from .training.paradigms import call_model
+from .workflow import WorkflowConfig
 
 
 class ProjectConfig(BaseConfig):
@@ -76,6 +77,7 @@ class ProjectConfig(BaseConfig):
         "Transfer-Learning, Kompression, Experimente."))
     compression = NestedParam(CompressionConfig, group="Kompression", level=Level.ADVANCED)
     deployment = NestedParam(DeploymentConfig, group="Kompression")
+    workflow = NestedParam(WorkflowConfig, group="Ablauf")
     auto_fit_dims = Param(True, tooltip=T(
         "Modellgrößen (Ein-/Ausgabe, Vokabular, Beobachtungen …) automatisch an Daten/Umgebung anpassen.",
         "Vorlagen passen dadurch ohne Handarbeit zu jedem Datensatz.", "Aus, wenn exakte Werte erzwungen werden sollen."),
@@ -843,6 +845,114 @@ class Project:
         hist = trainer.fit(train_data, val_data)
         self.history = self.history + hist
         return hist
+
+    # ================================================================ Ablauf (Suche, Schwarm, Evolution …)
+    def tune(self, method: str | None = None, space: dict | None = None, trials: int | None = None,
+             steps_per_trial: int | None = None, **settings: Any) -> Any:
+        """Automatische Suche (``random`` | ``grid`` | ``evolution`` | ``pso`` | ``pbt``) – Einstellungen aus
+        ``workflow.search``, hier überschreibbar. Übernimmt das Beste (``apply_best``)."""
+        from .workflow import run_search
+
+        s = self.config.workflow.search.copy()
+        for key, value in (("method", method), ("space", space), ("trials", trials),
+                           ("steps_per_trial", steps_per_trial), *settings.items()):
+            if value is not None:
+                s.set(key, value)
+        return run_search(self, s)
+
+    def federated_train(self, **settings: Any) -> list[dict]:
+        """Föderiertes Lernen (FedAvg/FedProx) mit simulierten Teilnehmern (``workflow.federated``)."""
+        from .workflow import federated_training
+
+        f = self.config.workflow.federated.copy()
+        for key, value in settings.items():
+            f.set(key, value)
+        return federated_training(self, f)
+
+    def model_soup(self, runs: int | None = None, mode: str | None = None) -> dict[str, Any]:
+        """Model Soup: mehrere Läufe vom selben Startpunkt trainieren und die Gewichte mitteln."""
+        from .workflow import model_soup
+
+        w = self.config.workflow
+        return model_soup(self, runs or max(2, w.soup_runs), mode or w.soup_mode)
+
+    def run(self) -> dict[str, Any]:
+        """Führt den ganzen **Ablauf** aus (``workflow``): Suche → Training (normal / föderiert / Model Soup)
+        → Kreuzvalidierung → Kompression → Export. Jede Stufe ist einzeln schaltbar."""
+        w = self.config.workflow
+        report: dict[str, Any] = {}
+        if w.search.method != "none":
+            report["suche"] = self.tune()
+        if w.federated.enabled:
+            report["foederiert"] = self.federated_train()
+        elif w.soup_runs > 1:
+            report["model_soup"] = self.model_soup()
+        elif self.config.workflow.search.method != "pbt":       # PBT hat bereits trainiert
+            report["training"] = self.train()
+        if w.cross_validation >= 2:
+            report["kreuzvalidierung"] = self.cross_validate(w.cross_validation)
+        if w.compress_after_training:
+            steps = list(self.config.compression.steps)
+            if not steps:
+                target = self.config.deployment.main_target or "smartphone"
+                steps = [dict(s) for s in self.recommend_for(target).steps if s["name"] != "heal"]
+            if steps:
+                report["kompression"] = self.compress(steps)
+        if w.export_format != "none":
+            path = w.export_path or str(Path(self.config.output_dir) / self.config.name / "modell")
+            report["export"] = self.export(path, w.export_format)
+        return report
+
+    def find_lr(self, min_lr: float = 1e-7, max_lr: float = 1.0, steps: int = 100, apply: bool = False) -> Any:
+        """Lernraten-Finder (LR-Range-Test) auf einer Kopie des Modells; ``apply=True`` übernimmt die Empfehlung."""
+        from .training.lr_finder import find_lr
+
+        result = find_lr(self, min_lr, max_lr, steps)
+        if apply and result.suggestion is not None:
+            self.set("training.optimizer.lr", float(f"{result.suggestion:.3g}"))
+        return result
+
+    def cross_validate(self, k: int = 5, steps: int | None = None, seed: int = 0) -> dict[str, Any]:
+        """k-fache Kreuzvalidierung: k Modelle auf je k−1 Teilen trainieren, auf dem übrigen Teil messen.
+
+        Returns:
+            ``{"folds": [metriken je Teil], "mittel": {...}, "std": {...}}`` – zeigt, wie stabil das Ergebnis ist
+            (kleine Datensätze, ehrliche Schätzung der Generalisierung).
+        """
+        bundle = self.data()
+        data = bundle.train
+        if not isinstance(data, dict):
+            raise ConfigError("cross_validate braucht Daten als dict von Tensoren (z. B. die eingebauten Datensätze).")
+        n = next(iter(v for v in data.values() if isinstance(v, torch.Tensor))).shape[0]
+        if k < 2 or k > n:
+            raise ConfigError(f"k muss zwischen 2 und der Anzahl Beispiele ({n}) liegen.")
+        perm = torch.randperm(n, generator=torch.Generator().manual_seed(seed))
+        folds = [perm[i::k] for i in range(k)]
+        results = []
+        for i in range(k):
+            val_idx = folds[i]
+            train_idx = torch.cat([f for j, f in enumerate(folds) if j != i])
+            pick = (lambda idx: {key: v[idx] if isinstance(v, torch.Tensor) and v.shape[:1] == (n,) else v
+                                 for key, v in data.items()})
+            cfg = self.config.copy()
+            cfg.training.validation_split = 0.0
+            cfg.deployment.show_after_training = False
+            cfg.training.verbose = False
+            if steps is not None:
+                cfg.training.max_steps = steps
+            q = Project(cfg)
+            q._bundle = bundle
+            q.train(pick(train_idx), None)
+            metrics = q.evaluate(pick(val_idx))
+            results.append(metrics)
+            if self._verbose():
+                print(f"  Teil {i + 1}/{k}: " + "  ".join(f"{m}={v:.4g}" for m, v in metrics.items()))
+        keys = results[0].keys()
+        mean = {m: sum(r[m] for r in results) / k for m in keys}
+        std = {m: (sum((r[m] - mean[m]) ** 2 for r in results) / max(1, k - 1)) ** 0.5 for m in keys}
+        if self._verbose():
+            print("  Kreuzvalidierung: " + "  ".join(f"{m}={mean[m]:.4g}±{std[m]:.2g}" for m in keys))
+        return {"folds": results, "mittel": mean, "std": std}
 
     def add_logger(self, logger: Any) -> "Project":
         """Eigenen Logger einbinden: ``logging.Logger``, ein ``LogBackend`` oder ein Objekt mit (einigen der)
