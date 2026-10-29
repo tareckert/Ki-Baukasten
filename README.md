@@ -3,10 +3,11 @@
 Ein Python-Baukasten (PyTorch), mit dem sich **KIs und ganze KI-Systeme bis ins kleinste Detail** zusammenstellen,
 kombinieren, trainieren und speichern lassen – mit einer **Erklärung zu jeder einzelnen Einstellung**.
 
-- **982 einzeln dokumentierte Einstellungen** – jede mit Tooltip: *Was ist das? Warum/Nutzen? Wofür wichtig? Tipp*
-- **333 austauschbare Komponenten** in 24 Registries (Aktivierungen, Normen, Attention-Kernel, Mixer, FFN/MoE/KAN,
-  Modelle, Optimierer, Zeitpläne, Verluste, Belohnungen, Tensor- und Modul-Operationen …) – alle per Name überall einsetzbar
-- **18 Modelle**, beliebig kombinierbar und verschachtelbar (Ensemble aus Pipelines aus Transformern …)
+- **1.053 einzeln dokumentierte Einstellungen** – jede mit Tooltip: *Was ist das? Warum/Nutzen? Wofür wichtig? Tipp*
+- **352 austauschbare Komponenten** in 25 Registries (Aktivierungen, Normen, Attention-Kernel, Mixer, FFN/MoE/KAN,
+  Modelle, Optimierer, Zeitpläne, Verluste, Belohnungen, Tensor- und Modul-Operationen, Kompressions-Schritte …) – alle
+  per Name überall einsetzbar; Gesamtübersicht in [`docs/MOEGLICHKEITEN.md`](docs/MOEGLICHKEITEN.md)
+- **19 Modelle** (inkl. **Import fremder Modelle**), beliebig kombinierbar und verschachtelbar
 - **12 Trainings-Paradigmen** inkl. Reinforcement Learning mit frei kombinierbaren Belohnungen
 - **34 Vorlagen** für 11 Anwendungsgebiete – sofort lauffähig ohne Downloads
 - **Jede Schicht darf anders sein** (schichtweise Overrides mit **Übernahme** von anderen Schichten), **jedes gebaute
@@ -18,8 +19,18 @@ kombinieren, trainieren und speichern lassen – mit einer **Erklärung zu jeder
 - **Speicher-Weichen**: Präzision, Gradient-Checkpointing, Aktivierungs-Offload, **trainierbares Auslagern von Blöcken
   in den RAM**, Layer-Swapping (CPU/Festplatte), **eigene int8/int4/nf4-Quantisierung** (ohne torch.ao), **LoRA/DoRA/
   QLoRA**, **8-Bit-AdamW**, Speicherschätzung
+- **Modelle eindampfen**: Attention-Köpfe, FFN-Neuronen und ganze Blöcke entfernen, Low-Rank, Sparsity, int8/int4/nf4/
+  4-Bit-Palette, 16-Bit – mit **Heilen per Distillation** und Messung (Größe, MACs, Latenz, Qualität) nach jedem Schritt
+- **Lehrer-Schüler & Weiterlernen**: automatisch verkleinerte Schüler-Modelle, Feature-Distillation, Weiterlernen ohne
+  Vergessen (LwF, EWC, Replay)
+- **Zielsysteme**: nach dem Training zeigt der Baukasten, ob/wie das Modell auf Rechenzentrums-GPU, Gaming-GPU, Apple,
+  CPU, Smartphone, Raspberry Pi, Mikrocontroller oder Browser passt – inkl. Rezept, `reduce_for(ziel)` und Export
+- **Fremde Modelle**: Import (torch.export, TorchScript, state_dict mit Schlüssel-Abbildung, safetensors, Hugging Face),
+  ändern, nachtrainieren, komprimieren und neu exportieren
+- **Probelauf & Einblick**: alle Wege durchs Netz mit Aktivierungen, Gradienten, Zeiten und Warnungen; Gewichts-
+  Histogramme/-Heatmaps, Attention-Karten, Testlauf mit Konfusionsmatrix – auch in der GUI
 - **Ratgeber & Aufbau**: Optimierungs-/Speichervorschläge zum direkten Übernehmen, komplette Aufbau-Darstellung
-  (Text, Markdown, Mermaid, JSON), Export (torch.export, TorchScript, ONNX)
+  (Text, Markdown, Mermaid, JSON), Export (torch.export mit dynamischen Formen, TorchScript, ONNX)
 - **Drei Oberflächen**: Python-API, Kommandozeile (deutsch), grafischer Editor mit Maus-Tooltips, Rückgängig/Wiederholen
 
 Es gibt keine „verbotenen“ Einstellungen: auch experimentelle, exotische oder scheinbar unnötige Optionen sind
@@ -36,12 +47,14 @@ Es gibt keine „verbotenen“ Einstellungen: auch experimentelle, exotische ode
 5. [Vorlagen nach Anwendungsgebiet](#vorlagen-nach-anwendungsgebiet)
 6. [Speicher & große Modelle](#speicher--große-modelle) – Streaming, Quantisierung, LoRA, 8-Bit-Optimierer
 7. [Mamba, Generierung & KV-Cache](#mamba-generierung--kv-cache)
-8. [Aufbau, Ratgeber & Export](#aufbau-ratgeber--export)
-9. [Reinforcement Learning & Belohnungen](#reinforcement-learning--belohnungen)
-10. [Eigene Komponenten](#eigene-komponenten)
-11. [Projektstruktur](#projektstruktur)
-12. [Tests](#tests)
-13. [Ehrliche Grenzen](#ehrliche-grenzen)
+8. [Modelle eindampfen, Lehrer-Schüler & Zielsysteme](#modelle-eindampfen-lehrer-schüler--zielsysteme)
+9. [Fremde Modelle importieren & Probelauf](#fremde-modelle-importieren--probelauf)
+10. [Aufbau, Ratgeber & Export](#aufbau-ratgeber--export)
+11. [Reinforcement Learning & Belohnungen](#reinforcement-learning--belohnungen)
+12. [Eigene Komponenten](#eigene-komponenten)
+13. [Projektstruktur](#projektstruktur)
+14. [Tests](#tests)
+15. [Ehrliche Grenzen](#ehrliche-grenzen)
 
 Ausführliche Erklärung des inneren Aufbaus und aller Eingriffspunkte: [`docs/ARCHITEKTUR.md`](docs/ARCHITEKTUR.md).
 
@@ -81,9 +94,12 @@ for tipp in p.advise():                             # Ratgeber: Speicher, Tempo,
 p.apply_advice(category="speicher")                 # Vorschläge übernehmen … und bei Bedarf p.undo()
 print(p.architecture("text"))                       # komplette Auflistung: Module, Formen, Schichten, Pfade
 
-p.train()                                           # bauen (Größen passen sich den Daten an) + trainieren
+p.train()                                           # bauen + trainieren; danach Übersicht für Zielsysteme
 print(p.generate("Der Baukasten", max_new_tokens=80))
 p.save("ausgaben/mein_llm")                         # projekt.json + modell.pt + verlauf.json
+
+klein = p.reduce_for("smartphone", export="ausgaben/handy/modell")   # Empfehlung anwenden + exportieren
+schueler = p.distill(width=0.5, depth=0.5)          # Lehrer-Schüler: kleineres Modell lernt vom großen
 ```
 
 ### Kommandozeile
@@ -106,6 +122,13 @@ python -m ki_baukasten suche "kv cache" --quelle sprachmodell_mini              
 python -m ki_baukasten vergleiche sprachmodell_mini sprachmodell_mamba           # Unterschiede
 python -m ki_baukasten zeige sprachmodell_mini --setze "dropout=0.2"             # Platzhalter: alle 'dropout'
 python -m ki_baukasten exportieren ausgaben/sprachmodell_mini --format export    # torch.export (.pt2)
+python -m ki_baukasten zielsysteme ausgaben/sprachmodell_mini                    # passt es auf welche Geräte?
+python -m ki_baukasten reduzieren ausgaben/sprachmodell_mini --ziel raspberry_pi --anwenden --export pi/modell
+python -m ki_baukasten komprimieren ausgaben/sprachmodell_mini --schritte '["prune_ffn","heal","quantize"]'
+python -m ki_baukasten schueler ausgaben/sprachmodell_mini --breite 0.5 --tiefe 0.5 --speichern ausgaben/klein
+python -m ki_baukasten importieren fremd.pt2 --form 1,32 --speichern ausgaben/fremd   # fremdes Modell → Projekt
+python -m ki_baukasten probelauf sprachmodell_mini --test                         # alle Wege + Testlauf
+python -m ki_baukasten moeglichkeiten -o docs/MOEGLICHKEITEN.md                   # Katalog aller Möglichkeiten
 python -m ki_baukasten generieren ausgaben/sprachmodell_mini --prompt "Die " --laenge 120
 python -m ki_baukasten doku -o docs/PARAMETER_REFERENZ.md  # komplette Referenz aus den Tooltips
 python -m ki_baukasten gui sprachmodell_mini
@@ -120,7 +143,10 @@ python -m ki_baukasten gui sprachmodell_mini
 - **Stufenfilter** (Basis … Experimentell), **Suche** über alle Einstellungen,
 - Komponentenwechsel per Auswahlliste, Listen (Verluste, Belohnungen, Stufen, Regeln) hinzufügen/entfernen,
 - **Prüfen / Bauen / Speicher / Trainieren** – Training läuft im Hintergrund mit Live-Protokoll,
-- **Aufbau** (komplette Auflistung), **Optimieren** (Ratgeber mit Übernahme-Dialog), **↶ Rückgängig / ↷ Wiederholen**.
+- **Aufbau** (komplette Auflistung), **Optimieren** (Ratgeber mit Übernahme-Dialog), **↶ Rückgängig / ↷ Wiederholen**,
+- **Probelauf & Gewichte**: Fenster mit allen Wegen durchs Netz (Ausgabeform, Statistik, Gradient, Zeit, ⚠-Warnungen),
+  Histogramm + Heatmap jeder Modulausgabe und jedes Gewichts, Attention-Karten je Kopf, Testlauf mit Konfusionsmatrix,
+- **Reduzieren / Export**: Zielsystem wählen → Empfehlung lesen → anwenden → exportieren; **Modell importieren…**.
 
 ---
 
@@ -433,6 +459,67 @@ cache = model.new_cache(); model(prompt, cache=cache); model(next_token, cache=c
 
 ---
 
+## Modelle eindampfen, Lehrer-Schüler & Zielsysteme
+
+**Kompression** (`p.compress([...])`, Registry `compress_step`): jeder Schritt wird gemessen.
+
+```python
+p.compress([
+    {"name": "prune_heads", "args": {"amount": 0.5, "importance": "activation"}},   # Köpfe (bei GQA gruppenweise)
+    {"name": "prune_ffn",   "args": {"amount": 0.5}},                               # FFN-Neuronen (MLP/GLU/MoE)
+    {"name": "drop_layers", "args": {"count": 1}},                                  # Block mit geringstem Einfluss
+    {"name": "heal",        "args": {"steps": 300, "feature_weight": 0.5}},         # Distillation vom Original
+    {"name": "quantize",    "args": {"format": "int8"}},                            # int8 | int4 | nf4 | pal4
+])
+```
+
+Beispiel (Sprachmodell aus der Vorlage, CPU): **Größe ÷ 9,4**, Rechenaufwand ÷ 2,7, Verlust 2,07 → 2,20 (dank Heilen).
+Weitere Schritte: `prune_mlp`, `low_rank` (SVD), `sparsify`, `dtype` (16 Bit), `finetune`, `merge_lora`.
+Wichtigkeit wahlweise `magnitude`, `activation` (Wanda-Prinzip), `taylor` oder `random`. Alle Formänderungen
+werden als `module_rules` protokolliert – `save()`/`load()` stellen das kleinere Modell exakt wieder her.
+
+**Lehrer-Schüler**: `p.distill(width=0.5, depth=0.5, feature_weight=0.5)` baut ein verkleinertes Schüler-Projekt und
+trainiert es mit dem Paradigma `distillation` (KL, reverse KL, JS, MSE, Kosinus; Feature-Distillation auch bei
+unterschiedlicher Breite; Lehrer auch aus gespeichertem Projekt oder `.pt2`). Beispiel: 13 % der Parameter, 91 % statt
+97 % Genauigkeit.
+
+**Weiterlernen ohne Vergessen**: `p.continue_training(neue_daten, method="lwf" | "ewc" | "replay")`.
+
+**Zielsysteme** (`analysis/targets.py`): Nach `train()` erscheint automatisch eine Übersicht (`deployment.targets`):
+
+```
+Zielsystem                              jetzt    Latenz  passt  Empfehlung                                      danach
+Gaming-/Workstation-GPU (8–24 GB)     3,0 MB    0.0 ms  ja     dtype(float16)                                  1,5 MB ✓
+Smartphone (ARM, 6–12 GB RAM, Akku)   3,0 MB    1.1 ms  ja     quantize(int8)                                  0,8 MB ✓
+Mikrocontroller (Cortex-M, ≤ 1 MB)    3,0 MB 1115.7 ms  nein   prune_heads → prune_ffn → heal → quantize(int8) 0,6 MB ✗
+```
+
+`p.recommend_for("smartphone")` erklärt das Rezept (inkl. Schüler-Modell, falls nötig, und Exportformat),
+`p.reduce_for("smartphone", export=...)` führt es aus. Profile: `rechenzentrum_gpu`, `gaming_gpu`, `laptop_gpu`,
+`apple_silicon`, `server_cpu`, `laptop_cpu`, `smartphone`, `raspberry_pi`, `mikrocontroller`, `browser`.
+
+---
+
+## Fremde Modelle importieren & Probelauf
+
+```python
+p = Project.import_model("modell.pt2", input_shape=[1, 32])              # torch.export / TorchScript / …
+p = Project.import_model("gewichte.pt", format="state_dict",             # Gewichte in eine Baukasten-Architektur
+                         architecture={"name": "transformer", "args": {...}}, key_map={"^model\\.": ""})
+p.set("tensor_rules", [{"target": "embed", "op": "freeze"}]); p.train()  # ändern, nachtrainieren …
+p.compress([...]); p.export("modell_neu", "export")                       # … eindampfen, neu exportieren
+```
+
+Hugging Face (`format="huggingface"`) und safetensors werden genutzt, wenn die Pakete `transformers` bzw.
+`safetensors` installiert sind. Gepickelte Komplettmodelle nur mit `allow_pickle=True` (Pickle führt Code aus).
+
+**Probelauf** (`analysis/probe.py`, GUI „Probelauf & Gewichte“, CLI `probelauf`): ein Forward + Backward, bei dem jedes
+Modul in Ausführungsreihenfolge aufgezeichnet wird – Ein-/Ausgabeform, Mittel/Std/Min/Max, Anteil Nullen, NaN/Inf,
+Gradient, Zeit – mit Warnungen bei toten Neuronen, explodierenden oder verschwindenden Werten. Dazu
+`weight_stats`/`histogram`/`heatmap`, `attention_maps` und `evaluate_model` (Metriken, Konfusionsmatrix, Beispiele).
+
+---
+
 ## Aufbau, Ratgeber & Export
 
 ```python
@@ -515,20 +602,22 @@ ki_baukasten/
 ├── components/    activations, normalization, initializers, positional, attention, feedforward, mixers, layers,
 │                  scan (schnelle lineare Rekurrenzen), cache (KV-/Zustands-Cache)
 ├── models/        base, mlp, cnn, rnn, transformer (+ssm/hybrid), autoencoder, generative (gan/diffusion),
-│                  gnn, rl_nets, graph (freies Netz), composite (ensemble/pipeline/fusion/mixture/multitask)
-├── training/      config, trainer, paradigms, optimizers, schedulers, losses, callbacks, data_utils
+│                  gnn, rl_nets, graph (freies Netz), composite (ensemble/pipeline/fusion/mixture/multitask),
+│                  external (Import fremder Modelle)
+├── training/      config, trainer, paradigms, optimizers, schedulers, losses, callbacks, data_utils, continual
 │   └── rl/        environments, rewards, algorithms (ppo/a2c/reinforce/dqn)
 ├── memory/        config, manager, streaming (RAM-Training), offload (Swapping), quant (int8/int4/nf4),
 │                  lora (LoRA/DoRA/QLoRA), estimator
 ├── tensor/        surgery (Tensor-Chirurgie), modules (Modul-Chirurgie), selection (Geltungsbereiche)
-├── analysis/      architecture (Aufbau-Darstellung), advisor (Ratgeber), export
+├── compress/      structure, methods (Pruning, Low-Rank, Sparsity), pipeline (Rezepte + Messung)
+├── analysis/      architecture, advisor, export, benchmark (Größe/MACs/Latenz), targets (Zielsysteme), probe
 ├── data/          datasets (synthetisch + CSV/Text/Tensor-Dateien)
 ├── presets/       Vorlagen je Anwendungsgebiet, Speicherprofile
-├── ui/            cli, gui (Tkinter), docs (Referenz-Export)
+├── ui/            cli, gui (Tkinter), inspector (Probelauf-Fenster), docs (Referenz + Möglichkeiten-Katalog)
 └── project.py     Project-Fassade
-examples/          14 ausführlich kommentierte Beispiele + Beispiel-Konfigurationsdatei
-tests/             ~365 Tests (pytest)
-docs/              ARCHITEKTUR.md (innerer Aufbau, Eingriffspunkte) + automatisch erzeugte Parameter-Referenz
+examples/          18 ausführlich kommentierte Beispiele + Beispiel-Konfigurationsdatei
+tests/             ~410 Tests (pytest), CI per GitHub Actions (Python 3.10 und 3.12)
+docs/              ARCHITEKTUR.md, MOEGLICHKEITEN.md (Katalog), PARAMETER_REFERENZ.md (beide automatisch erzeugt)
 ```
 
 | Beispiel | Inhalt |
@@ -539,6 +628,10 @@ docs/              ARCHITEKTUR.md (innerer Aufbau, Eingriffspunkte) + automatisc
 | `12_ram_streaming.py` | trainierbares Auslagern in den RAM – bitgenau wie ohne |
 | `13_regeln_geltungsbereich.py` | Übernahme zwischen Schichten, Modul-/Tensor-Regeln mit Geltungsbereich, Platzhalter, Rückgängig |
 | `14_ratgeber_aufbau_export.py` | Ratgeber übernehmen, Unterschiede, Aufbau (Text/Markdown/JSON), Export |
+| `15_modell_eindampfen.py` | Kompressions-Rezept mit Messung, Speichern/Laden, Zielsystem-Empfehlung, `reduce_for` |
+| `16_lehrer_schueler_weiterlernen.py` | Schüler per Distillation, Weiterlernen mit LwF/EWC/Replay im Vergleich |
+| `17_import_aendern_export.py` | `.pt2` importieren und nachtrainieren, Gewichte mit `key_map` laden, komprimieren, neu exportieren |
+| `18_probelauf_gewichte.py` | Probelauf aller Wege, Gewichte, Histogramm/Heatmap, Attention-Karten, Testlauf |
 
 Konvention: **Code-Bezeichner englisch** (wie in PyTorch und Fachliteratur), **alle Erklärungen,
 Kommentare, Tooltips und Ausgaben deutsch**.
@@ -549,7 +642,7 @@ Kommentare, Tooltips und Ausgaben deutsch**.
 
 ```bash
 pip install pytest
-pytest            # ~365 Tests, ca. 30–60 s auf CPU
+pytest            # ~410 Tests, ca. 40–70 s auf CPU
 ```
 
 Geprüft werden u. a.: jede Komponente jeder Registry, jedes Modell vorwärts/rückwärts, Kausalität aller Mixer und
@@ -571,6 +664,15 @@ Konvergenz, Übernahme/Geltungsbereiche/Modul-Regeln, Ratgeber/Aufbau/Export/Rü
 - **Eigene Quantisierung** entpackt die Gewichte pro Schicht vor der Matrixmultiplikation (spart Speicher, keine
   int8-Rechenkernel); für maximale Geschwindigkeit `torchao_int8/int4`. `dynamic_int8` (torch.ao) ist veraltet.
 - **MLA-lite** ist vereinfacht (RoPE auf rekonstruierte Keys, keine entkoppelten RoPE-Köpfe wie bei DeepSeek).
+- **Gewichts-Quantisierung spart Speicher, nicht CPU-Zeit**: die Gewichte werden pro Schicht entpackt – auf der CPU
+  ist das oft sogar langsamer als float32 (die Kompressions-Messung zeigt das ehrlich an).
+- **Strukturiertes Pruning** gibt es für Transformer/SSM/Hybrid (Köpfe, FFN, Blöcke) und das MLP-Modell; für CNNs
+  (Residual-Kanäle) bisher nur Low-Rank, Sparsity und Quantisierung.
+- **Zielsystem-Profile** sind grobe Richtwerte (effektive Leistung bei Batch 1) – sie ersetzen kein Benchmarking auf
+  dem echten Gerät. ExecuTorch/CoreML/TensorRT selbst sind nicht eingebaut; der Baukasten liefert die `.pt2`/ONNX-Datei.
+- **Import** über `safetensors`/Hugging Face braucht die jeweiligen Pakete und ist in dieser Testumgebung nicht
+  geprüft; aus `torch.export` importierte Graphen behalten Namen, aber keine `nn.Linear`-Objekte (LoRA/Quantisierung
+  dort erst nach Import der Gewichte in eine Baukasten-Architektur). Exportierte SSM-Modelle sind reine Inferenz.
 - Keine verteilte Mehr-GPU-Ausführung (DDP/FSDP) – eine natürliche Erweiterung.
 - Die Vorlagen sind auf kleine synthetische Daten abgestimmt; für echte Projekte `data` auf `csv`, `text` oder
   `tensor_file` umstellen (Größen passen sich automatisch an) und Umfang/Lernrate anpassen.

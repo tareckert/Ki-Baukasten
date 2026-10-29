@@ -30,11 +30,12 @@ multitask           Kombination: gemeinsamer Rumpf, mehrere Köpfe
 ==================  ==========================================================
 """
 
-from . import autoencoder, base, cnn, composite, generative, gnn, graph, mlp, rl_nets, rnn, transformer  # noqa: F401
+from . import autoencoder, base, cnn, composite, external, generative, gnn, graph, mlp, rl_nets, rnn, transformer  # noqa: F401
 from .autoencoder import Autoencoder, AutoencoderConfig
 from .base import MODELS, BaseModel, InitConfig, ModelConfig, build_model
 from .cnn import CNN, CNNConfig
 from .composite import Ensemble, Fusion, MixtureOfModels, MultiTask, Pipeline
+from .external import ExternalModel, ExternalModelConfig
 from .generative import GAN, DiffusionConfig, DiffusionModel, GANConfig
 from .gnn import GNN, GNNConfig
 from .graph import GraphModel, GraphModelConfig

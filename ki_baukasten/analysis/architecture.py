@@ -322,7 +322,10 @@ def inspect_model(model: nn.Module, example: Any = None, run: bool = True) -> Ar
 
             for m in model.modules():
                 if m is not model:
-                    handles.append(m.register_forward_hook(hook))
+                    try:
+                        handles.append(m.register_forward_hook(hook))
+                    except RuntimeError:  # TorchScript-Module unterstützen keine Hooks
+                        pass
             was = model.training
             model.eval()
             try:

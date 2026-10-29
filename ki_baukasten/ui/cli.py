@@ -24,6 +24,13 @@ optimieren      Ratgeber: Speicher-/Tempo-/Stabilitätsvorschläge (optional üb
 suche           Einstellungen per Volltext (Pfade + Tooltips) finden
 vergleiche      zwei Vorlagen/Dateien vergleichen
 exportieren     Modell exportieren (torch.export, TorchScript, ONNX, state_dict)
+importieren     fremdes Modell laden (pt2, TorchScript, state_dict, safetensors, HF) → Projekt
+komprimieren    Modell eindampfen (Pruning, Low-Rank, Quantisierung, Heilen) mit Bericht
+zielsysteme     Geräteprofile + Übersicht, ob/wie das Modell darauf passt
+reduzieren      Empfehlung für ein Zielsystem anzeigen und anwenden (+ Export)
+schueler        Lehrer-Schüler: kleineres Modell per Distillation trainieren
+probelauf       Forward/Backward mit allen Wegen, Statistiken, Warnungen (+ Testlauf)
+moeglichkeiten  Katalog aller Möglichkeiten (Speicher, Tempo, Kompression, Training …)
 trainieren      trainieren (und speichern)
 generieren      gespeichertes Projekt laden und Text/Samples erzeugen
 doku            vollständige Parameter-Referenz als Markdown exportieren
@@ -250,6 +257,108 @@ def cmd_exportieren(a: argparse.Namespace) -> None:
     print(f"Exportiert: {target}")
 
 
+def _load_or_build(source: str, sets: list[str] | None, train: bool = False):
+    from ..project import Project
+
+    if Path(source).is_dir():
+        p = Project.load(source)
+        for item in sets or []:
+            path, value = item.split("=", 1)
+            p.set(path.strip(), _parse_value(value.strip()))
+        return p
+    p = _project(source, sets)
+    if train:
+        p.train()
+    else:
+        p.build()
+    return p
+
+
+def cmd_importieren(a: argparse.Namespace) -> None:
+    from ..project import Project
+
+    shape = [int(v) for v in a.form.split(",")]
+    extra = {"input_shape": shape, "input_dtype": a.typ, "allow_pickle": a.pickle}
+    if a.architektur:
+        extra["architecture"] = _parse_value(a.architektur) if a.architektur.strip().startswith("{") else a.architektur
+    p = Project.import_model(a.datei, a.format, data=a.daten or "none", name=a.name, **extra)
+    print(p.architecture("text", max_depth=a.tiefe))
+    if a.speichern:
+        print(f"Projekt gespeichert: {p.save(a.speichern)}")
+
+
+def cmd_komprimieren(a: argparse.Namespace) -> None:
+    p = _load_or_build(a.quelle, a.setze, train=a.trainieren)
+    steps = json.loads(a.schritte) if a.schritte else None
+    p.config.training.verbose = True
+    p.compress(steps)
+    if a.speichern:
+        p.config.training.verbose = False
+        print(f"Gespeichert: {p.save(a.speichern)}")
+
+
+def cmd_zielsysteme(a: argparse.Namespace) -> None:
+    from ..analysis.targets import TARGETS
+
+    if not a.quelle:
+        for k, t in TARGETS.items():
+            print(f"{k:<18} {t.title:<46} Speicher {t.memory_mb:>8g} MB  ~{t.gflops:g} GFLOP/s  "
+                  f"Formate {', '.join(t.dtypes)}  Export: {t.export}")
+        return
+    p = _load_or_build(a.quelle, a.setze)
+    print(p.deployment_overview(list(TARGETS)))
+
+
+def cmd_reduzieren(a: argparse.Namespace) -> None:
+    p = _load_or_build(a.quelle, a.setze, train=a.trainieren)
+    print(p.recommend_for(a.ziel))
+    if a.anwenden:
+        p.config.training.verbose = True
+        reduced = p.reduce_for(a.ziel, export=a.export)
+        if a.speichern:
+            reduced.config.training.verbose = False
+            print(f"Gespeichert: {reduced.save(a.speichern)}")
+        if a.export:
+            print(f"Exportiert nach: {a.export}.*")
+
+
+def cmd_schueler(a: argparse.Namespace) -> None:
+    p = _load_or_build(a.quelle, a.setze, train=a.trainieren)
+    student = p.distill(width=a.breite, depth=a.tiefe, steps=a.schritte, feature_weight=a.features)
+    n_t = sum(t.numel() for t in p.model.parameters())
+    n_s = sum(t.numel() for t in student.model.parameters())
+    print(f"Lehrer {n_t:,} → Schüler {n_s:,} Parameter ({100 * n_s / max(1, n_t):.1f} %)")
+    if a.speichern:
+        print(f"Schüler gespeichert: {student.save(a.speichern)}")
+
+
+def cmd_probelauf(a: argparse.Namespace) -> None:
+    from ..analysis.probe import probe, evaluate_model, evaluation_text
+
+    p = _load_or_build(a.quelle, a.setze)
+    model = p.model
+    try:
+        bundle = p.data()
+        data = bundle.val if bundle.val is not None else bundle.train
+        x = data["inputs"][: a.batch]
+        y = data["targets"][: a.batch] if "targets" in data else None
+    except Exception:  # noqa: BLE001
+        data, x, y = None, model.example_input(a.batch), None
+    print(probe(model, x, y, backward=not a.ohne_backward, max_depth=8).to_text(a.tiefe))
+    if a.test and isinstance(data, dict):
+        print()
+        print(evaluation_text(evaluate_model(model, data)))
+
+
+def cmd_moeglichkeiten(a: argparse.Namespace) -> None:
+    from .docs import capabilities_markdown, export_capabilities
+
+    if a.ausgabe:
+        print(f"Katalog geschrieben: {export_capabilities(a.ausgabe)}")
+    else:
+        print(capabilities_markdown())
+
+
 def cmd_trainieren(a: argparse.Namespace) -> None:
     p = _project(a.quelle, a.setze)
     if a.speicher:
@@ -387,6 +496,67 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("-o", "--ausgabe", default="export/modell")
     sp.add_argument("--ohne-merge", action="store_true", help="LoRA-Adapter nicht einrechnen")
     sp.set_defaults(fn=cmd_exportieren)
+
+    sp = sub.add_parser("importieren", help="fremdes Modell importieren")
+    sp.add_argument("datei", help="Modelldatei/-ordner (.pt2, .pt, .ts, .safetensors, Hugging-Face-Ordner/-Name)")
+    sp.add_argument("--format", default="auto",
+                    choices=["auto", "export", "torchscript", "module", "state_dict", "safetensors", "huggingface"])
+    sp.add_argument("--form", default="1,16", help="Form einer Beispiel-Eingabe, z. B. 1,16 oder 1,3,224,224")
+    sp.add_argument("--typ", default="long", choices=["long", "float32"], help="Datentyp der Beispiel-Eingabe")
+    sp.add_argument("--architektur", help="Baukasten-Modell für reine Gewichte (Name oder JSON)")
+    sp.add_argument("--daten", help="Datensatz für Nachtraining (Name), Standard: keiner")
+    sp.add_argument("--name")
+    sp.add_argument("--pickle", action="store_true", help="Pickle erlauben (nur vertrauenswürdige Dateien!)")
+    sp.add_argument("--tiefe", type=int, default=2)
+    sp.add_argument("--speichern", help="als Baukasten-Projekt speichern")
+    sp.set_defaults(fn=cmd_importieren)
+
+    sp = sub.add_parser("komprimieren", help="Modell eindampfen")
+    sp.add_argument("quelle", help="Projektordner, Preset oder Datei")
+    sp.add_argument("--setze", action="append", default=[])
+    sp.add_argument("--schritte", help='JSON-Liste, z. B. \'[{"name":"prune_ffn","args":{"amount":0.4}},"heal","quantize"]\'')
+    sp.add_argument("--trainieren", action="store_true", help="Preset/Datei vorher trainieren")
+    sp.add_argument("--speichern", help="komprimiertes Projekt speichern")
+    sp.set_defaults(fn=cmd_komprimieren)
+
+    sp = sub.add_parser("zielsysteme", help="Geräteprofile bzw. Übersicht für ein Modell")
+    sp.add_argument("quelle", nargs="?", help="Projektordner, Preset oder Datei (leer = nur Profile)")
+    sp.add_argument("--setze", action="append", default=[])
+    sp.set_defaults(fn=cmd_zielsysteme)
+
+    sp = sub.add_parser("reduzieren", help="Empfehlung für ein Zielsystem (und anwenden)")
+    sp.add_argument("quelle")
+    sp.add_argument("--ziel", default="smartphone")
+    sp.add_argument("--setze", action="append", default=[])
+    sp.add_argument("--trainieren", action="store_true", help="Preset/Datei vorher trainieren")
+    sp.add_argument("--anwenden", action="store_true", help="Empfehlung ausführen")
+    sp.add_argument("--export", help="danach im passenden Format exportieren (Pfad ohne Endung)")
+    sp.add_argument("--speichern", help="reduziertes Projekt speichern")
+    sp.set_defaults(fn=cmd_reduzieren)
+
+    sp = sub.add_parser("schueler", help="kleineres Schüler-Modell per Distillation")
+    sp.add_argument("quelle")
+    sp.add_argument("--setze", action="append", default=[])
+    sp.add_argument("--breite", type=float, default=0.5)
+    sp.add_argument("--tiefe", type=float, default=0.5)
+    sp.add_argument("--schritte", type=int)
+    sp.add_argument("--features", type=float, default=0.0, help="Gewicht der Feature-Distillation")
+    sp.add_argument("--trainieren", action="store_true", help="Lehrer (Preset/Datei) vorher trainieren")
+    sp.add_argument("--speichern")
+    sp.set_defaults(fn=cmd_schueler)
+
+    sp = sub.add_parser("probelauf", help="alle Wege durchs Netz mit Statistiken")
+    sp.add_argument("quelle")
+    sp.add_argument("--setze", action="append", default=[])
+    sp.add_argument("--batch", type=int, default=2)
+    sp.add_argument("--tiefe", type=int, default=3)
+    sp.add_argument("--ohne-backward", action="store_true")
+    sp.add_argument("--test", action="store_true", help="zusätzlich Testlauf auf Validierungsdaten")
+    sp.set_defaults(fn=cmd_probelauf)
+
+    sp = sub.add_parser("moeglichkeiten", help="Katalog aller Möglichkeiten")
+    sp.add_argument("-o", "--ausgabe", help="als Markdown-Datei schreiben (z. B. docs/MOEGLICHKEITEN.md)")
+    sp.set_defaults(fn=cmd_moeglichkeiten)
 
     sp = sub.add_parser("trainieren", help="trainieren")
     with_source(sp)

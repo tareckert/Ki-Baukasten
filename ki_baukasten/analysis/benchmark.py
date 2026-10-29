@@ -64,14 +64,20 @@ def count_macs(model: nn.Module, example: Any) -> int:
 
     handles = []
     for m in model.modules():
+        hook = None
         if isinstance(m, nn.Linear) or type(m).__name__ in ("QuantLinear",):
-            handles.append(m.register_forward_hook(linear_hook))
+            hook = linear_hook
         elif isinstance(m, nn.modules.conv._ConvNd):
-            handles.append(m.register_forward_hook(conv_hook))
+            hook = conv_hook
         elif isinstance(m, MultiHeadAttention):
-            handles.append(m.register_forward_hook(attn_hook))
+            hook = attn_hook
         elif isinstance(m, SelectiveSSM):
-            handles.append(m.register_forward_hook(ssm_hook))
+            hook = ssm_hook
+        if hook is not None:
+            try:
+                handles.append(m.register_forward_hook(hook))
+            except RuntimeError:  # TorchScript: keine Hooks möglich
+                pass
     was = model.training
     model.eval()
     try:

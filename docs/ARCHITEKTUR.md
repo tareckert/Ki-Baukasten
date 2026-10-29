@@ -16,8 +16,11 @@ flowchart LR
   D --> E["Tensor-Chirurgie<br/>tensor_rules"]
   E --> F["MemoryManager<br/>Präzision · Quantisierung · LoRA ·<br/>Checkpointing · Streaming/Offload"]
   F --> G["Trainer<br/>Paradigma · Optimierer · Zeitplan ·<br/>Verluste · Callbacks"]
-  G --> H["Projekt speichern<br/>projekt.json · modell.pt"]
+  G --> R["Zielsystem-Übersicht<br/>recommend_for · reduce_for"]
+  R --> K["Kompression<br/>Pruning · Low-Rank · Quantisierung ·<br/>Heilen / Lehrer-Schüler"]
+  K --> H["Projekt speichern<br/>projekt.json · modell.pt (+ Struktur-Regeln)"]
   H --> I["Inferenz / Generierung (Cache)<br/>Export (torch.export, ONNX …)"]
+  X["Fremdes Modell<br/>.pt2 · TorchScript · state_dict · HF"] -->|import_model| D
 ```
 
 | Schritt | Code | Eingriff über |
@@ -29,7 +32,10 @@ flowchart LR
 | Tensor-Chirurgie | `tensor/surgery.py` | `tensor_rules` |
 | Speicher | `memory/*` | `memory.*` |
 | Training | `training/*` | `training.*` |
-| Analyse | `analysis/*` | `architecture()`, `advise()`, `export()` |
+| Analyse | `analysis/*` | `architecture()`, `advise()`, `export()`, Probelauf (`analysis/probe.py`) |
+| Kompression | `compress/*` | `compress()`, `compression.steps`, `distill()` |
+| Zielsysteme | `analysis/targets.py` | `deployment.*`, `recommend_for()`, `reduce_for()` |
+| Import | `models/external.py` | `Project.import_model()`, Modell `extern` |
 
 ---
 
@@ -114,7 +120,21 @@ sequenceDiagram
 
 ---
 
-## 5. Eigene Bausteine integrieren
+## 5. Modelle verkleinern – was dabei passiert
+
+| Verfahren | Wirkt auf | Wie die Form gespeichert wird |
+|---|---|---|
+| `prune_heads` | `q_proj`/`o_proj` (+ `k/v_proj` bei Gruppen) jeder Attention | Modul-Regel `resize_attention` |
+| `prune_ffn` | `up`/`gate`/`down` jedes MLP-/GLU-FFN (auch MoE-Experten) | Modul-Regeln `resize_linear` |
+| `drop_layers` | Einträge der Block-Liste | Modul-Regel `drop_items` |
+| `prune_mlp` | versteckte Schichten des Modells `mlp` (+ Normen, Projektionen) | `resize_linear`, `resize_norm` |
+| `low_rank` | `nn.Linear` → zwei schmale Schichten | Modul-Regel `factorize` |
+| `quantize` | `nn.Linear` → `QuantLinear` | Modul-Regel `quantize` |
+
+Beim Laden baut der Baukasten das Original, wendet diese Regeln an (gleiche Formen) und lädt dann die gespeicherten
+Gewichte – so bleibt jede Kombination aus Umbau, Kompression und Training reproduzierbar.
+
+## 6. Eigene Bausteine integrieren
 
 1. **Komponente registrieren** (Aktivierung, Mixer, FFN, Verlust, Belohnung, Modul-Operation …):
    ```python
@@ -136,7 +156,7 @@ sequenceDiagram
 
 ---
 
-## 6. Beispiel: automatisch erzeugte Aufbau-Darstellung
+## 7. Beispiel: automatisch erzeugte Aufbau-Darstellung
 
 Erzeugt mit:
 

@@ -64,11 +64,10 @@ def _call(model: nn.Module, batch: Any) -> torch.Tensor:
     return main_output(call_model(model, batch))
 
 
-def calibration_loss(model: nn.Module, batch: Any) -> torch.Tensor:
-    """Sinnvoller Verlust ohne Paradigma: Labels falls vorhanden, sonst nächstes-Token-Vorhersage bzw. Ausgabenorm."""
+def loss_from_output(out: torch.Tensor, batch: Any) -> torch.Tensor:
+    """Verlust zu einer vorhandenen Ausgabe: Labels falls vorhanden, sonst nächstes Token bzw. Ausgabenorm."""
     from ..training.paradigms import auto_loss
 
-    out = _call(model, batch)
     if isinstance(batch, dict) and batch.get("targets") is not None:
         return auto_loss(out, batch["targets"].to(out.device))
     inputs = batch["inputs"] if isinstance(batch, dict) else batch
@@ -76,6 +75,11 @@ def calibration_loss(model: nn.Module, batch: Any) -> torch.Tensor:
             and out.shape[1] == inputs.shape[1]:
         return F.cross_entropy(out[:, :-1].reshape(-1, out.shape[-1]).float(), inputs[:, 1:].reshape(-1).to(out.device))
     return out.float().square().mean()
+
+
+def calibration_loss(model: nn.Module, batch: Any) -> torch.Tensor:
+    """Sinnvoller Verlust ohne Paradigma: Labels falls vorhanden, sonst nächstes-Token-Vorhersage bzw. Ausgabenorm."""
+    return loss_from_output(_call(model, batch), batch)
 
 
 class _Recorder:

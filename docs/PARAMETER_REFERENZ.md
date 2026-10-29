@@ -18,7 +18,7 @@ hängen von der gewählten Komponente ab – siehe Abschnitt *Registries und Kom
 | `name` | Text | `'meine_ki'` |  | Basis | **Was:** Projektname.<br>**Nutzen:** Für Ausgabeordner und Übersicht.<br>**Wofür:** Kurz, ohne Leerzeichen. |
 | `domain` | Text | `'allgemein'` |  | Basis | **Was:** Anwendungsgebiet (z. B. sprache, bild, zeitreihen, tabellen, rl …).<br>**Nutzen:** Ordnet Vorlagen ein.<br>**Wofür:** Wird von Presets gesetzt. |
 | `description` | Text | `''` |  | Basis | **Was:** Freie Beschreibung.<br>**Nutzen:** Dokumentation des Experiments.<br>**Wofür:** Was wird getestet? |
-| `model` | Komponente aus Registry 'model' | `mlp` | Auswahl: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| mlp \| gan \| diffusion \| gnn \| graph \| actor_critic \| … | Basis | **Was:** Das Modell (beliebig aus der Registry 'model', auch Kombinationen).<br>**Nutzen:** Architektur der KI.<br>**Wofür:** Siehe 'python -m ki_baukasten modelle'. |
+| `model` | Komponente aus Registry 'model' | `mlp` | Auswahl: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| extern \| mlp \| gan \| diffusion \| gnn \| graph \| … | Basis | **Was:** Das Modell (beliebig aus der Registry 'model', auch Kombinationen).<br>**Nutzen:** Architektur der KI.<br>**Wofür:** Siehe 'python -m ki_baukasten modelle'. |
 | `model.init` | Unter-Konfiguration Initialisierung | ⟶ InitConfig |  | Fortgeschritten | **Was:** Startwerte der Gewichte, getrennt nach Modultyp.<br>**Nutzen:** Erlaubt bewährte Schemata (GPT-2, ResNet, PPO ...) ohne jede Schicht einzeln anzufassen.<br>**Wofür:** Für einzelne Tensoren/Ausschnitte: Tensor-Chirurgie (tensor_rules) verwenden. |
 | `model.init.linear_weight` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Fortgeschritten | **Was:** Initialisierer für Gewichte linearer Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Transformer: normal(std=0.02). |
 | `model.init.linear_bias` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Biases linearer Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Häufig 'zeros'. |
@@ -135,7 +135,7 @@ hängen von der gewählten Komponente ab – siehe Abschnitt *Registries und Kom
 | `memory.offload.directory` | Text | `'offload_cache'` |  | Fortgeschritten | **Was:** Ordner für ausgelagerte Gewichte (disk).<br>**Nutzen:** Schnelle SSD empfohlen.<br>**Wofür:** Lokale SSD. |
 | `memory.offload.pin_memory` | Ja/Nein | `True` |  | Experte | **Was:** CPU-Kopien in gepinntem Speicher halten (cpu-Modus, nur CUDA).<br>**Nutzen:** Deutlich schnellere Übertragung CPU → GPU.<br>**Wofür:** CUDA. |
 | `memory.offload.keep_resident` | Ganzzahl | `1` | ≥ 0 | Fortgeschritten | **Was:** Wie viele zuletzt genutzte Blöcke auf dem Gerät bleiben dürfen.<br>**Nutzen:** Mehr = weniger Nachladen, mehr Speicher.<br>**Wofür:** 1–2. |
-| `memory.quantization` | Text | `'none'` | Auswahl: none \| int8 \| int4 \| nf4 \| fake_quant \| torchao_int8 \| torchao_int4 \| dynamic_int8 | Fortgeschritten | **Was:** Quantisierung der Gewichte linearer Schichten.<br>**Nutzen:** int8 braucht ¼, int4/nf4 ⅛ des float32-Gewichtsspeichers – Inferenz großer Modelle und QLoRA-Feintuning; fake_quant bereitet ein Modell auf echte Quantisierung vor.<br>**Wofür:** Inferenz/Edge: int8; Feintuning großer Modelle: nf4 + memory.lora (QLoRA).<br>**Tipp:** int8/int4/nf4 sind eine eigene Implementierung in reinem PyTorch – unabhängig von torch.ao. |
+| `memory.quantization` | Text | `'none'` | Auswahl: none \| int8 \| int4 \| nf4 \| pal4 \| fake_quant \| torchao_int8 \| torchao_int4 \| dynamic_int8 | Fortgeschritten | **Was:** Quantisierung der Gewichte linearer Schichten.<br>**Nutzen:** int8 braucht ¼, int4/nf4 ⅛ des float32-Gewichtsspeichers – Inferenz großer Modelle und QLoRA-Feintuning; fake_quant bereitet ein Modell auf echte Quantisierung vor.<br>**Wofür:** Inferenz/Edge: int8; Feintuning großer Modelle: nf4 + memory.lora (QLoRA).<br>**Tipp:** int8/int4/nf4 sind eine eigene Implementierung in reinem PyTorch – unabhängig von torch.ao. |
 | `memory.quant_bits` | Ganzzahl | `8` | Bereich 2 … 16 | Fortgeschritten | **Was:** Bitbreite für fake_quant.<br>**Nutzen:** Weniger Bits = kleiner, ungenauer.<br>**Wofür:** 8 (sicher), 4 (aggressiv). |
 | `memory.quant_group_size` | Ganzzahl (oder None) | `128` | ≥ 8 | Fortgeschritten | **Was:** Gruppengröße: so viele Gewichte einer Zeile teilen sich eine Skala (None = eine Skala pro Ausgabekanal).<br>**Nutzen:** Kleinere Gruppen = genauer (wichtig bei 4 Bit), minimal mehr Speicher für Skalen.<br>**Wofür:** int8: None oder 128; int4/nf4: 32–128. |
 | `memory.quant_skip` | Text (oder None) | `'lm_head'` |  | Fortgeschritten | **Was:** Regex: Module, die NICHT quantisiert werden.<br>**Nutzen:** Ausgabeschicht und empfindliche Teile in voller Genauigkeit halten.<br>**Wofür:** 'lm_head', 'lm_head\|router'. |
@@ -164,6 +164,17 @@ hängen von der gewählten Komponente ab – siehe Abschnitt *Registries und Kom
 | `memory.memory_budget_gb` | Kommazahl (oder None) | `None` | ≥ 0.0 | Basis | **Was:** Verfügbarer Speicher in GB für die Speicherschätzung (None = automatisch erkennen).<br>**Nutzen:** Die Schätzung prüft, ob das Training hineinpasst, und schlägt Einstellungen vor.<br>**Wofür:** Planung vor dem Training großer Modelle. |
 | `module_rules` | Liste von Modul-Regel | 0 Elemente |  | Fortgeschritten | **Was:** Regeln für Eingriffe in ganze Schichten (ersetzen, entfernen, LoRA/Quantisierung einzeln, Hooks …).<br>**Nutzen:** Jede Schicht jeder Art anpassen – für alle, nur bestimmte oder genau eine (scope).<br>**Wofür:** Ablationen, gezieltes Feintuning, Präzision pro Schicht, Analyse. Wirken vor den Tensor-Regeln. |
 | `tensor_rules` | Liste von Tensor-Regel | 0 Elemente |  | Fortgeschritten | **Was:** Regeln für Eingriffe in einzelne Tensoren (Einfrieren, Pruning, Kopieren, eigene LR …).<br>**Nutzen:** Feinste Kontrolle bis auf einzelne Gewichte – für alle, nur bestimmte oder genau einen (scope).<br>**Wofür:** Transfer-Learning, Kompression, Experimente. |
+| `compression` | Unter-Konfiguration Kompression (Modell eindampfen) | ⟶ CompressionConfig |  | Fortgeschritten | **Was:** Rezept zum Verkleinern eines (trainierten) Modells: Schritte + Messung.<br>**Nutzen:** Kleinere, schnellere Modelle für schwächere Zielsysteme – mit Vorher/Nachher-Bericht.<br>**Wofür:** Deployment; Project.compress() bzw. Project.reduce_for(ziel). |
+| `compression.steps` | Liste von Komponenten aus Registry 'compress_step' | 0 Elemente | Elemente: prune_ffn \| prune_heads \| drop_layers \| prune_mlp \| low_rank \| sparsify \| heal \| finetune \| quantize \| dtype \| merge_lora | Fortgeschritten | **Was:** Kompressions-Schritte in Reihenfolge.<br>**Nutzen:** Freie Kombination aller Verfahren.<br>**Wofür:** z. B. prune_heads → prune_ffn → heal → quantize. |
+| `compression.calibration_batches` | Ganzzahl | `8` | ≥ 0 | Fortgeschritten | **Was:** Anzahl Trainingsbatches zur Kalibrierung (Wichtigkeit, Block-Einfluss).<br>**Nutzen:** Mehr = stabilere Auswahl.<br>**Wofür:** 4–32. |
+| `compression.eval_batches` | Ganzzahl | `4` | ≥ 0 | Fortgeschritten | **Was:** Validierungsbatches für die Qualitätsmessung nach jedem Schritt (0 = keine Messung).<br>**Nutzen:** Zeigt sofort, welcher Schritt wie viel kostet.<br>**Wofür:** 4–16. |
+| `compression.measure_latency` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Latenz (Batch 1) nach jedem Schritt messen.<br>**Nutzen:** Zeigt die echte Beschleunigung auf diesem Gerät.<br>**Wofür:** an. |
+| `deployment` | Unter-Konfiguration Zielsysteme (Deployment) | ⟶ DeploymentConfig |  | Basis | **Was:** Auf welchen Geräten die KI laufen soll – für Reduktions-Empfehlungen nach dem Training.<br>**Nutzen:** Zeigt sofort, ob das Modell auf Smartphone, Raspberry Pi, CPU oder GPU passt und wie man es dorthin bringt.<br>**Wofür:** Planung des Einsatzes; Project.recommend_for / reduce_for. |
+| `deployment.targets` | Liste[Text] | `['gaming_gpu', 'laptop_cpu', 'smartphone', 'raspberry_pi']` |  | Basis | **Was:** Zielsysteme für die Übersicht nach dem Training.<br>**Nutzen:** Vergleich mehrerer Geräteklassen auf einen Blick.<br>**Wofür:** Verfügbar: rechenzentrum_gpu, gaming_gpu, laptop_gpu, apple_silicon, server_cpu, laptop_cpu, smartphone, raspberry_pi, mikrocontroller, browser. |
+| `deployment.show_after_training` | Ja/Nein | `True` |  | Basis | **Was:** Nach train() die Reduktions-Übersicht anzeigen.<br>**Nutzen:** Man sieht beim Fertigstellen sofort die Optionen.<br>**Wofür:** an. |
+| `deployment.main_target` | Text (oder None) | `None` |  | Basis | **Was:** Hauptziel: nach dem Training zusätzlich die ausführliche Empfehlung zeigen.<br>**Nutzen:** Detailliertes Rezept + Exportformat für genau dieses Gerät.<br>**Wofür:** z. B. 'smartphone'. |
+| `deployment.heal_steps` | Ganzzahl | `300` | ≥ 0 | Fortgeschritten | **Was:** Heil-Schritte (Distillation vom Original) in reduce_for.<br>**Nutzen:** Mehr = bessere Qualität nach dem Verkleinern.<br>**Wofür:** 100–1000. |
+| `deployment.student_steps` | Ganzzahl (oder None) | `None` | ≥ 1 | Fortgeschritten | **Was:** Trainingsschritte eines empfohlenen Schüler-Modells (None = wie training).<br>**Nutzen:** Distillation.<br>**Wofür:** None. |
 | `auto_fit_dims` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Modellgrößen (Ein-/Ausgabe, Vokabular, Beobachtungen …) automatisch an Daten/Umgebung anpassen.<br>**Nutzen:** Vorlagen passen dadurch ohne Handarbeit zu jedem Datensatz.<br>**Wofür:** Aus, wenn exakte Werte erzwungen werden sollen. |
 | `output_dir` | Text | `'ausgaben'` |  | Fortgeschritten | **Was:** Basisordner für Ausgaben (Checkpoints, Protokolle, gespeicherte Projekte).<br>**Nutzen:** Ordnung.<br>**Wofür:** ausgaben. |
 
@@ -191,6 +202,7 @@ hängen von der gewählten Komponente ab – siehe Abschnitt *Registries und Kom
 - [Modul-Operationen (`module_op`)](#registry-module-op)
 - [Tensor-Operationen (`tensor_op`)](#registry-tensor-op)
 - [Tensor-Funktionen (Chirurgie) (`tensor_function`)](#registry-tensor-function)
+- [Kompressions-Schritte (`compress_step`)](#registry-compress-step)
 - [Datensätze (`dataset`)](#registry-dataset)
 - [Vorlagen (Presets) (`preset`)](#registry-preset)
 
@@ -2348,7 +2360,7 @@ Fabrik-Signatur: `factory(args) -> BaseModel`
 | `init.rnn_bias` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Biases rekurrenter Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard. |
 | `init.residual_projection` | Komponente aus Registry 'initializer' (oder None) | None | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Ausgangsprojektionen von Residual-Zweigen (Attention-Out, FFN-Down).<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** GPT-2: scaled_normal (std/√(2N)); 'zeros' = Zweige starten als Identität. |
 | `extras` | Zuordnung (dict) | `{}` |  | Experimentell | **Was:** Freies dict für eigene, experimentelle Einstellungen.<br>**Nutzen:** Wird unverändert im Modell als self.config.extras bereitgestellt – eigene Hooks/Unterklassen können es lesen.<br>**Wofür:** Prototyping eigener Ideen, ohne gleich eine neue Config-Klasse zu schreiben. |
-| `members` | Liste von Komponenten aus Registry 'model' | 2 Elemente | Elemente: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| mlp \| gan \| diffusion \| gnn \| graph \| actor_critic \| … | Basis | **Was:** Mitglieder des Ensembles (beliebige Modelle mit gleicher Ein-/Ausgabeform).<br>**Nutzen:** Vielfalt der Mitglieder (Architektur, Init, Daten) macht Ensembles stark.<br>**Wofür:** 2–10 Mitglieder. |
+| `members` | Liste von Komponenten aus Registry 'model' | 2 Elemente | Elemente: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| extern \| mlp \| gan \| diffusion \| gnn \| graph \| … | Basis | **Was:** Mitglieder des Ensembles (beliebige Modelle mit gleicher Ein-/Ausgabeform).<br>**Nutzen:** Vielfalt der Mitglieder (Architektur, Init, Daten) macht Ensembles stark.<br>**Wofür:** 2–10 Mitglieder. |
 | `members.0` | beliebig | `model:mlp()` |  | Basis | **Was:** Mehrschichtiges Perzeptron.<br>**Nutzen:** Einfach, schnell, universell.<br>**Wofür:** Tabellendaten, Regression, Klassifikation, RL-Policies, Köpfe. |
 | `members.0.init` | Unter-Konfiguration Initialisierung | ⟶ InitConfig |  | Fortgeschritten | **Was:** Startwerte der Gewichte, getrennt nach Modultyp.<br>**Nutzen:** Erlaubt bewährte Schemata (GPT-2, ResNet, PPO ...) ohne jede Schicht einzeln anzufassen.<br>**Wofür:** Für einzelne Tensoren/Ausschnitte: Tensor-Chirurgie (tensor_rules) verwenden. |
 | `members.0.init.linear_weight` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Fortgeschritten | **Was:** Initialisierer für Gewichte linearer Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Transformer: normal(std=0.02). |
@@ -2438,7 +2450,7 @@ Fabrik-Signatur: `factory(args) -> BaseModel`
 | `init.rnn_bias` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Biases rekurrenter Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard. |
 | `init.residual_projection` | Komponente aus Registry 'initializer' (oder None) | None | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Ausgangsprojektionen von Residual-Zweigen (Attention-Out, FFN-Down).<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** GPT-2: scaled_normal (std/√(2N)); 'zeros' = Zweige starten als Identität. |
 | `extras` | Zuordnung (dict) | `{}` |  | Experimentell | **Was:** Freies dict für eigene, experimentelle Einstellungen.<br>**Nutzen:** Wird unverändert im Modell als self.config.extras bereitgestellt – eigene Hooks/Unterklassen können es lesen.<br>**Wofür:** Prototyping eigener Ideen, ohne gleich eine neue Config-Klasse zu schreiben. |
-| `stages` | Liste von Komponenten aus Registry 'model' | 2 Elemente | Elemente: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| mlp \| gan \| diffusion \| gnn \| graph \| actor_critic \| … | Basis | **Was:** Stufen in Reihenfolge.<br>**Nutzen:** Jede Stufe darf ein beliebiges Modell sein.<br>**Wofür:** 2–5 Stufen. |
+| `stages` | Liste von Komponenten aus Registry 'model' | 2 Elemente | Elemente: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| extern \| mlp \| gan \| diffusion \| gnn \| graph \| … | Basis | **Was:** Stufen in Reihenfolge.<br>**Nutzen:** Jede Stufe darf ein beliebiges Modell sein.<br>**Wofür:** 2–5 Stufen. |
 | `stages.0` | beliebig | `model:mlp(output_dim=32)` |  | Basis | **Was:** Mehrschichtiges Perzeptron.<br>**Nutzen:** Einfach, schnell, universell.<br>**Wofür:** Tabellendaten, Regression, Klassifikation, RL-Policies, Köpfe. |
 | `stages.0.init` | Unter-Konfiguration Initialisierung | ⟶ InitConfig |  | Fortgeschritten | **Was:** Startwerte der Gewichte, getrennt nach Modultyp.<br>**Nutzen:** Erlaubt bewährte Schemata (GPT-2, ResNet, PPO ...) ohne jede Schicht einzeln anzufassen.<br>**Wofür:** Für einzelne Tensoren/Ausschnitte: Tensor-Chirurgie (tensor_rules) verwenden. |
 | `stages.0.init.linear_weight` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Fortgeschritten | **Was:** Initialisierer für Gewichte linearer Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Transformer: normal(std=0.02). |
@@ -2530,7 +2542,7 @@ Fabrik-Signatur: `factory(args) -> BaseModel`
 | `branches.0` | beliebig | `FusionBranchConfig(name='a', input_key='a', model={'name': '` |  | Basis | **Was:** Element vom Typ 'Fusionszweig'. |
 | `branches.0.name` | Text | `'a'` |  | Basis | **Was:** Name des Zweigs.<br>**Nutzen:** Zur Übersicht.<br>**Wofür:** z. B. 'bild', 'text'. |
 | `branches.0.input_key` | Text | `'a'` |  | Basis | **Was:** Schlüssel der Eingabe im Eingabe-dict.<br>**Nutzen:** Welche Daten dieser Zweig bekommt.<br>**Wofür:** z. B. 'bild'. |
-| `branches.0.model` | Komponente aus Registry 'model' | `mlp` | Auswahl: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| mlp \| gan \| diffusion \| gnn \| graph \| actor_critic \| … | Basis | **Was:** Modell des Zweigs (Ausgabe = Merkmalsvektor).<br>**Nutzen:** Jede Modalität mit passender Architektur (CNN für Bilder, Transformer für Text ...).<br>**Wofür:** output_dim des Modells = Merkmalsgröße. |
+| `branches.0.model` | Komponente aus Registry 'model' | `mlp` | Auswahl: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| extern \| mlp \| gan \| diffusion \| gnn \| graph \| … | Basis | **Was:** Modell des Zweigs (Ausgabe = Merkmalsvektor).<br>**Nutzen:** Jede Modalität mit passender Architektur (CNN für Bilder, Transformer für Text ...).<br>**Wofür:** output_dim des Modells = Merkmalsgröße. |
 | `branches.0.model.init` | Unter-Konfiguration Initialisierung | ⟶ InitConfig |  | Fortgeschritten | **Was:** Startwerte der Gewichte, getrennt nach Modultyp.<br>**Nutzen:** Erlaubt bewährte Schemata (GPT-2, ResNet, PPO ...) ohne jede Schicht einzeln anzufassen.<br>**Wofür:** Für einzelne Tensoren/Ausschnitte: Tensor-Chirurgie (tensor_rules) verwenden. |
 | `branches.0.model.init.linear_weight` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Fortgeschritten | **Was:** Initialisierer für Gewichte linearer Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Transformer: normal(std=0.02). |
 | `branches.0.model.init.linear_bias` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Biases linearer Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Häufig 'zeros'. |
@@ -2564,7 +2576,7 @@ Fabrik-Signatur: `factory(args) -> BaseModel`
 | `branches.1` | beliebig | `FusionBranchConfig(name='b', input_key='b', model={'name': '` |  | Basis | **Was:** Element vom Typ 'Fusionszweig'. |
 | `branches.1.name` | Text | `'b'` |  | Basis | **Was:** Name des Zweigs.<br>**Nutzen:** Zur Übersicht.<br>**Wofür:** z. B. 'bild', 'text'. |
 | `branches.1.input_key` | Text | `'b'` |  | Basis | **Was:** Schlüssel der Eingabe im Eingabe-dict.<br>**Nutzen:** Welche Daten dieser Zweig bekommt.<br>**Wofür:** z. B. 'bild'. |
-| `branches.1.model` | Komponente aus Registry 'model' | `mlp` | Auswahl: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| mlp \| gan \| diffusion \| gnn \| graph \| actor_critic \| … | Basis | **Was:** Modell des Zweigs (Ausgabe = Merkmalsvektor).<br>**Nutzen:** Jede Modalität mit passender Architektur (CNN für Bilder, Transformer für Text ...).<br>**Wofür:** output_dim des Modells = Merkmalsgröße. |
+| `branches.1.model` | Komponente aus Registry 'model' | `mlp` | Auswahl: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| extern \| mlp \| gan \| diffusion \| gnn \| graph \| … | Basis | **Was:** Modell des Zweigs (Ausgabe = Merkmalsvektor).<br>**Nutzen:** Jede Modalität mit passender Architektur (CNN für Bilder, Transformer für Text ...).<br>**Wofür:** output_dim des Modells = Merkmalsgröße. |
 | `branches.1.model.init` | Unter-Konfiguration Initialisierung | ⟶ InitConfig |  | Fortgeschritten | **Was:** Startwerte der Gewichte, getrennt nach Modultyp.<br>**Nutzen:** Erlaubt bewährte Schemata (GPT-2, ResNet, PPO ...) ohne jede Schicht einzeln anzufassen.<br>**Wofür:** Für einzelne Tensoren/Ausschnitte: Tensor-Chirurgie (tensor_rules) verwenden. |
 | `branches.1.model.init.linear_weight` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Fortgeschritten | **Was:** Initialisierer für Gewichte linearer Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Transformer: normal(std=0.02). |
 | `branches.1.model.init.linear_bias` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Biases linearer Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Häufig 'zeros'. |
@@ -2628,7 +2640,7 @@ Fabrik-Signatur: `factory(args) -> BaseModel`
 | `init.rnn_bias` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Biases rekurrenter Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard. |
 | `init.residual_projection` | Komponente aus Registry 'initializer' (oder None) | None | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Ausgangsprojektionen von Residual-Zweigen (Attention-Out, FFN-Down).<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** GPT-2: scaled_normal (std/√(2N)); 'zeros' = Zweige starten als Identität. |
 | `extras` | Zuordnung (dict) | `{}` |  | Experimentell | **Was:** Freies dict für eigene, experimentelle Einstellungen.<br>**Nutzen:** Wird unverändert im Modell als self.config.extras bereitgestellt – eigene Hooks/Unterklassen können es lesen.<br>**Wofür:** Prototyping eigener Ideen, ohne gleich eine neue Config-Klasse zu schreiben. |
-| `experts` | Liste von Komponenten aus Registry 'model' | 2 Elemente | Elemente: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| mlp \| gan \| diffusion \| gnn \| graph \| actor_critic \| … | Basis | **Was:** Experten-Modelle (gleiche Ein-/Ausgabeform).<br>**Nutzen:** Beliebige Architekturen.<br>**Wofür:** 2–8. |
+| `experts` | Liste von Komponenten aus Registry 'model' | 2 Elemente | Elemente: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| extern \| mlp \| gan \| diffusion \| gnn \| graph \| … | Basis | **Was:** Experten-Modelle (gleiche Ein-/Ausgabeform).<br>**Nutzen:** Beliebige Architekturen.<br>**Wofür:** 2–8. |
 | `experts.0` | beliebig | `model:mlp()` |  | Basis | **Was:** Mehrschichtiges Perzeptron.<br>**Nutzen:** Einfach, schnell, universell.<br>**Wofür:** Tabellendaten, Regression, Klassifikation, RL-Policies, Köpfe. |
 | `experts.0.init` | Unter-Konfiguration Initialisierung | ⟶ InitConfig |  | Fortgeschritten | **Was:** Startwerte der Gewichte, getrennt nach Modultyp.<br>**Nutzen:** Erlaubt bewährte Schemata (GPT-2, ResNet, PPO ...) ohne jede Schicht einzeln anzufassen.<br>**Wofür:** Für einzelne Tensoren/Ausschnitte: Tensor-Chirurgie (tensor_rules) verwenden. |
 | `experts.0.init.linear_weight` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Fortgeschritten | **Was:** Initialisierer für Gewichte linearer Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Transformer: normal(std=0.02). |
@@ -2717,7 +2729,7 @@ Fabrik-Signatur: `factory(args) -> BaseModel`
 | `init.rnn_bias` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Biases rekurrenter Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard. |
 | `init.residual_projection` | Komponente aus Registry 'initializer' (oder None) | None | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Ausgangsprojektionen von Residual-Zweigen (Attention-Out, FFN-Down).<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** GPT-2: scaled_normal (std/√(2N)); 'zeros' = Zweige starten als Identität. |
 | `extras` | Zuordnung (dict) | `{}` |  | Experimentell | **Was:** Freies dict für eigene, experimentelle Einstellungen.<br>**Nutzen:** Wird unverändert im Modell als self.config.extras bereitgestellt – eigene Hooks/Unterklassen können es lesen.<br>**Wofür:** Prototyping eigener Ideen, ohne gleich eine neue Config-Klasse zu schreiben. |
-| `backbone` | Komponente aus Registry 'model' | `mlp` | Auswahl: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| mlp \| gan \| diffusion \| gnn \| graph \| actor_critic \| … | Basis | **Was:** Gemeinsamer Rumpf (Ausgabe = gemeinsame Merkmale).<br>**Nutzen:** Lernt die geteilte Repräsentation.<br>**Wofür:** Beliebiges Modell. |
+| `backbone` | Komponente aus Registry 'model' | `mlp` | Auswahl: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| extern \| mlp \| gan \| diffusion \| gnn \| graph \| … | Basis | **Was:** Gemeinsamer Rumpf (Ausgabe = gemeinsame Merkmale).<br>**Nutzen:** Lernt die geteilte Repräsentation.<br>**Wofür:** Beliebiges Modell. |
 | `backbone.init` | Unter-Konfiguration Initialisierung | ⟶ InitConfig |  | Fortgeschritten | **Was:** Startwerte der Gewichte, getrennt nach Modultyp.<br>**Nutzen:** Erlaubt bewährte Schemata (GPT-2, ResNet, PPO ...) ohne jede Schicht einzeln anzufassen.<br>**Wofür:** Für einzelne Tensoren/Ausschnitte: Tensor-Chirurgie (tensor_rules) verwenden. |
 | `backbone.init.linear_weight` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Fortgeschritten | **Was:** Initialisierer für Gewichte linearer Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Transformer: normal(std=0.02). |
 | `backbone.init.linear_bias` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Biases linearer Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Häufig 'zeros'. |
@@ -2762,6 +2774,41 @@ Fabrik-Signatur: `factory(args) -> BaseModel`
 | `heads.1.activation.inplace` | Ja/Nein | `False` |  | Experte | **Was:** Ergebnis direkt in den Eingabespeicher schreiben.<br>**Nutzen:** Spart etwas Speicher, kann aber mit Autograd kollidieren, wenn die Eingabe noch gebraucht wird.<br>**Wofür:** Speicheroptimierung bei sehr großen Aktivierungen.<br>**Tipp:** Im Zweifel aus lassen – Fehler äußern sich als RuntimeError beim Backward. |
 | `backbone_activation` | Komponente aus Registry 'activation' | `relu` | Auswahl: relu \| leaky_relu \| prelu \| rrelu \| elu \| celu \| selu \| gelu \| quick_gelu \| silu \| swish \| mish \| tanh \| sigmoid \| … | Fortgeschritten | **Was:** Aktivierung zwischen Rumpf und Köpfen.<br>**Nutzen:** Nichtlinearität.<br>**Wofür:** relu oder identity. |
 | `backbone_activation.inplace` | Ja/Nein | `False` |  | Experte | **Was:** Ergebnis direkt in den Eingabespeicher schreiben.<br>**Nutzen:** Spart etwas Speicher, kann aber mit Autograd kollidieren, wenn die Eingabe noch gebraucht wird.<br>**Wofür:** Speicheroptimierung bei sehr großen Aktivierungen.<br>**Tipp:** Im Zweifel aus lassen – Fehler äußern sich als RuntimeError beim Backward. |
+
+#### `model:extern` (Aliase: `import`, `external`) — Stufe Fortgeschritten
+
+**Was:** Importiertes Modell (torch.export, TorchScript, state_dict, safetensors, Hugging Face).
+
+**Nutzen:** Fremde KIs mit allen Baukasten-Werkzeugen ändern, nachtrainieren, komprimieren und neu exportieren.
+
+**Wofür:** Weiterverwendung vorhandener Modelle.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `init` | Unter-Konfiguration Initialisierung | ⟶ InitConfig |  | Fortgeschritten | **Was:** Startwerte der Gewichte, getrennt nach Modultyp.<br>**Nutzen:** Erlaubt bewährte Schemata (GPT-2, ResNet, PPO ...) ohne jede Schicht einzeln anzufassen.<br>**Wofür:** Für einzelne Tensoren/Ausschnitte: Tensor-Chirurgie (tensor_rules) verwenden. |
+| `init.linear_weight` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Fortgeschritten | **Was:** Initialisierer für Gewichte linearer Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Transformer: normal(std=0.02). |
+| `init.linear_bias` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Biases linearer Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Häufig 'zeros'. |
+| `init.conv_weight` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Fortgeschritten | **Was:** Initialisierer für Faltungsgewichte.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** ResNet: kaiming_normal(mode=fan_out). |
+| `init.conv_bias` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Faltungs-Biases.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard. |
+| `init.embedding` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Fortgeschritten | **Was:** Initialisierer für Embedding-Tabellen.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** GPT/BERT: normal(std=0.02). |
+| `init.norm_weight` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Skalen von Normalisierungen.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Normalerweise 1 ('keep'). |
+| `init.norm_bias` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Verschiebungen von Normalisierungen.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard. |
+| `init.rnn_weight_ih` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Eingangsgewichte rekurrenter Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Oft xavier_uniform. |
+| `init.rnn_weight_hh` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für rekurrente Gewichte (Zustand→Zustand).<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Klassiker: orthogonal. |
+| `init.rnn_bias` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Biases rekurrenter Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard. |
+| `init.residual_projection` | Komponente aus Registry 'initializer' (oder None) | None | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Ausgangsprojektionen von Residual-Zweigen (Attention-Out, FFN-Down).<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** GPT-2: scaled_normal (std/√(2N)); 'zeros' = Zweige starten als Identität. |
+| `extras` | Zuordnung (dict) | `{}` |  | Experimentell | **Was:** Freies dict für eigene, experimentelle Einstellungen.<br>**Nutzen:** Wird unverändert im Modell als self.config.extras bereitgestellt – eigene Hooks/Unterklassen können es lesen.<br>**Wofür:** Prototyping eigener Ideen, ohne gleich eine neue Config-Klasse zu schreiben. |
+| `path` | Text | `''` |  | Basis | **Was:** Pfad zur Modelldatei bzw. zum Modell-Ordner (Hugging Face: auch Modellname).<br>**Nutzen:** Quelle des Imports.<br>**Wofür:** z. B. 'modelle/klassifikator.pt2'. |
+| `format` | Text | `'auto'` | Auswahl: auto \| export \| torchscript \| module \| state_dict \| safetensors \| huggingface | Basis | **Was:** Dateiformat.<br>**Nutzen:** Bestimmt, wie geladen wird.<br>**Wofür:** auto. |
+| `allow_pickle` | Ja/Nein | `False` |  | Fortgeschritten | **Was:** Laden gepickelter Dateien erlauben (format 'module', alte .pt-Dateien).<br>**Nutzen:** Pickle kann beim Laden beliebigen Code ausführen – nur für vertrauenswürdige Dateien einschalten!<br>**Wofür:** Eigene, selbst gespeicherte Modelle. |
+| `architecture` | Komponente aus Registry 'model' (oder None) | None | Auswahl: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| extern \| mlp \| gan \| diffusion \| gnn \| graph \| … | Basis | **Was:** Baukasten-Architektur, in die state_dict/safetensors-Gewichte geladen werden.<br>**Nutzen:** Danach ist das Modell ein normales Baukasten-Modell – mit voller Umbaufreiheit.<br>**Wofür:** Gleiche Form wie das Original (Schlüssel ggf. mit key_map umbenennen). |
+| `key_map` | Zuordnung (dict) | `{}` |  | Fortgeschritten | **Was:** Umbenennung der Gewichtsschlüssel: {Regex: Ersatz}, der Reihe nach angewendet.<br>**Nutzen:** Fremde Namen auf Baukasten-Namen abbilden (z. B. 'transformer.h.' → 'blocks.').<br>**Wofür:** {'^model\\.': '', 'attn.c_proj': 'mixer.attn.o_proj'} |
+| `strict` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Fehlende/überzählige Gewichte als Fehler behandeln.<br>**Nutzen:** Aus: teilweise laden (z. B. neuer Kopf); der Bericht zeigt, was fehlte.<br>**Wofür:** an. |
+| `hf_task` | Text | `'auto'` | Auswahl: auto \| causal_lm \| base \| sequence_classification | Experte | **Was:** Welche Hugging-Face-Modellklasse geladen wird.<br>**Nutzen:** Bestimmt den Ausgabekopf.<br>**Wofür:** auto. |
+| `input_shape` | Liste[Ganzzahl] | `[1, 16]` | ≥ 1 | Basis | **Was:** Form einer Beispiel-Eingabe (für Darstellung, Messung, Export).<br>**Nutzen:** Fremde Modelle kennen ihre Eingabe nicht.<br>**Wofür:** Text: [1, 16]; Bild: [1, 3, 224, 224]; Tabelle: [1, 20]. |
+| `input_dtype` | Text | `'long'` | Auswahl: long \| float32 | Basis | **Was:** Datentyp der Beispiel-Eingabe.<br>**Nutzen:** Tokens: long; Messwerte/Bilder: float32.<br>**Wofür:** Je nach Modell. |
+| `input_high` | Ganzzahl | `100` | ≥ 1 | Experte | **Was:** Obergrenze zufälliger Token-IDs der Beispiel-Eingabe (≤ Vokabulargröße).<br>**Nutzen:** Gültige Beispiel-Tokens.<br>**Wofür:** 100. |
+| `output_key` | Text (oder None) | `None` |  | Experte | **Was:** Schlüssel der Hauptausgabe, falls das Modell ein dict liefert (None = 'logits' bzw. erster Eintrag).<br>**Nutzen:** Einheitliche Tensor-Ausgabe für Training und Analyse.<br>**Wofür:** 'logits'. |
 
 #### `model:mlp` (Aliase: `perzeptron`, `dense_net`) — Stufe Basis
 
@@ -2897,8 +2944,8 @@ Fabrik-Signatur: `factory(args) -> BaseModel`
 | `discriminator.input_dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Dropout direkt auf die Eingabe.<br>**Nutzen:** Robustheit gegen fehlende/verrauschte Features.<br>**Wofür:** Tabellendaten, Denoising. |
 | `discriminator.output_activation` | Komponente aus Registry 'activation' | `identity` | Auswahl: relu \| leaky_relu \| prelu \| rrelu \| elu \| celu \| selu \| gelu \| quick_gelu \| silu \| swish \| mish \| tanh \| sigmoid \| … | Basis | **Was:** Aktivierung der Ausgabeschicht.<br>**Nutzen:** identity für Logits/Regression; tanh/sigmoid für begrenzte Ausgaben.<br>**Wofür:** Klassifikation: identity (Softmax steckt im Verlust). Generatoren: tanh. |
 | `discriminator.output_bias` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Bias der Ausgabeschicht.<br>**Nutzen:** Verschiebung der Ausgabe.<br>**Wofür:** Standard. |
-| `generator_model` | Komponente aus Registry 'model' (oder None) | None | Auswahl: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| mlp \| gan \| diffusion \| gnn \| graph \| actor_critic \| … | Experte | **Was:** Beliebiges anderes Modell als Generator (überschreibt 'generator').<br>**Nutzen:** Kombinationen, z. B. Transformer-Generator; muss latent_dim(+Label) → data_dim abbilden.<br>**Wofür:** Experimente. |
-| `discriminator_model` | Komponente aus Registry 'model' (oder None) | None | Auswahl: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| mlp \| gan \| diffusion \| gnn \| graph \| actor_critic \| … | Experte | **Was:** Beliebiges anderes Modell als Diskriminator (überschreibt 'discriminator').<br>**Nutzen:** Z. B. CNN-Diskriminator für Bilder; muss Daten(+Label) → 1 Wert abbilden.<br>**Wofür:** Experimente. |
+| `generator_model` | Komponente aus Registry 'model' (oder None) | None | Auswahl: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| extern \| mlp \| gan \| diffusion \| gnn \| graph \| … | Experte | **Was:** Beliebiges anderes Modell als Generator (überschreibt 'generator').<br>**Nutzen:** Kombinationen, z. B. Transformer-Generator; muss latent_dim(+Label) → data_dim abbilden.<br>**Wofür:** Experimente. |
+| `discriminator_model` | Komponente aus Registry 'model' (oder None) | None | Auswahl: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| extern \| mlp \| gan \| diffusion \| gnn \| graph \| … | Experte | **Was:** Beliebiges anderes Modell als Diskriminator (überschreibt 'discriminator').<br>**Nutzen:** Z. B. CNN-Diskriminator für Bilder; muss Daten(+Label) → 1 Wert abbilden.<br>**Wofür:** Experimente. |
 | `output_activation` | Komponente aus Registry 'activation' | `identity` | Auswahl: relu \| leaky_relu \| prelu \| rrelu \| elu \| celu \| selu \| gelu \| quick_gelu \| silu \| swish \| mish \| tanh \| sigmoid \| … | Basis | **Was:** Aktivierung der Generator-Ausgabe.<br>**Nutzen:** tanh für Daten in [-1, 1] (normalisierte Bilder).<br>**Wofür:** Bilder: tanh. |
 
 #### `model:diffusion` (Aliase: `ddpm`, `ddim`) — Stufe Basis
@@ -4224,21 +4271,26 @@ Fabrik-Signatur: `factory(args) -> Paradigm`
 | `token_mask_prob` | Kommazahl | `0.1` | Bereich 0.0 … 0.9 | Fortgeschritten | **Was:** Anteil zufällig ersetzter Tokens (Ganzzahl-Eingaben).<br>**Nutzen:** Augmentierung für Text.<br>**Wofür:** 0.1. |
 | `mask_token_id` | Ganzzahl | `0` |  | Fortgeschritten | **Was:** Ersatz-Token für token_mask_prob.<br>**Nutzen:** Augmentierung.<br>**Wofür:** 0 oder [MASK]. |
 
-#### `paradigm:distillation` (Aliase: `kd`) — Stufe Fortgeschritten
+#### `paradigm:distillation` (Aliase: `kd`, `lehrer_schueler`) — Stufe Fortgeschritten
 
-**Was:** Wissensdestillation von einem Lehrer.
+**Was:** Wissensdestillation: Schüler lernt Ausgaben (und optional innere Zustände) eines Lehrers.
 
-**Nutzen:** Kleine Modelle mit großem Wissen.
+**Nutzen:** Kleine Modelle mit großem Wissen; heilt komprimierte Modelle; Weiterlernen ohne Vergessen.
 
-**Wofür:** Kompression.
+**Wofür:** Kompression, Deployment auf kleinen Geräten, kontinuierliches Lernen.
 
 | Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
 |---|---|---|---|---|---|
-| `teacher` | Komponente aus Registry 'model' (oder None) | None | Auswahl: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| mlp \| gan \| diffusion \| gnn \| graph \| actor_critic \| … | Basis | **Was:** Lehrer-Modell (beliebiges Modell; meist größer).<br>**Nutzen:** Liefert 'weiche' Ziele mit mehr Information als Labels.<br>**Wofür:** Modellkompression. |
-| `teacher_checkpoint` | Text (oder None) | `None` |  | Basis | **Was:** Pfad zu trainierten Lehrer-Gewichten (.pt).<br>**Nutzen:** Ohne Gewichte lehrt der Lehrer Zufall!<br>**Wofür:** Pflicht in der Praxis. |
-| `temperature` | Kommazahl | `2.0` | ≥ 0.001 | Basis | **Was:** Temperatur zum Weichzeichnen der Lehrer-Verteilung.<br>**Nutzen:** Macht 'dunkles Wissen' über Nebenklassen sichtbar.<br>**Wofür:** 2–5. |
+| `teacher` | Komponente aus Registry 'model' (oder None) | None | Auswahl: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| extern \| mlp \| gan \| diffusion \| gnn \| graph \| … | Basis | **Was:** Lehrer-Modell (beliebiges Modell aus der Registry; meist größer).<br>**Nutzen:** Liefert 'weiche' Ziele mit mehr Information als Labels.<br>**Wofür:** Modellkompression.<br>**Tipp:** Alternativ teacher_project / teacher_export – oder Project.distill(), das den Lehrer direkt übergibt. |
+| `teacher_checkpoint` | Text (oder None) | `None` |  | Basis | **Was:** Pfad zu trainierten Lehrer-Gewichten (.pt) für 'teacher'.<br>**Nutzen:** Ohne Gewichte lehrt der Lehrer Zufall!<br>**Wofür:** Pflicht in der Praxis, wenn 'teacher' gesetzt ist. |
+| `teacher_project` | Text (oder None) | `None` |  | Basis | **Was:** Ordner eines gespeicherten Projekts als Lehrer (Project.save).<br>**Nutzen:** Bequemster Weg: trainiertes Projekt komplett als Lehrer verwenden.<br>**Wofür:** ausgaben/mein_grosses_modell. |
+| `teacher_export` | Text (oder None) | `None` |  | Fortgeschritten | **Was:** torch.export-Datei (.pt2) als Lehrer – auch Modelle von außerhalb des Baukastens.<br>**Nutzen:** Lehrer muss nicht mit dem Baukasten gebaut sein.<br>**Wofür:** Importierte/exportierte Modelle. |
+| `task` | Text | `'auto'` | Auswahl: auto \| supervised \| causal_lm \| none | Basis | **Was:** Wozu der harte Verlust (Anteil 1-α) dient.<br>**Nutzen:** Kombiniert Lehrerwissen mit echten Daten.<br>**Wofür:** auto. |
+| `temperature` | Kommazahl | `2.0` | ≥ 0.001 | Basis | **Was:** Temperatur zum Weichzeichnen der Lehrer-Verteilung.<br>**Nutzen:** Macht 'dunkles Wissen' über Nebenklassen sichtbar.<br>**Wofür:** 2–5; Sprachmodelle 1–2. |
 | `alpha` | Kommazahl | `0.5` | Bereich 0.0 … 1.0 | Basis | **Was:** Gewicht des Distillationsverlusts (1-α für echte Labels).<br>**Nutzen:** Balance Lehrer vs. Daten.<br>**Wofür:** 0.5–0.9. |
-| `kd_loss` | Text | `'kl'` | Auswahl: kl \| mse | Basis | **Was:** Art des Distillationsverlusts.<br>**Nutzen:** kl für Klassifikation; mse für Regression/Logits.<br>**Wofür:** kl. |
+| `kd_loss` | Text | `'kl'` | Auswahl: kl \| reverse_kl \| js \| mse \| cosine | Basis | **Was:** Art des Distillationsverlusts.<br>**Nutzen:** kl für Klassifikation; reverse_kl/js für Sprachmodelle.<br>**Wofür:** kl. |
+| `feature_weight` | Kommazahl | `0.0` | ≥ 0.0 | Basis | **Was:** Gewicht der Feature-Distillation (innere Block-Ausgaben angleichen; 0 = aus).<br>**Nutzen:** Der Schüler lernt nicht nur WAS, sondern WIE der Lehrer rechnet – hilft besonders bei starkem Pruning.<br>**Wofür:** 0.1–1. Blöcke werden proportional zugeordnet (Schüler-Block i ↔ Lehrer-Block i·N_L/N_S). |
+| `feature_loss` | Text | `'auto'` | Auswahl: auto \| mse \| cosine \| gram | Fortgeschritten | **Was:** Wie innere Zustände verglichen werden.<br>**Nutzen:** gram braucht keine Projektionsschicht.<br>**Wofür:** auto. |
 
 #### `paradigm:gan` — Stufe Basis
 
@@ -5068,7 +5120,7 @@ Fabrik-Signatur: `factory(args) -> callable(model, name, module, ctx)`
 
 | Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
 |---|---|---|---|---|---|
-| `format` | Text | `'int8'` | Auswahl: int8 \| int4 \| nf4 | Basis | **Was:** Quantisierungsformat (eigene Implementierung).<br>**Nutzen:** Speicher dieses Moduls verkleinern.<br>**Wofür:** int8. |
+| `format` | Text | `'int8'` | Auswahl: int8 \| int4 \| nf4 \| pal4 | Basis | **Was:** Quantisierungsformat (eigene Implementierung).<br>**Nutzen:** Speicher dieses Moduls verkleinern.<br>**Wofür:** int8. |
 | `group_size` | Ganzzahl (oder None) | `128` | ≥ 8 | Basis | **Was:** Gruppengröße (None = pro Kanal).<br>**Nutzen:** Genauigkeit vs. Skalen-Speicher.<br>**Wofür:** 128. |
 
 #### `module_op:lora` — Stufe Fortgeschritten
@@ -5201,6 +5253,68 @@ Fabrik-Signatur: `factory(args) -> callable(model, name, module, ctx)`
 **Nutzen:** Analyse: Wo explodieren oder verschwinden Aktivierungen?
 
 **Wofür:** Debugging, Interpretierbarkeit.
+
+#### `module_op:resize_linear` — Stufe Experte
+
+**Was:** Lineare Schicht mit neuer Breite anlegen (Struktur nach Pruning).
+
+**Nutzen:** Hält die Form eines komprimierten Modells beim Speichern/Laden reproduzierbar.
+
+**Wofür:** Wird automatisch von der Kompression eingetragen.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `in_features` | Ganzzahl (oder None) | `None` | ≥ 1 | Basis | **Was:** Neue Eingabebreite (None = unverändert).<br>**Nutzen:** Formänderung nach Pruning.<br>**Wofür:** Wird von der Kompression gesetzt. |
+| `out_features` | Ganzzahl (oder None) | `None` | ≥ 1 | Basis | **Was:** Neue Ausgabebreite (None = unverändert).<br>**Nutzen:** Formänderung nach Pruning.<br>**Wofür:** Wird von der Kompression gesetzt. |
+
+#### `module_op:resize_norm` — Stufe Experte
+
+**Was:** Normalisierung mit neuer Breite (Struktur nach Pruning).
+
+**Nutzen:** Wie resize_linear.
+
+**Wofür:** Automatisch.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `num_features` | Ganzzahl | `1` | ≥ 1 | Basis | **Was:** Neue Merkmalsbreite.<br>**Nutzen:** Formänderung nach Neuronen-Pruning.<br>**Wofür:** Wird von der Kompression gesetzt. |
+
+#### `module_op:resize_attention` — Stufe Experte
+
+**Was:** Attention mit weniger Köpfen (Struktur nach Kopf-Pruning).
+
+**Nutzen:** Wie resize_linear.
+
+**Wofür:** Automatisch.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `num_heads` | Ganzzahl | `1` | ≥ 1 | Basis | **Was:** Verbleibende Query-Köpfe.<br>**Nutzen:** Nach Kopf-Pruning.<br>**Wofür:** Automatisch gesetzt. |
+| `num_kv_heads` | Ganzzahl | `1` | ≥ 1 | Basis | **Was:** Verbleibende KV-Köpfe.<br>**Nutzen:** Nach Kopf-Pruning.<br>**Wofür:** Automatisch gesetzt. |
+
+#### `module_op:factorize` — Stufe Fortgeschritten
+
+**Was:** Lineare Schicht per SVD in zwei schmale Schichten zerlegen (Rang r).
+
+**Nutzen:** Spart Parameter und Rechenzeit, wenn die Matrix 'eigentlich' niedrigrangig ist.
+
+**Wofür:** Kompression großer Projektionen; auch manuell als Modul-Regel nutzbar.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `rank` | Ganzzahl | `8` | ≥ 1 | Basis | **Was:** Rang r der Zerlegung W ≈ B·A.<br>**Nutzen:** Kleiner = weniger Parameter, größerer Fehler.<br>**Wofür:** Automatisch gesetzt. |
+
+#### `module_op:drop_items` — Stufe Fortgeschritten
+
+**Was:** Einträge einer ModuleList entfernen (z. B. Transformer-Blöcke).
+
+**Nutzen:** Tiefe reduzieren: weniger Schichten = schneller und kleiner.
+
+**Wofür:** Layer-Pruning (wird von der Kompression gesetzt, auch manuell nutzbar).
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `indices` | Liste[Ganzzahl] | `[]` |  | Basis | **Was:** Zu entfernende Positionen der ModuleList (Original-Nummerierung).<br>**Nutzen:** Entfernt z. B. ganze Transformer-Blöcke.<br>**Wofür:** Automatisch gesetzt. |
 
 
 ### Registry `tensor_op`
@@ -5528,6 +5642,170 @@ Fabrik-Signatur: `factory(args) -> callable(tensor) -> tensor`
 **Nutzen:** Kontrollexperiment.
 
 **Wofür:** Ablationen.
+
+
+### Registry `compress_step`
+
+<a id="registry-compress-step"></a>
+
+**Kompressions-Schritte** – Einzelne Schritte der Modell-Kompression ('eindampfen'). Kleinere, schnellere Modelle für schwächere Geräte – mit messbarem Qualitätsverlust bzw. Heilung.
+
+Fabrik-Signatur: `factory(args) -> callable(ctx: CompressionContext) -> str (Beschreibung)`
+
+#### `compress_step:prune_ffn` (Aliase: `ffn_pruning`) — Stufe Basis
+
+**Was:** FFN-Neuronen entfernen (strukturiert).
+
+**Nutzen:** Echte Ersparnis an Parametern und Rechenzeit.
+
+**Wofür:** Transformer/SSM/Hybrid (MLP-, GLU- und MoE-Experten-FFNs).
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `amount` | Kommazahl | `0.3` | Bereich 0.0 … 0.95 | Basis | **Was:** Anteil der FFN-Neuronen, die entfernt werden.<br>**Nutzen:** FFNs enthalten meist ~⅔ der Parameter.<br>**Wofür:** 0.2–0.5. |
+| `importance` | Text | `'activation'` | Auswahl: magnitude \| activation \| taylor \| random | Basis | **Was:** Wie die Wichtigkeit bestimmt wird.<br>**Nutzen:** Entscheidet, WAS entfernt wird – großer Einfluss auf die Qualität.<br>**Wofür:** activation (mit Daten), magnitude (ohne Daten). |
+| `layers` | Text (oder None) | `None` |  | Basis | **Was:** Nur in diesen Blöcken (Selektor).<br>**Nutzen:** Z. B. hintere Schichten stärker beschneiden.<br>**Wofür:** None = alle. |
+| `multiple_of` | Ganzzahl | `8` | ≥ 1 | Experte | **Was:** Neue Breite auf ein Vielfaches runden.<br>**Nutzen:** Vielfache von 8/64 rechnen auf GPUs schneller.<br>**Wofür:** 8. |
+
+#### `compress_step:prune_heads` (Aliase: `head_pruning`) — Stufe Basis
+
+**Was:** Attention-Köpfe entfernen.
+
+**Nutzen:** Weniger Rechenaufwand in der Attention, bei 'group' auch kleinerer KV-Cache.
+
+**Wofür:** Transformer, Hybride.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `amount` | Kommazahl | `0.25` | Bereich 0.0 … 0.95 | Basis | **Was:** Anteil der Attention-Köpfe, die entfernt werden.<br>**Nutzen:** Viele Köpfe sind redundant (Michel et al. 2019).<br>**Wofür:** 0.2–0.5. |
+| `importance` | Text | `'activation'` | Auswahl: magnitude \| activation \| taylor \| random | Basis | **Was:** Wie die Wichtigkeit bestimmt wird.<br>**Nutzen:** Entscheidet, WAS entfernt wird – großer Einfluss auf die Qualität.<br>**Wofür:** activation (mit Daten), magnitude (ohne Daten). |
+| `layers` | Text (oder None) | `None` |  | Basis | **Was:** Nur in diesen Blöcken.<br>**Nutzen:** Selektiv.<br>**Wofür:** None = alle. |
+| `granularity` | Text | `'auto'` | Auswahl: auto \| query \| group | Fortgeschritten | **Was:** Was als Einheit entfernt wird.<br>**Nutzen:** group spart zusätzlich KV-Cache.<br>**Wofür:** auto. |
+
+#### `compress_step:drop_layers` (Aliase: `layer_pruning`) — Stufe Basis
+
+**Was:** Ganze Blöcke entfernen.
+
+**Nutzen:** Proportional schneller (Tiefe) – oft erstaunlich verlustarm.
+
+**Wofür:** Tiefe Modelle.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `count` | Ganzzahl (oder None) | `1` | ≥ 0 | Basis | **Was:** Anzahl zu entfernender Blöcke (None = 'amount' verwenden).<br>**Nutzen:** Weniger Tiefe = proportional schneller.<br>**Wofür:** 1–25 % der Blöcke. |
+| `amount` | Kommazahl (oder None) | `None` | Bereich 0.0 … 0.9 | Basis | **Was:** Anteil zu entfernender Blöcke (wenn count = None).<br>**Nutzen:** Relativ zur Tiefe.<br>**Wofür:** 0.25. |
+| `importance` | Text | `'block_influence'` | Auswahl: block_influence \| last \| magnitude \| random | Basis | **Was:** Auswahl der Blöcke.<br>**Nutzen:** Block-Einfluss ist meist am besten.<br>**Wofür:** block_influence. |
+| `keep_first_last` | Ja/Nein | `True` |  | Basis | **Was:** Ersten und letzten Block nie entfernen.<br>**Nutzen:** Sie sind fast immer besonders wichtig.<br>**Wofür:** an. |
+
+#### `compress_step:prune_mlp` — Stufe Basis
+
+**Was:** Neuronen eines MLP-Modells entfernen.
+
+**Nutzen:** Schmalere Schichten.
+
+**Wofür:** Modell 'mlp'.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `amount` | Kommazahl | `0.3` | Bereich 0.0 … 0.95 | Basis | **Was:** Anteil der Neuronen je versteckter Schicht (Modell 'mlp').<br>**Nutzen:** Schmalere Schichten.<br>**Wofür:** 0.2–0.5. |
+| `importance` | Text | `'magnitude'` | Auswahl: magnitude \| activation \| taylor \| random | Basis | **Was:** Wie die Wichtigkeit bestimmt wird.<br>**Nutzen:** Entscheidet, WAS entfernt wird – großer Einfluss auf die Qualität.<br>**Wofür:** activation (mit Daten), magnitude (ohne Daten). |
+| `multiple_of` | Ganzzahl | `1` | ≥ 1 | Experte | **Was:** Rundung der Breite.<br>**Nutzen:** GPU-freundliche Breiten.<br>**Wofür:** 1. |
+
+#### `compress_step:low_rank` (Aliase: `svd`) — Stufe Basis
+
+**Was:** Lineare Schichten per SVD zerlegen.
+
+**Nutzen:** Spart Parameter, wo Matrizen 'eigentlich' niedrigrangig sind.
+
+**Wofür:** Große Projektionen, nach dem Training.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `energy` | Kommazahl | `0.9` | Bereich 0.1 … 1.0 | Basis | **Was:** Anteil der 'Energie' (Σ Singulärwerte²), der erhalten bleibt.<br>**Nutzen:** Höher = genauer, weniger Ersparnis.<br>**Wofür:** 0.85–0.95. |
+| `rank_ratio` | Kommazahl (oder None) | `None` | Bereich 0.01 … 1.0 | Fortgeschritten | **Was:** Fester Rang als Anteil von min(in, out) (statt energy).<br>**Nutzen:** Planbare Größe.<br>**Wofür:** 0.25–0.5. |
+| `targets` | Text (oder None) | `None` |  | Fortgeschritten | **Was:** Regex: nur diese Schichten.<br>**Nutzen:** Z. B. nur FFN ('ffn').<br>**Wofür:** None = alle linearen. |
+| `exclude` | Text (oder None) | `'lm_head\|embed\|router'` |  | Fortgeschritten | **Was:** Regex: nie zerlegen.<br>**Nutzen:** Empfindliche Teile schützen.<br>**Wofür:** lm_head\|embed\|router. |
+| `min_saving` | Kommazahl | `0.1` | Bereich 0.0 … 0.9 | Experte | **Was:** Nur zerlegen, wenn mindestens dieser Anteil Parameter gespart wird.<br>**Nutzen:** Verhindert Zerlegung ohne Nutzen.<br>**Wofür:** 0.1. |
+
+#### `compress_step:sparsify` (Aliase: `magnitude_pruning`) — Stufe Basis
+
+**Was:** Unstrukturiertes Pruning (kleinste Gewichte = 0).
+
+**Nutzen:** Hohe Kompressionsraten mit Sparse-Formaten/Zip.
+
+**Wofür:** Speichergröße, Vorbereitung auf Sparse-Kernel.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `sparsity` | Kommazahl | `0.5` | Bereich 0.0 … 0.99 | Basis | **Was:** Anteil der Gewichte, die auf 0 gesetzt werden.<br>**Nutzen:** Mit Sparse-Formaten/Zip kleiner; bis ~50 % oft fast verlustfrei.<br>**Wofür:** 0.3–0.7. |
+| `scope` | Text | `'global'` | Auswahl: global \| layer | Basis | **Was:** Wie die Schwelle bestimmt wird.<br>**Nutzen:** global schont wichtige Schichten.<br>**Wofür:** global. |
+| `targets` | Text (oder None) | `None` |  | Fortgeschritten | **Was:** Regex: nur diese Gewichte.<br>**Nutzen:** Selektiv.<br>**Wofür:** None. |
+| `exclude` | Text (oder None) | `'embed\|norm\|lm_head'` |  | Fortgeschritten | **Was:** Regex: auslassen.<br>**Nutzen:** Empfindliche Teile schützen.<br>**Wofür:** embed\|norm\|lm_head. |
+
+#### `compress_step:heal` (Aliase: `distill`, `heilen`) — Stufe Basis
+
+**Was:** Kurze Distillation vom unkomprimierten Original.
+
+**Nutzen:** Holt einen Großteil der durch Pruning verlorenen Qualität zurück.
+
+**Wofür:** Nach jedem stärkeren Strukturschritt.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `steps` | Ganzzahl | `200` | ≥ 1 | Basis | **Was:** Trainingsschritte der Heilung.<br>**Nutzen:** Mehr Schritte holen mehr Qualität zurück.<br>**Wofür:** 100–2000. |
+| `lr` | Kommazahl | `0.0005` | ≥ 0.0 | Basis | **Was:** Lernrate.<br>**Nutzen:** Klein halten – das Modell ist schon trainiert.<br>**Wofür:** 1e-4–1e-3. |
+| `temperature` | Kommazahl | `2.0` | ≥ 0.001 | Basis | **Was:** Distillations-Temperatur.<br>**Nutzen:** Weiche Ziele.<br>**Wofür:** 1–4. |
+| `alpha` | Kommazahl | `0.7` | Bereich 0.0 … 1.0 | Basis | **Was:** Anteil Lehrer-Verlust (Rest: echte Labels/nächstes Token).<br>**Nutzen:** Balance.<br>**Wofür:** 0.5–0.9. |
+| `feature_weight` | Kommazahl | `0.5` | ≥ 0.0 | Basis | **Was:** Gewicht der Feature-Distillation (innere Zustände).<br>**Nutzen:** Hilft nach starkem Strukturumbau.<br>**Wofür:** 0.1–1. |
+| `kd_loss` | Text | `'kl'` | Auswahl: kl \| reverse_kl \| js \| mse | Basis | **Was:** Distillationsverlust.<br>**Nutzen:** kl Standard; reverse_kl für Sprachmodelle.<br>**Wofür:** kl. |
+| `batch_size` | Ganzzahl (oder None) | `None` | ≥ 1 | Fortgeschritten | **Was:** Batchgröße (None = wie im Projekt).<br>**Nutzen:** Speicher vs. Tempo.<br>**Wofür:** None. |
+
+#### `compress_step:finetune` — Stufe Basis
+
+**Was:** Normales Nachtraining.
+
+**Nutzen:** Ohne Lehrer.
+
+**Wofür:** Wenn kein Original vorliegt.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `steps` | Ganzzahl | `200` | ≥ 1 | Basis | **Was:** Trainingsschritte mit dem normalen Paradigma.<br>**Nutzen:** Nachtraining.<br>**Wofür:** 100–1000. |
+| `lr` | Kommazahl | `0.0003` | ≥ 0.0 | Basis | **Was:** Lernrate.<br>**Nutzen:** Klein halten.<br>**Wofür:** 1e-4–5e-4. |
+
+#### `compress_step:quantize` — Stufe Basis
+
+**Was:** Gewichte quantisieren (int8/int4/nf4/pal4).
+
+**Nutzen:** ¼ bis ⅛ des Speichers.
+
+**Wofür:** Als letzter Schritt.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `format` | Text | `'int8'` | Auswahl: int8 \| int4 \| nf4 \| pal4 | Basis | **Was:** Format der Gewichte.<br>**Nutzen:** int8 ≈ ¼, int4/nf4/pal4 ≈ ⅛ des float32-Speichers.<br>**Wofür:** int8 (sicher), nf4 (normalverteilte Gewichte), pal4 (k-means-Palette, Apple-artig). |
+| `group_size` | Ganzzahl (oder None) | `64` | ≥ 8 | Basis | **Was:** Gruppengröße der Skalen (None = pro Kanal).<br>**Nutzen:** Kleinere Gruppen = genauer.<br>**Wofür:** 64. |
+| `skip` | Text (oder None) | `'lm_head'` |  | Basis | **Was:** Regex: nicht quantisieren.<br>**Nutzen:** Ausgabeschicht schützen.<br>**Wofür:** lm_head. |
+
+#### `compress_step:dtype` (Aliase: `half`) — Stufe Basis
+
+**Was:** Alle Gewichte in 16 Bit.
+
+**Nutzen:** Halber Speicher, auf GPUs/Apple oft schneller.
+
+**Wofür:** GPU-/Mobil-Deployment.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `dtype` | Text | `'bfloat16'` | Auswahl: float16 \| bfloat16 | Basis | **Was:** Ziel-Datentyp aller Gewichte.<br>**Nutzen:** Halber Speicher; bfloat16 robust, float16 für Mobil-GPUs/Apple.<br>**Wofür:** GPU: bfloat16, Smartphone/Apple: float16. |
+
+#### `compress_step:merge_lora` — Stufe Basis
+
+**Was:** LoRA-Adapter in die Gewichte einrechnen.
+
+**Nutzen:** Keine Zusatzkosten bei der Inferenz.
+
+**Wofür:** Vor dem Export.
 
 
 ### Registry `dataset`

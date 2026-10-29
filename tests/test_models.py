@@ -7,7 +7,11 @@ from ki_baukasten import build_model, registry
 from ki_baukasten.models.composite import _call, _main_output
 
 
-@pytest.mark.parametrize("name", registry("model").names())
+# Import-Modelle ('extern') brauchen eine Datei – sie werden in test_import.py geprüft.
+_BUILDABLE = [n for n in registry("model").names() if "import" not in registry("model").get(n).tags]
+
+
+@pytest.mark.parametrize("name", _BUILDABLE)
 def test_every_model_forward_backward(name):
     m = build_model(name)
     out = _call(m, m.example_input(2))

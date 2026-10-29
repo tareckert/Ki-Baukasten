@@ -125,6 +125,27 @@ class Project:
         return p
 
     @classmethod
+    def import_model(cls, path: str | Path, format: str = "auto", data: Any = "none", name: str | None = None,
+                     **model_args: Any) -> "Project":
+        """Fremdes Modell importieren (torch.export, TorchScript, state_dict, safetensors, Hugging Face).
+
+        Danach funktionieren alle Werkzeuge: ``architecture()``, Regeln, LoRA, ``compress()``, ``train()``
+        (mit passenden Daten), ``distill()`` und ``export()``. Beispiel::
+
+            p = Project.import_model("modell.pt2", input_shape=[1, 32])
+            p.set("tensor_rules", [{"target": "lm_head", "op": "freeze"}])
+            p.export("modell_neu", "export")
+        """
+        cfg = ProjectConfig.from_dict({
+            "name": name or Path(str(path)).stem or "import",
+            "model": {"name": "extern", "args": {"path": str(path), "format": format, **model_args}},
+            "data": data, "auto_fit_dims": False,
+        })
+        p = cls(cfg)
+        p.build()
+        return p
+
+    @classmethod
     def from_file(cls, path: str | Path) -> "Project":
         """Projekt aus JSON/YAML-Datei."""
         return cls(ProjectConfig.load(path))

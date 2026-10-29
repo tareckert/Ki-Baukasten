@@ -144,7 +144,8 @@ class BaukastenGUI(tk.Tk):
         cb.bind("<<ComboboxSelected>>", lambda e: self.load_preset(self.preset_var.get()))
         HoverTip(cb, lambda: registry("preset").get(self.preset_var.get()).tooltip.format()
                  if self.preset_var.get() in registry("preset") else "")
-        for text, cmd in (("Öffnen…", self.open_file), ("Speichern…", self.save_file)):
+        for text, cmd in (("Öffnen…", self.open_file), ("Speichern…", self.save_file),
+                          ("Modell importieren…", self.import_model)):
             ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=2)
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=6)
         ttk.Label(bar, text="Stufe:").pack(side="left")
@@ -168,6 +169,10 @@ class BaukastenGUI(tk.Tk):
             ("Trainieren", self.train, "Training im Hintergrund starten (Fortschritt im Protokoll)."),
             ("Aufbau", self.architecture, "Komplette Auflistung des Modells: Module, Formen, Schichten, Anpassungspfade."),
             ("Optimieren", self.advise, "Ratgeber: Vorschläge für Speicher, Tempo und Stabilität (mit Übernahme)."),
+            ("Probelauf & Gewichte", self.inspector,
+             "Testlauf im Fenster: alle Wege durchs Netz, Aktivierungen, Gradienten, Gewichte, Attention, Metriken."),
+            ("Reduzieren / Export", self.reduce_dialog,
+             "Zielsystem wählen (Smartphone, Raspberry Pi, CPU, GPU …): Empfehlung, Verkleinern, Exportieren."),
             ("↶ Rückgängig", self.undo, "Letzte Änderung zurücknehmen."),
             ("↷ Wiederholen", self.redo, "Zurückgenommene Änderung wiederherstellen."),
         ):
@@ -614,6 +619,85 @@ class BaukastenGUI(tk.Tk):
             win.destroy()
 
         ttk.Button(win, text="Übernehmen", command=apply).pack(pady=6)
+
+    def inspector(self) -> None:
+        from .inspector import InspectorWindow
+
+        InspectorWindow(self, self.project)
+
+    def import_model(self) -> None:
+        from tkinter import simpledialog
+
+        path = filedialog.askopenfilename(title="Modell importieren", filetypes=[
+            ("PyTorch", "*.pt2 *.pt *.pth *.ts *.bin *.safetensors"), ("Alle", "*")])
+        if not path:
+            return
+        shape = simpledialog.askstring("Beispiel-Eingabe", "Form einer Eingabe (z. B. 1,16 für Text oder "
+                                       "1,3,224,224 für Bilder):", initialvalue="1,16", parent=self)
+        dtype = "long" if messagebox.askyesno("Eingabetyp", "Sind die Eingaben Token-IDs (ganze Zahlen)?",
+                                             parent=self) else "float32"
+        try:
+            from ..project import Project
+            self.project = Project.import_model(path, input_shape=[int(v) for v in (shape or "1,16").split(",")],
+                                                input_dtype=dtype)
+            self.log_write(f"✓ importiert: {path} ({self.project.model.import_format})\n")
+            self.refresh_tree()
+            self.select_path("")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Import", str(exc), parent=self)
+
+    def reduce_dialog(self) -> None:
+        from ..analysis.targets import TARGETS
+
+        win = tk.Toplevel(self)
+        win.title("Reduzieren für ein Zielsystem")
+        win.geometry("900x520")
+        top = ttk.Frame(win, padding=6)
+        top.pack(fill="x")
+        ttk.Label(top, text="Zielsystem:").pack(side="left")
+        names = {p.title: k for k, p in TARGETS.items()}
+        var = tk.StringVar(value=TARGETS["smartphone"].title)
+        cb = ttk.Combobox(top, textvariable=var, values=list(names), width=50, state="readonly")
+        cb.pack(side="left", padx=4)
+        text = tk.Text(win, wrap="word", font=("TkFixedFont", 9))
+        text.pack(fill="both", expand=True, padx=6, pady=6)
+
+        def show(_e=None):
+            text.delete("1.0", "end")
+            try:
+                text.insert("1.0", str(self.project.recommend_for(names[var.get()])) + "\n\n"
+                            + self.project.deployment_overview(list(TARGETS)))
+            except Exception as exc:  # noqa: BLE001
+                text.insert("1.0", f"Empfehlung nicht möglich: {exc}")
+
+        def apply():
+            key = names[var.get()]
+
+            def job():
+                reduced = self.project.reduce_for(key)
+                self.project = reduced
+                rep = reduced.last_compression
+                return str(rep) if rep is not None else "Keine Kompression nötig."
+
+            win.destroy()
+            self._run_bg(f"Reduzieren für {key}", job)
+
+        def export():
+            path = filedialog.asksaveasfilename(title="Exportieren", defaultextension=".pt2",
+                                                filetypes=[("torch.export", "*.pt2"), ("TorchScript", "*.ts"),
+                                                           ("ONNX", "*.onnx"), ("Gewichte", "*.pt")], parent=win)
+            if not path:
+                return
+            fmt = {".pt2": "export", ".ts": "torchscript", ".onnx": "onnx", ".pt": "state_dict"}.get(
+                path[path.rfind("."):], "export")
+            self._run_bg("Export", lambda: f"Exportiert: {self.project.export(path, fmt)}")
+
+        cb.bind("<<ComboboxSelected>>", show)
+        btns = ttk.Frame(win, padding=6)
+        btns.pack(fill="x")
+        ttk.Button(btns, text="Empfehlung anwenden (verkleinern)", command=apply).pack(side="left", padx=4)
+        ttk.Button(btns, text="Exportieren…", command=export).pack(side="left", padx=4)
+        show()
 
     def undo(self) -> None:
         if self.project.undo():
