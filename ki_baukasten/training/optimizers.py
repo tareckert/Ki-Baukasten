@@ -19,6 +19,7 @@ rmsprop        klassisch in RL/RNNs
 adafactor      speichersparend (faktorisierte zweite Momente) – große Modelle
 lion           nur Vorzeichen-Updates, wenig Speicher (Chen et al. 2023)
 muon           orthogonalisierte Momentum-Updates für Matrizen (2024/25, experimentell)
+adamw8bit      AdamW mit 8-Bit-Zuständen (¼ Optimierer-Speicher), eigene Implementierung
 =============  ==============================================================
 
 Registry ``optimizer``
@@ -30,6 +31,7 @@ schichtweise Lernraten, Tensor-Chirurgie-Regeln) und enthalten bereits ``lr``.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import torch
@@ -105,6 +107,20 @@ class AdamWConfig(AdamConfig):
         "Korrekte Regularisierung für adaptive Optimierer – der Grund, AdamW statt Adam zu nehmen.",
         "0.01…0.1 (LLMs 0.1).",
     ), group="Regularisierung")
+
+
+class AdamW8bitConfig(AdamWConfig):
+    block_size = Param(256, min=16, tooltip=T(
+        "Blockgröße der 8-Bit-Quantisierung der Optimierer-Zustände.",
+        "Jeder Block hat eine eigene Skala – kleiner = genauer, minimal mehr Speicher.", "256."),
+        level=Level.EXPERT)
+    min_8bit_size = Param(4096, min=0, tooltip=T(
+        "Parameter mit weniger Elementen behalten 32-Bit-Zustände.",
+        "Kleine Tensoren (Biases, Normen) sparen kaum, sind aber empfindlich.", "4096."), level=Level.EXPERT)
+    dynamic_range = Param(14.0, min=2.0, max=40.0, tooltip=T(
+        "Dynamikbereich der logarithmischen Quantisierung (natürlicher Log; 14 ≈ Faktor 10⁶ pro Block).",
+        "Größer = auch sehr kleine Werte darstellbar, aber gröbere Stufen.", "14 (m), doppelt für v."),
+        level=Level.EXPERIMENTAL)
 
 
 class NAdamConfig(AdamConfig):
@@ -201,6 +217,112 @@ class Lion(Optimizer):
                 p.add_(update, alpha=-group["lr"])
                 m.mul_(b2).add_(p.grad, alpha=1 - b2)
         return loss
+
+
+def _blocks(x: torch.Tensor, block: int) -> torch.Tensor:
+    flat = x.reshape(-1)
+    pad = (-flat.numel()) % block
+    if pad:
+        flat = torch.cat([flat, flat.new_zeros(pad)])
+    return flat.view(-1, block)
+
+
+class AdamW8bit(Optimizer):
+    """AdamW mit 8-Bit-Optimierer-Zuständen (eigene Implementierung, jedes Gerät).
+
+    Beide Momente werden blockweise **logarithmisch** quantisiert (relativer
+    Fehler statt absolutem – kleine Werte gehen nicht verloren):
+
+    * ``m`` (vorzeichenbehaftet): 1 Vorzeichen-Bit + 7 Bit Betrag, 0 = exakt null
+    * ``v`` (nicht negativ): 8 Bit; Unterlauf wird auf die kleinste Stufe gesetzt
+      (nie 0 → keine Division durch fast null)
+
+    Speicher: ~2 Byte statt 8 Byte pro Parameter (Faktor 4 weniger). Kleine
+    Tensoren (``min_8bit_size``) behalten 32-Bit-Zustände.
+    """
+
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01, block_size=256,
+                 min_8bit_size=4096, dynamic_range=14.0):
+        super().__init__(params, dict(lr=lr, betas=tuple(betas), eps=eps, weight_decay=weight_decay,
+                                      block_size=block_size, min_8bit_size=min_8bit_size, dynamic_range=dynamic_range))
+
+    # ------------------------------------------------------------ Quantisierung
+    @staticmethod
+    def _q_signed(x: torch.Tensor, block: int, R: float) -> tuple[torch.Tensor, torch.Tensor]:
+        xb = _blocks(x.float(), block)
+        hi = xb.abs().amax(1, keepdim=True).clamp_min(1e-30).log()
+        mag = xb.abs().clamp_min(1e-38).log()
+        k = ((mag - (hi - R)) / R * 126).round().add_(1).clamp_(1, 127)
+        k = torch.where(mag < hi - R, torch.zeros_like(k), k)
+        return (k * xb.sign()).to(torch.int8), hi
+
+    @staticmethod
+    def _dq_signed(q: torch.Tensor, hi: torch.Tensor, R: float, like: torch.Tensor) -> torch.Tensor:
+        k = q.float()
+        mag = torch.exp(hi - R + (k.abs() - 1) / 126 * R)
+        out = torch.where(k == 0, torch.zeros_like(mag), mag * k.sign())
+        return out.reshape(-1)[: like.numel()].view_as(like)
+
+    @staticmethod
+    def _q_unsigned(x: torch.Tensor, block: int, R: float) -> tuple[torch.Tensor, torch.Tensor]:
+        xb = _blocks(x.float(), block)
+        hi = xb.amax(1, keepdim=True).clamp_min(1e-38).log()
+        k = ((xb.clamp_min(1e-38).log() - (hi - R)) / R * 255).round().clamp_(0, 255)
+        return k.to(torch.uint8), hi
+
+    @staticmethod
+    def _dq_unsigned(q: torch.Tensor, hi: torch.Tensor, R: float, like: torch.Tensor) -> torch.Tensor:
+        out = torch.exp(hi - R + q.float() / 255 * R)
+        out = torch.where(hi <= math.log(1e-38) + 1, torch.zeros_like(out), out)  # Block komplett null
+        return out.reshape(-1)[: like.numel()].view_as(like)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        for group in self.param_groups:
+            b1, b2 = group["betas"]
+            block, R = group["block_size"], group["dynamic_range"]
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                g = p.grad.float()
+                state = self.state[p]
+                small = p.numel() < group["min_8bit_size"]
+                if "step" not in state:
+                    state["step"] = 0
+                    if small:
+                        state["m"], state["v"] = torch.zeros_like(g), torch.zeros_like(g)
+                if small:
+                    m, v = state["m"], state["v"]
+                elif "m_q" in state:
+                    m = self._dq_signed(state["m_q"], state["m_hi"], R, g)
+                    v = self._dq_unsigned(state["v_q"], state["v_hi"], 2 * R, g)
+                else:
+                    m, v = torch.zeros_like(g), torch.zeros_like(g)
+                state["step"] += 1
+                t = state["step"]
+                m.lerp_(g, 1 - b1)
+                v.mul_(b2).addcmul_(g, g, value=1 - b2)
+                denom = (v / (1 - b2 ** t)).sqrt_().add_(group["eps"])
+                update = (m / (1 - b1 ** t)) / denom
+                p.mul_(1 - group["lr"] * group["weight_decay"])
+                p.add_(update.to(p.dtype), alpha=-group["lr"])
+                if not small:
+                    state["m_q"], state["m_hi"] = self._q_signed(m, block, R)
+                    state["v_q"], state["v_hi"] = self._q_unsigned(v, block, 2 * R)
+        return loss
+
+    def state_bytes(self) -> int:
+        """Tatsächlicher Speicher aller Optimierer-Zustände in Bytes."""
+        total = 0
+        for st in self.state.values():
+            for v in st.values():
+                if isinstance(v, torch.Tensor):
+                    total += v.numel() * v.element_size()
+        return total
 
 
 def newton_schulz(g: torch.Tensor, steps: int = 5, eps: float = 1e-7) -> torch.Tensor:
@@ -325,6 +447,15 @@ if hasattr(torch.optim, "Adafactor"):
 R("lion", lambda a, g: Lion(g, **_kw(a, "lr", "betas", "weight_decay")), config=LionConfig, level=Level.ADVANCED,
   tooltip=T("Lion: Vorzeichen-Momentum.", "Halber Optimierer-Speicher von Adam, oft gleich gut.",
             "Große Modelle, Bild-Transformer."))
+
+
+R("adamw8bit", lambda a, g: AdamW8bit(g, **_kw(a, "lr", "betas", "eps", "weight_decay", "block_size", "min_8bit_size",
+                                                  "dynamic_range")),
+  config=AdamW8bitConfig, aliases=("adam8bit",), level=Level.ADVANCED, tags=("speicher",), tooltip=T(
+      "AdamW mit 8-Bit-Zuständen (blockweise logarithmisch quantisiert).",
+      "Optimierer-Speicher sinkt von 8 auf ~2 Byte pro Parameter – bei großen Modellen oft der größte Posten.",
+      "Große Modelle / Feintuning mit knappem Speicher; Verhalten praktisch wie AdamW.",
+  ))
 
 
 @R("muon", config=MuonConfig, level=Level.EXPERIMENTAL, tooltip=T(

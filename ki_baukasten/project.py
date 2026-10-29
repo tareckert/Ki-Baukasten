@@ -358,7 +358,11 @@ class Project:
         model = p.build()
         weights = d / "modell.pt"
         if weights.exists():
-            model.load_state_dict(torch.load(weights, map_location="cpu", weights_only=True))
+            state = torch.load(weights, map_location="cpu", weights_only=True)
+            if any(k.endswith(".qweight") or ".lora_" in k for k in state):
+                # Quantisierte/LoRA-Modelle: gleiche Struktur herstellen, dann laden.
+                MemoryManager(p.config.memory).apply_structure(model, training=False)
+            model.load_state_dict(state)
         if (d / "verlauf.json").exists():
             p.history = json.loads((d / "verlauf.json").read_text(encoding="utf-8"))
         return p

@@ -7,8 +7,9 @@ ki_baukasten.memory.manager
 Reihenfolge in ``prepare_model``
 --------------------------------
 1. Datentyp der Gewichte (``param_dtype``)
-2. Fake-Quantisierung (Quantization-Aware Training)
-3. Gradient-Checkpointing der gewählten Blöcke
+2. Struktur: Gewichts-Quantisierung (int8/int4/nf4/torchao) und LoRA-Adapter
+   (``apply_structure`` – auch beim Laden gespeicherter Projekte genutzt)
+3. Fake-Quantisierung (Quantization-Aware Training), Gradient-Checkpointing
 4. Platzierung: Streaming (trainierbar), Offloading/Swapping **oder** komplett auf das Gerät
 5. Speicherlayout ``channels_last``
 6. ``torch.compile``
@@ -30,7 +31,9 @@ from torch.utils.checkpoint import checkpoint
 
 from ..core import ConfigError, select_indices
 from .config import MemoryConfig
+from .lora import apply_lora
 from .offload import OffloadManager, select_offload_blocks
+from .quant import quantize_model, quantize_torchao
 from .streaming import enable_block_streaming
 
 DTYPES = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16, "float64": torch.float64}
@@ -121,16 +124,17 @@ def apply_fake_quant(model: nn.Module, bits: int, include_conv: bool) -> int:
 
 
 def quantize_dynamic_int8(model: nn.Module) -> nn.Module:
-    """Dynamische int8-Quantisierung linearer Schichten (CPU-Inferenz).
+    """VERALTET – dynamische int8-Quantisierung über ``torch.ao`` (CPU-Inferenz).
 
-    Nutzt ``torch.ao.quantization.quantize_dynamic``. PyTorch kündigt an, diese
-    API zugunsten des Pakets ``torchao`` zu entfernen – ist sie nicht mehr
-    vorhanden, gibt es einen verständlichen Hinweis statt eines kryptischen Fehlers.
+    PyTorch entfernt diese API zugunsten von ``torchao``. Empfohlen ist die
+    eigene Gewichts-Quantisierung ``memory.quantization = 'int8'`` (``memory.quant``),
+    die ohne torch.ao auf allen Geräten läuft. Fehlt die API, gibt es einen
+    verständlichen Hinweis statt eines kryptischen Fehlers.
     """
     quant = getattr(getattr(torch, "ao", None), "quantization", None)
     if quant is None or not hasattr(quant, "quantize_dynamic"):
         raise ImportError("dynamic_int8 benötigt torch.ao.quantization (in dieser PyTorch-Version nicht vorhanden). "
-                          "Alternative: 'pip install torchao' und dessen quantize_-API, oder quantization='fake_quant'.")
+                          "Alternative ohne Zusatzpaket: memory.quantization = 'int8' (eigene Implementierung) oder 'torchao_int8'.")
     model = model.cpu().eval()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
@@ -161,9 +165,28 @@ class MemoryManager:
     def autocast_dtype(self) -> torch.dtype | None:
         return {"bf16": torch.bfloat16, "fp16": torch.float16}.get(self.cfg.mixed_precision)
 
+    def apply_structure(self, model: nn.Module, training: bool = True) -> nn.Module:
+        """Strukturelle Umbauten (Quantisierung, LoRA) – ohne Geräte-Platzierung."""
+        c = self.cfg
+        if c.quantization in ("int8", "int4", "nf4") and not any(
+                type(m).__name__ == "QuantLinear" for m in model.modules()):
+            compute = None if c.quant_compute_dtype == "auto" else DTYPES[c.quant_compute_dtype]
+            done = quantize_model(model, c.quantization, c.quant_group_size, c.quant_skip, c.quant_only, compute)
+            if not done:
+                warnings.warn("Quantisierung: keine passende lineare Schicht gefunden.")
+            elif training and not c.lora.enabled:
+                warnings.warn("Quantisierte Gewichte sind eingefroren – für Feintuning memory.lora.enabled = true "
+                              "(QLoRA) setzen; trainiert werden sonst nur Biases/Normen/Embeddings.")
+        elif c.quantization in ("torchao_int8", "torchao_int4"):
+            quantize_torchao(model, c.quantization.split("_")[1], c.quant_group_size)
+        if c.lora.enabled and not any(getattr(m, "_ki_lora", False) for m in model.modules()):
+            apply_lora(model, c.lora)
+        return model
+
     def prepare_model(self, model: nn.Module, training: bool = True) -> nn.Module:
         c = self.cfg
         model = model.to(dtype=DTYPES[c.param_dtype]) if c.param_dtype != "float32" else model
+        model = self.apply_structure(model, training)
         if c.quantization == "fake_quant":
             apply_fake_quant(model, c.quant_bits, c.quant_targets == "linear_conv")
         elif c.quantization == "dynamic_int8":

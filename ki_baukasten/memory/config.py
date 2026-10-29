@@ -28,6 +28,7 @@ Optimierer-Zustände der Blöcke bleiben im RAM).
 from __future__ import annotations
 
 from ..core import BaseConfig, Level, NestedParam, Param, T
+from .lora import LoRAConfig
 
 _DTYPES = {
     "float32": "32-Bit (Standard, genau)",
@@ -125,18 +126,41 @@ class MemoryConfig(BaseConfig):
     offload = NestedParam(OffloadConfig, group="Auslagerung", level=Level.ADVANCED)
     quantization = Param("none", choices={
         "none": "keine",
-        "fake_quant": "Gewichte im Forward auf n Bit runden (Quantization-Aware Training, trainierbar)",
-        "dynamic_int8": "dynamische int8-Quantisierung linearer Schichten (nur CPU-Inferenz)",
+        "int8": "eigene Gewichts-Quantisierung 8 Bit (alle Geräte; Basis eingefroren, LoRA trainierbar)",
+        "int4": "eigene Gewichts-Quantisierung 4 Bit, gruppenweise (halber int8-Speicher)",
+        "nf4": "4-Bit NormalFloat wie QLoRA (beste 4-Bit-Qualität für normalverteilte Gewichte)",
+        "fake_quant": "Gewichte im Forward auf n Bit runden (Quantization-Aware Training, voll trainierbar)",
+        "torchao_int8": "int8 über das Paket torchao (optimierte Kernel, falls installiert)",
+        "torchao_int4": "int4 über das Paket torchao (optimierte Kernel, falls installiert)",
+        "dynamic_int8": "VERALTET: torch.ao dynamic int8 (nur CPU-Inferenz; PyTorch entfernt diese API)",
     }, group="Quantisierung", level=Level.ADVANCED, tooltip=T(
-        "Quantisierung der Gewichte.",
-        "Kleinere, schnellere Modelle; fake_quant bereitet ein Modell auf echte Quantisierung vor.",
-        "Edge-Geräte, CPU-Inferenz.",
+        "Quantisierung der Gewichte linearer Schichten.",
+        "int8 braucht ¼, int4/nf4 ⅛ des float32-Gewichtsspeichers – Inferenz großer Modelle und "
+        "QLoRA-Feintuning; fake_quant bereitet ein Modell auf echte Quantisierung vor.",
+        "Inferenz/Edge: int8; Feintuning großer Modelle: nf4 + memory.lora (QLoRA).",
+        "int8/int4/nf4 sind eine eigene Implementierung in reinem PyTorch – unabhängig von torch.ao.",
     ))
     quant_bits = Param(8, min=2, max=16, group="Quantisierung", level=Level.ADVANCED, tooltip=T(
         "Bitbreite für fake_quant.", "Weniger Bits = kleiner, ungenauer.", "8 (sicher), 4 (aggressiv)."))
+    quant_group_size = Param(128, type=int, min=8, nullable=True, group="Quantisierung", level=Level.ADVANCED,
+                             tooltip=T(
+        "Gruppengröße: so viele Gewichte einer Zeile teilen sich eine Skala (None = eine Skala pro Ausgabekanal).",
+        "Kleinere Gruppen = genauer (wichtig bei 4 Bit), minimal mehr Speicher für Skalen.",
+        "int8: None oder 128; int4/nf4: 32–128."))
+    quant_skip = Param("lm_head", type=str, nullable=True, group="Quantisierung", level=Level.ADVANCED, tooltip=T(
+        "Regex: Module, die NICHT quantisiert werden.",
+        "Ausgabeschicht und empfindliche Teile in voller Genauigkeit halten.", "'lm_head', 'lm_head|router'."))
+    quant_only = Param(None, type=str, nullable=True, group="Quantisierung", level=Level.EXPERT, tooltip=T(
+        "Regex: nur diese Module quantisieren (None = alle linearen Schichten).",
+        "Gezielt nur große Schichten (z. B. FFN) komprimieren.", "'ffn', 'blocks\\.(1[0-9])'."))
+    quant_compute_dtype = Param("auto", choices={
+        "auto": "wie die Eingabe bzw. autocast", "float32": "32 Bit", "bfloat16": "bf16", "float16": "fp16"},
+        group="Quantisierung", level=Level.EXPERT, tooltip=T(
+        "Datentyp, in den die Gewichte zum Rechnen entpackt werden.", "Geschwindigkeit vs. Genauigkeit.", "auto."))
     quant_targets = Param("linear", choices={"linear": "nur lineare Schichten", "linear_conv": "linear + Faltungen"},
                           group="Quantisierung", level=Level.EXPERT, tooltip=T(
-        "Welche Schichten quantisiert werden.", "Faltungen sind empfindlicher.", "linear."))
+        "Welche Schichten fake_quant betrifft.", "Faltungen sind empfindlicher.", "linear."))
+    lora = NestedParam(LoRAConfig, group="Quantisierung", level=Level.ADVANCED)
     channels_last = Param(False, group="Geschwindigkeit", level=Level.EXPERT, tooltip=T(
         "Speicherlayout NHWC für Faltungsnetze.", "Schneller auf Tensor-Core-GPUs.", "CNN-Training auf GPU."))
     compile = Param(False, group="Geschwindigkeit", level=Level.ADVANCED, tooltip=T(
