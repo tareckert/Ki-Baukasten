@@ -211,7 +211,9 @@ def capabilities_markdown() -> str:
         for choice in action._choices_actions:  # noqa: SLF001
             out.append(f"| `{choice.dest}` | {_esc(choice.help or '')} |")
     out += ["", "Grafische Oberfläche: `python -m ki_baukasten gui` – Menü (Datei · Assistent · Einstellungen · "
-            "Techniken · Ausführen · Analyse · Einsatz · Hilfe), Ziel-Assistent, Techniken-Fenster mit Reitern, "
+            "Techniken · Ausführen · Analyse · Qualität · Einsatz · Hilfe), Ziel-Assistent, Techniken-Fenster mit "
+            "Reitern, Perfektions-Check, Datenprüfung, Test, Basis, Fehleranalyse, Kalibrierung, Modellkarte, "
+            "HTTP-Dienst, "
             "Einstellungsbaum mit Tooltips und An/Aus/Eigen-Schaltern je Einstellung, Ansichtsfilter, Probelauf & "
             "Gewichte, Reduzieren/Export mit Notfall-Ausführung, Modell importieren, Rückgängig/Wiederholen.", ""]
     return "\n".join(out)
@@ -279,10 +281,52 @@ def _overview_sections() -> list[str]:
             "verteilt). Start: `python -m ki_baukasten verteilt projekt.json --prozesse 4 --strategie fsdp` (mehrere "
             "Rechner: `--knoten`, `--knoten-rang`, `--master`). Ausgaben und Speichern nur auf Prozess 0.", "",
             "## Ablauf: Suche, Schwarm, Evolution", "",
-            "`Project.run()` führt `workflow` aus: Suche (`random`, `grid`, `evolution`, `pso`, `pbt`) → Training "
-            "(normal, föderiert FedAvg/FedProx, Model Soup) → Kreuzvalidierung → Kompression → Export. Einzeln: "
-            "`tune(...)`, `federated_train(...)`, `model_soup(...)`, `cross_validate(k)`, `find_lr()`. Gradientenfrei: "
-            "Paradigma `evolution_strategies`.", ""]
+            "`Project.run()` führt `workflow` aus: Datenprüfung → Suche (`random`, `grid`, `evolution`, `pso`, `pbt`) "
+            "→ Training (normal, föderiert FedAvg/FedProx, Model Soup) → Test → Basis-Vergleich → Kalibrierung → "
+            "Robustheit/Fairness → Kreuzvalidierung → Kompression → Export → Speichern. Einzeln: `tune(...)`, "
+            "`federated_train(...)`, `model_soup(...)`, `cross_validate(k)`, `find_lr()`. Gradientenfrei: Paradigma "
+            "`evolution_strategies`.", ""]
+    out += _quality_sections()
+    return out
+
+
+def _quality_sections() -> list[str]:
+    """Anforderungs-Katalog, Daten, Bewertung, Vertrauen, Einsatz."""
+    from ..requirements import CATALOG, PHASES, coverage
+
+    cov = coverage()
+    out = ["## Anforderungs-Katalog & Perfektions-Check", "",
+           f"{len(CATALOG)} Anforderungen in {len(PHASES)} Phasen ({', '.join(PHASES.values())}), je Anwendung; "
+           f"{cov['vorhanden']} davon sind im Baukasten umsetzbar. `project.perfection_check()` zeigt für das eigene "
+           "Projekt aktiv · eingebaut · aus · offen · fehlt mit Punktzahl, `apply_perfection()` schaltet alles "
+           "Empfohlene ein, CLI `perfektion`, GUI „Qualität“. Vollständig: [ANFORDERUNGEN.md](ANFORDERUNGEN.md).", "",
+           "## Daten, Bewertung, Vertrauen, Einsatz", "",
+           "| Bereich | Möglichkeiten | Wo |", "|---|---|---|",
+           "| Eigene Daten | CSV (Kategorien, fehlende Werte + Indikator, Skalierung, Ziel-Skalierung), Texte mit Labels "
+           "(Tokenizer zeichen/wort/bpe), Bildordner, Segmentierungs-Masken, Audio (WAV → Log-Mel), Anweisungen (SFT) | "
+           "`data = csv`, `text_classification`, `image_folder`, `segmentation`, `audio`, `instructions` |",
+           "| Aufteilung | zufällig, stratifiziert, zeitlich; Testmenge, die beim Neutrainieren fest bleibt | "
+           "`training.validation_strategy`, `training.test_split`, `Project.test()` |",
+           "| Datenprüfung & Drift | Lecks, Duplikate, Überlappung, Klassen, NaN, Skalen, abgeschnittene Texte; PSI/KS "
+           "je Merkmal, Vorhersage-Drift | `data_check()`, `apply_data_fixes()`, `drift_report()` |",
+           "| Metriken | 27 Metriken (Registry `metric`), automatisch je Aufgabe, über alle Beispiele, Richtung für "
+           "Early Stopping/Suche automatisch | `training.metrics`, `training.auto_metrics` |",
+           "| Bewertung | Basis-Vergleich, Fehleranalyse (Konfusionsmatrix, sicherste Fehler), Klassengewichte | "
+           "`baseline()`, `error_analysis()`, `training.class_weights` |",
+           "| Vertrauen | Temperature Scaling, Schwelle, Enthaltung, Conformal Prediction, MC-Dropout, TTA | "
+           "`inference.*`, `calibrate()`, `predict_with_uncertainty()` |",
+           "| Erklärbarkeit & Fairness | Gradient × Eingabe, Integrated Gradients, Occlusion (auch Tokens), "
+           "Permutations-Wichtigkeit; Disparate Impact, Equalized Odds | `explain_prediction()`, "
+           "`feature_importance()`, `fairness_report()` |",
+           "| Robustheit | FGSM/PGD-Training, Robustheitsbericht (Rauschen/Angriffe) | `training.adversarial`, "
+           "`robustness_report()` |",
+           "| Wenige Labels | Active Learning (Unsicherheit, Marge, Entropie, Vielfalt), Pseudo-Labeling | "
+           "`select_for_labeling()`, `pseudo_label()` |",
+           "| Domänen | U-Net-Segmentierung, Audio-Klassifikation, Instruction-Tuning (Verlust nur auf Antworten), "
+           "Beam Search, n-Gramm-Sperre | `model = unet`, `ask()`, `generation.*` |",
+           "| Einsatz | Modellkarte, Umgebung, gespeicherte Vorverarbeitung, Rohdaten-Vorhersage, HTTP-Dienst, "
+           "Fortsetzen vom Checkpoint | `model_card()`, `save/load`, `predict_raw()`, `serve()`, "
+           "`training.resume_from` |", ""]
     return out
 
 

@@ -12,6 +12,8 @@ vollständige Aufbau-Darstellung eines Beispielmodells (so sieht die Ausgabe von
 flowchart LR
   Z["Ziele<br/>goals · from_goals"] -->|empfiehlt Vorlage + Techniken| A
   T["Techniken-Katalog<br/>enable / disable"] -->|setzt Einstellungen| A
+  P["Anforderungs-Katalog<br/>perfection_check · apply_perfection"] -->|prüft + schaltet Techniken| T
+  DQ["Daten<br/>CSV · Texte · Bilder · Masken · WAV · Anweisungen<br/>data_check · Aufteilung · Testmenge"] --> B
   A["ProjectConfig<br/>(JSON/YAML/Python)"] --> B["Validierung<br/>+ auto_fit_dims"]
   B --> C["Registry 'model'<br/>baut das Modell"]
   C --> D["Modul-Chirurgie<br/>module_rules"]
@@ -19,10 +21,13 @@ flowchart LR
   E --> F["MemoryManager<br/>Präzision · Quantisierung · LoRA ·<br/>Checkpointing · Streaming/Offload"]
   F --> G["Trainer<br/>Paradigma · Optimierer · Zeitplan ·<br/>Verluste · Callbacks · Logger · Cluster"]
   W["Ablauf (workflow)<br/>Suche · föderiert · Model Soup"] -->|run| G
-  G --> R["Zielsystem-Übersicht<br/>recommend_for · reduce_for"]
+  G --> M["Bewertung<br/>Metriken · test · baseline · error_analysis"]
+  M --> V["Vertrauen<br/>calibrate · Conformal · MC-Dropout · TTA ·<br/>explain · fairness · robustness"]
+  V --> R["Zielsystem-Übersicht<br/>recommend_for · reduce_for"]
   R --> K["Kompression<br/>Pruning · Low-Rank · Quantisierung ·<br/>Heilen / Lehrer-Schüler"]
-  K --> H["Projekt speichern<br/>projekt.json · modell.pt (+ Struktur-Regeln)"]
-  H --> I["Inferenz / Generierung (Cache)<br/>Export (torch.export, ONNX …)"]
+  K --> H["Projekt speichern<br/>projekt.json · modell.pt · vorverarbeitung.json ·<br/>MODELLKARTE.md · umgebung.json"]
+  H --> I["Inferenz / Generierung (Cache, Beam Search)<br/>predict_raw · HTTP-Dienst · Export (torch.export, ONNX …)"]
+  I --> DR["Betrieb<br/>drift_report · continue_training"]
   X["Fremdes Modell<br/>.pt2 · TorchScript · state_dict · HF"] -->|import_model| D
 ```
 
@@ -46,6 +51,13 @@ flowchart LR
 | Cluster | `training/distributed.py` | `training.distributed.*`, CLI `verteilt` |
 | Logger | `training/logger.py` | `training.logging.*`, `Project.add_logger()` |
 | Ablauf | `workflow/*` | `workflow.*`, `Project.run()`, `tune()`, `federated_train()`, `model_soup()` |
+| Anforderungen | `requirements.py` | `Project.perfection_check()`, `apply_perfection()`, CLI `perfektion` |
+| Daten | `data/files.py`, `data/tokenizers.py`, `data/domains.py`, `training/data_utils.py` | `data.*`, `training.validation_strategy`, `training.test_split` |
+| Datenprüfung & Drift | `analysis/datacheck.py`, `analysis/drift.py` | `data_check()`, `apply_data_fixes()`, `drift_report()`, `workflow.check_data` |
+| Metriken | `training/metrics.py` | `training.metrics`, `training.auto_metrics`, `evaluate()`, `test()`, `baseline()`, `error_analysis()` |
+| Vertrauen | `analysis/inference.py`, `analysis/explain.py`, `analysis/fairness.py`, `analysis/robustness.py` | `inference.*`, `calibrate()`, `predict_with_uncertainty()`, `explain_prediction()`, `feature_importance()`, `fairness_report()`, `training.adversarial`, `robustness_report()` |
+| Wenige Labels | `workflow/active.py` | `select_for_labeling()`, `pseudo_label()` |
+| Einsatz | `analysis/modelcard.py`, `data/artifacts.py`, `ui/serve.py` | `model_card()`, `save()/load()`, `predict_raw()`, `serve()`, `deployment.server.*`, `generation.*` |
 
 ---
 
@@ -148,9 +160,25 @@ sequenceDiagram
 Beim Laden baut der Baukasten das Original, wendet diese Regeln an (gleiche Formen) und lädt dann die gespeicherten
 Gewichte – so bleibt jede Kombination aus Umbau, Kompression und Training reproduzierbar.
 
+## 5b. Bewertung und Vertrauen – wie die Teile zusammenspielen
+
+1. **Sammeln statt mitteln**: Paradigmen melden in der Evaluierung ihre Vorhersagen über `trainer.collect(pred, ziel,
+   art)`; ein `Collector` sammelt sie kompakt (Sprachmodelle nur Token-IDs + Verlust je Token, Segmentierung nur die
+   Klassenkarte) und berechnet danach alle Metriken über **alle** Beispiele. Skalierte Regressionsziele werden vorher
+   zurückgerechnet (`trainer.target_inverse`) – Fehler erscheinen in echten Einheiten.
+2. **Aufteilen ohne Leck**: `split_indices` (zufall/stratifiziert/zeitlich) teilt Validierung und Testmenge ab; die
+   CSV-Vorverarbeitung und Tokenizer lernen nur auf Trainingszeilen. Die Testmenge bleibt beim Neutrainieren dieselbe.
+3. **Nach dem Training**: `calibrate()` stellt `inference.temperature`, `threshold` und `conformal_q` auf der
+   Validierung ein; `predict_proba/predict_with_uncertainty` wenden sie an (plus MC-Dropout/TTA). Einstellungen unter
+   `inference`, `generation`, `deployment`, `goals`, `workflow` verwerfen ein trainiertes Modell nicht.
+4. **Speichern für den Einsatz**: `data/artifacts.py` schreibt Tokenizer, Tabellen-Vorverarbeitung, Klassen und
+   Normierung als JSON; `predict_raw` und der HTTP-Dienst verarbeiten Rohdaten damit genau wie im Training.
+5. **Perfektions-Check**: `requirements.py` ordnet jeder Anforderung Techniken (Status aus dem Katalog), eigene
+   Prüfungen (z. B. „wurde `test()` ausgeführt?“) oder einen Hinweis auf eine Lücke zu.
+
 ## 6. Eigene Bausteine integrieren
 
-1. **Komponente registrieren** (Aktivierung, Mixer, FFN, Verlust, Belohnung, Modul-Operation …):
+1. **Komponente registrieren** (Aktivierung, Mixer, FFN, Verlust, Metrik, Belohnung, Modul-Operation …):
    ```python
    from ki_baukasten import register, BaseConfig, Param, T
    class MeinMixerConfig(BaseConfig):

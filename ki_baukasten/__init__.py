@@ -24,6 +24,9 @@ Leitprinzipien
    übernehmbaren Vorschlägen, Rückgängig/Wiederholen, Export.
 7. **Alles ist schaltbar – und trotzdem übersichtlich.** Drei Ebenen: Ziele (Assistent
    empfiehlt Modelle), Techniken (Katalog mit Häkchen), Einstellungen (An · Aus · Eigen).
+8. **Ehrlich gemessen und vertrauenswürdig.** Anforderungs-Katalog mit Perfektions-Check,
+   Datenprüfung, Testmenge, Metriken über alle Beispiele, Kalibrierung, Unsicherheit,
+   Erklärungen, Fairness, Robustheit, Modellkarte.
 
 Schnellstart
 ------------
@@ -40,28 +43,30 @@ Paketübersicht
 ``components``  Aktivierungen, Normen, Init, Attention, Positionen, FFN/MoE, Mixer, Schichten
 ``models``      MLP, CNN, RNN, Transformer, SSM, Hybrid, AE/VAE, GAN, Diffusion, GNN, RL-Netze,
                 freier Graph, Ensemble, Pipeline, Fusion, Mixture-of-Models, Multi-Task
-``training``    Trainer, Paradigmen, Optimierer, Zeitpläne, Verluste, Callbacks, RL
+``training``    Trainer, Paradigmen, Optimierer, Zeitpläne, Verluste, Metriken, Callbacks, RL
 ``memory``      Präzision, Checkpointing, Streaming/Offloading, Quantisierung, LoRA, Speicherschätzung
 ``tensor``      Tensor- und Modul-Chirurgie, Geltungsbereiche
 ``compress``    Modelle eindampfen: Pruning, Low-Rank, Sparsity, Quantisierung, Heilen
-``analysis``    Aufbau-Darstellung, Ratgeber, Export, Messung, Zielsysteme, Notfall-Ausführung, Ziel-Assistent
+``analysis``    Aufbau-Darstellung, Ratgeber, Export, Messung, Zielsysteme, Notfall-Ausführung, Ziel-Assistent,
+                Datenprüfung, Drift, Kalibrierung/Unsicherheit, Erklärungen, Fairness, Robustheit, Modellkarte
 ``techniques``  Katalog an/abwählbarer Techniken (Stabilität … Schwarm, Evolution, experimentell)
-``workflow``    Ablauf: Suche (Zufall/Gitter/Evolution/PSO/PBT), föderiert, Model Soup
-``data``        Datensätze (synthetisch + eigene Dateien)
+``workflow``    Ablauf: Suche (Zufall/Gitter/Evolution/PSO/PBT), föderiert, Model Soup, Active Learning
+``requirements`` Anforderungs-Katalog und Perfektions-Check
+``data``        Datensätze (synthetisch + CSV, Texte, Bilder, Masken, Audio, Anweisungen), Tokenizer
 ``presets``     Vorlagen je Anwendungsgebiet, Speicherprofile
 ``project``     ``Project``-Fassade
-``ui``          Kommandozeile, grafische Oberfläche, Doku-Export
+``ui``          Kommandozeile, grafische Oberfläche, Doku-Export, HTTP-Dienst
 """
 
 from __future__ import annotations
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 from .core import (BaseConfig, BuildError, ComponentListParam, ComponentParam, ComponentSpec, ConfigError,
                    ConfigListParam, FreeConfig, KIBaukastenError, Level, NestedParam, Param, T, Tooltip,
                    TrainingError, all_registries, register, registry, select_indices)
 from . import components, models, training, memory, tensor, compress, data, presets, analysis  # noqa: E402,F401
-from . import techniques, workflow  # noqa: E402,F401
+from . import requirements, techniques, workflow  # noqa: E402,F401
 from .memory import MemoryConfig, estimate_memory  # noqa: E402
 from .models import BaseModel, ModelConfig, build_model  # noqa: E402
 from .presets import DOMAINS, MEMORY_PROFILES, apply_memory_profile, get_preset, presets_by_domain  # noqa: E402

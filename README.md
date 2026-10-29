@@ -3,18 +3,37 @@
 Ein Python-Baukasten (PyTorch), mit dem sich **KIs und ganze KI-Systeme bis ins kleinste Detail** zusammenstellen,
 kombinieren, trainieren und speichern lassen – mit einer **Erklärung zu jeder einzelnen Einstellung**.
 
-- **1.169 einzeln dokumentierte Einstellungen** – jede mit Tooltip: *Was ist das? Warum/Nutzen? Wofür wichtig? Tipp* –
-  und jede mit Schalter **An · Aus · Eigen**
+- **Über 1.500 einzeln dokumentierte Einstellungen** (alle Parameter aller 279 Konfigurationsklassen) – jede mit
+  Tooltip: *Was ist das? Warum/Nutzen? Wofür wichtig? Tipp* – und jede mit Schalter **An · Aus · Eigen**
+- **Anforderungs-Katalog & Perfektions-Check**: 53 Anforderungen, die eine KI je nach Anwendung (Tabellen, Bilder,
+  Segmentierung, Sprache, Generierung, Zeitreihen, Audio, RL, Entscheidungen über Menschen …) und Phase (Daten →
+  Modell → Training → Bewertung → Vertrauen → Einsatz) braucht; `project.perfection_check()` zeigt für das eigene
+  Projekt, was **aktiv**, **eingebaut**, **ausgeschaltet**, **offen** oder **nicht vorhanden** ist (mit Punktzahl),
+  `apply_perfection()` schaltet alles Empfohlene ein – siehe [`docs/ANFORDERUNGEN.md`](docs/ANFORDERUNGEN.md)
 - **Übersichtlich in drei Ebenen**: **Ziel-Assistent** (Zweck und Prioritäten angeben → passende Modelle werden
-  empfohlen, unpassende abgeraten), **Techniken-Katalog** (92 Verfahren aus Community, Forschung und Industrie in
-  13 Kategorien, je mit einem Häkchen an/aus) und **Einstellungen** (jede einzeln, mit Ansichtsfilter)
-- **363 austauschbare Komponenten** in 26 Registries (Aktivierungen, Normen, Attention-Kernel, Mixer, FFN/MoE/KAN,
-  Modelle, Optimierer, Zeitpläne, Verluste, Belohnungen, Tensor- und Modul-Operationen, Kompressions-Schritte …) – alle
-  per Name überall einsetzbar; Gesamtübersicht in [`docs/MOEGLICHKEITEN.md`](docs/MOEGLICHKEITEN.md)
-- **19 Modelle** (inkl. **Import fremder Modelle**), beliebig kombinierbar und verschachtelbar
+  empfohlen, unpassende abgeraten), **Techniken-Katalog** (112 Verfahren aus Community, Forschung und Industrie in
+  14 Kategorien, je mit einem Häkchen an/aus) und **Einstellungen** (jede einzeln, mit Ansichtsfilter)
+- **399 austauschbare Komponenten** in 27 Registries (Aktivierungen, Normen, Attention-Kernel, Mixer, FFN/MoE/KAN,
+  Modelle, Optimierer, Zeitpläne, Verluste, **Metriken**, Belohnungen, Tensor- und Modul-Operationen, Kompressions-
+  Schritte …) – alle per Name überall einsetzbar; Gesamtübersicht in [`docs/MOEGLICHKEITEN.md`](docs/MOEGLICHKEITEN.md)
+- **20 Modelle** (inkl. **U-Net** und **Import fremder Modelle**), beliebig kombinierbar und verschachtelbar
 - **13 Trainings-Paradigmen** inkl. Reinforcement Learning mit frei kombinierbaren Belohnungen und gradientenfreien
   **Evolution Strategies**
-- **34 Vorlagen** für 11 Anwendungsgebiete – sofort lauffähig ohne Downloads; **23 kommentierte Beispiele**
+- **37 Vorlagen** für 12 Anwendungsgebiete – sofort lauffähig ohne Downloads; **27 kommentierte Beispiele**
+- **Eigene Daten ohne Code**: CSV mit Kategorien, fehlenden Werten und Skalierung (leckfrei nur auf Trainingszeilen
+  gelernt), Texte mit Labels (Tokenizer Zeichen/Wort/**BPE**), Bildordner, Segmentierungs-Masken, **Audio (WAV →
+  Log-Mel-Spektrogramm)**, Frage-Antwort-Paare fürs **Instruction-Tuning**; Aufteilung zufällig/**stratifiziert**/
+  **zeitlich** und zurückgehaltene **Testmenge**; **Datenprüfung** (Lecks, Duplikate, Klassen, NaN, Skalen) und
+  **Drift-Bericht** (PSI, KS, Vorhersage-Drift)
+- **Ehrlich messen**: 27 Metriken (F1, AUROC, Kalibrierungsfehler, MCC, RMSE, R², Perplexität, BLEU, IoU, Dice …)
+  automatisch je Aufgabe über alle Beispiele, Early Stopping/Suche auf jeder Metrik (Richtung automatisch),
+  Klassengewichte, Vergleich mit einer **Basis**, **Fehleranalyse** (Konfusionsmatrix, sicherste Fehler)
+- **Vertrauen**: Temperature Scaling, optimale Schwelle, **Enthaltung** („unsicher“), **Conformal Prediction**
+  (garantierte Mengen/Intervalle), MC-Dropout, TTA, **Erklärungen** (Integrated Gradients, Occlusion auch für Tokens,
+  Permutations-Wichtigkeit), **Fairness-Bericht**, **adversariales Training** (FGSM/PGD) und Robustheitsprüfung,
+  Active Learning und Pseudo-Labeling
+- **Einsatz**: Modellkarte und Umgebungsdaten beim Speichern, Vorverarbeitung wird mitgespeichert (laden und Rohdaten
+  vorhersagen ohne die Trainingsdaten), **HTTP-Dienst** aus der Standardbibliothek, Fortsetzen vom Checkpoint
 - **Jede Schicht darf anders sein** (schichtweise Overrides mit **Übernahme** von anderen Schichten), **jedes gebaute
   Modul** (Modul-Chirurgie) und **jeder Tensor-Ausschnitt** (Tensor-Chirurgie) ist einzeln steuerbar – jeweils mit
   Geltungsbereich **für alle / nur bestimmte / nur genau einen / alle außer**
@@ -45,8 +64,9 @@ kombinieren, trainieren und speichern lassen – mit einer **Erklärung zu jeder
   schaltbarer Ablauf (`Project.run()`)
 - **Logger**: Umfang von „still“ bis „debug“, Ziele Konsole/Datei (Rotation)/JSONL/CSV/Python-`logging`/TensorBoard/
   W&B/MLflow – je Ziel eigene Stufe – und eigene Logger
-- **Drei Oberflächen**: Python-API, Kommandozeile (deutsch), grafischer Editor mit Menüs, Assistent, Techniken-Fenster,
-  Maus-Tooltips und Rückgängig/Wiederholen
+- **Drei Oberflächen**: Python-API, Kommandozeile (deutsch), grafischer Editor mit Menüs (inkl. **Qualität**:
+  Perfektions-Check, Datenprüfung, Test, Basis, Fehleranalyse, Kalibrierung, Robustheit, Modellkarte), Assistent,
+  Techniken-Fenster, Maus-Tooltips und Rückgängig/Wiederholen
 
 Es gibt keine „verbotenen“ Einstellungen: auch experimentelle, exotische oder scheinbar unnötige Optionen sind
 änderbar. Erfahrungsstufen (*Basis → Fortgeschritten → Experte → Experimentell*) dienen nur der Orientierung.
@@ -58,22 +78,26 @@ Es gibt keine „verbotenen“ Einstellungen: auch experimentelle, exotische ode
 1. [Installation](#installation)
 2. [Schnellstart](#schnellstart) – Python, Kommandozeile, GUI
 3. [Ziele, Techniken, Schalter – die drei Ebenen](#ziele-techniken-schalter--die-drei-ebenen)
-4. [Grundkonzepte](#grundkonzepte)
-5. [Was alles drin ist](#was-alles-drin-ist)
-6. [Vorlagen nach Anwendungsgebiet](#vorlagen-nach-anwendungsgebiet)
-7. [Speicher & große Modelle](#speicher--große-modelle) – Streaming, Quantisierung, LoRA, 8-Bit-Optimierer
-8. [Notfall-Ausführung](#notfall-ausführung-wenn-es-trotz-verkleinern-nicht-passt)
-9. [Mamba, Generierung & KV-Cache](#mamba-generierung--kv-cache)
-10. [Modelle eindampfen, Lehrer-Schüler & Zielsysteme](#modelle-eindampfen-lehrer-schüler--zielsysteme)
-11. [Ablauf: Suche, Schwarm, Evolution, föderiert](#ablauf-suche-schwarm-evolution-föderiert)
-12. [Logger & Cluster](#logger--cluster)
-13. [Fremde Modelle importieren & Probelauf](#fremde-modelle-importieren--probelauf)
-14. [Aufbau, Ratgeber & Export](#aufbau-ratgeber--export)
-15. [Reinforcement Learning & Belohnungen](#reinforcement-learning--belohnungen)
-16. [Eigene Komponenten](#eigene-komponenten)
-17. [Projektstruktur](#projektstruktur)
-18. [Tests](#tests)
-19. [Ehrliche Grenzen](#ehrliche-grenzen)
+4. [Perfektions-Check: was braucht meine KI?](#perfektions-check-was-braucht-meine-ki)
+5. [Daten, Metriken & Bewertung](#daten-metriken--bewertung)
+6. [Vertrauen: Kalibrierung, Unsicherheit, Erklärungen, Fairness, Robustheit](#vertrauen-kalibrierung-unsicherheit-erklärungen-fairness-robustheit)
+7. [Einsatz: Modellkarte, Rohdaten, HTTP-Dienst](#einsatz-modellkarte-rohdaten-http-dienst)
+8. [Grundkonzepte](#grundkonzepte)
+9. [Was alles drin ist](#was-alles-drin-ist)
+10. [Vorlagen nach Anwendungsgebiet](#vorlagen-nach-anwendungsgebiet)
+11. [Speicher & große Modelle](#speicher--große-modelle) – Streaming, Quantisierung, LoRA, 8-Bit-Optimierer
+12. [Notfall-Ausführung](#notfall-ausführung-wenn-es-trotz-verkleinern-nicht-passt)
+13. [Mamba, Generierung & KV-Cache](#mamba-generierung--kv-cache)
+14. [Modelle eindampfen, Lehrer-Schüler & Zielsysteme](#modelle-eindampfen-lehrer-schüler--zielsysteme)
+15. [Ablauf: Suche, Schwarm, Evolution, föderiert](#ablauf-suche-schwarm-evolution-föderiert)
+16. [Logger & Cluster](#logger--cluster)
+17. [Fremde Modelle importieren & Probelauf](#fremde-modelle-importieren--probelauf)
+18. [Aufbau, Ratgeber & Export](#aufbau-ratgeber--export)
+19. [Reinforcement Learning & Belohnungen](#reinforcement-learning--belohnungen)
+20. [Eigene Komponenten](#eigene-komponenten)
+21. [Projektstruktur](#projektstruktur)
+22. [Tests](#tests)
+23. [Ehrliche Grenzen](#ehrliche-grenzen)
 
 Ausführliche Erklärung des inneren Aufbaus und aller Eingriffspunkte: [`docs/ARCHITEKTUR.md`](docs/ARCHITEKTUR.md).
 
@@ -121,9 +145,13 @@ for tipp in p.advise():                             # Ratgeber: Speicher, Tempo,
 p.apply_advice(category="speicher")                 # Vorschläge übernehmen … und bei Bedarf p.undo()
 print(p.architecture("text"))                       # komplette Auflistung: Module, Formen, Schichten, Pfade
 
+print(p.perfection_check())                         # Anforderungs-Katalog: was ist an / aus / offen / fehlt?
+p.apply_perfection()                                # alles Empfohlene einschalten (Testmenge, Kalibrierung …)
+
 p.train()                                           # bauen + trainieren; danach Übersicht für Zielsysteme
 print(p.generate("Der Baukasten", max_new_tokens=80))
-p.save("ausgaben/mein_llm")                         # projekt.json + modell.pt + verlauf.json
+p.save("ausgaben/mein_llm")                         # projekt.json, modell.pt, verlauf.json, vorverarbeitung.json,
+                                                    # MODELLKARTE.md, umgebung.json
 
 klein = p.reduce_for("smartphone", export="ausgaben/handy/modell")   # Empfehlung anwenden + exportieren
 schueler = p.distill(width=0.5, depth=0.5)          # Lehrer-Schüler: kleineres Modell lernt vom großen
@@ -133,6 +161,13 @@ schueler = p.distill(width=0.5, depth=0.5)          # Lehrer-Schüler: kleineres
 
 ```bash
 python -m ki_baukasten ziele --text "Bilder auf dem Handy in Echtzeit erkennen" --erstellen neu.json  # Assistent
+python -m ki_baukasten perfektion meine_ki.json --anwenden --speichern meine_ki.json  # Anforderungen prüfen + an
+python -m ki_baukasten perfektion --katalog -o docs/ANFORDERUNGEN.md           # ganzer Anforderungs-Katalog
+python -m ki_baukasten datenpruefung meine_ki.json --anwenden                   # Daten prüfen, Vorschläge übernehmen
+python -m ki_baukasten bewerten ausgaben/meine_ki --kalibrieren                 # Validierung, Test, Basis, Fehler
+python -m ki_baukasten drift ausgaben/meine_ki neue_daten.csv                   # haben sich die Daten verändert?
+python -m ki_baukasten modellkarte ausgaben/meine_ki -o MODELLKARTE.md
+python -m ki_baukasten bereitstellen ausgaben/meine_ki --port 8000             # HTTP-Dienst (JSON)
 python -m ki_baukasten techniken sprachmodell_mini --an qlora --an spike_schutz --speichern llm.json  # Katalog
 python -m ki_baukasten schalter sprachmodell_mini --aus dropout --an training.ema       # An/Aus/Eigen je Einstellung
 python -m ki_baukasten notfall sprachmodell_mini --budget-mb 8 --training --anwenden auto  # wenn es nicht passt
@@ -172,8 +207,11 @@ python -m ki_baukasten gui sprachmodell_mini
 
 `python -m ki_baukasten gui [vorlage|datei]` öffnet einen Editor mit
 
-- **Menü** Datei · Assistent · Einstellungen · Techniken · Ausführen · Analyse · Einsatz · Hilfe und einer schlanken
-  Werkzeugleiste für das Häufigste,
+- **Menü** Datei · Assistent · Einstellungen · Techniken · Ausführen · Analyse · **Qualität** · Einsatz · Hilfe und
+  einer schlanken Werkzeugleiste für das Häufigste,
+- **Qualität**: Perfektions-Check, „Alles Empfohlene einschalten“, Datenprüfung (+ Vorschläge übernehmen), Testmenge,
+  Basis-Vergleich, Fehleranalyse, Kalibrieren, Robustheit, Merkmals-Wichtigkeit, Modellkarte; unter **Einsatz** der
+  lokale HTTP-Dienst, unter **Hilfe** der Anforderungs-Katalog,
 - **✚ Neue KI nach Zielen…**: Aufgabe, Beschreibung, Prioritäten (Häkchen), Datenmenge, Zielgerät → Empfehlungen und
   Abratungen mit Begründung → neues Projekt; später „Ziele prüfen / ändern“,
 - **Techniken**: Fenster mit Reitern je Kategorie, Häkchen zum An-/Abwählen, Status, Suche, Tooltips (wer nutzt es),
@@ -200,7 +238,7 @@ Trotz über tausend Einstellungen bleibt es übersichtlich, weil man auf drei Eb
 | Ebene | Wofür | Python | CLI | GUI |
 |---|---|---|---|---|
 | **1. Ziele** | Zweck, wichtige Punkte, Zielgerät → Modell wird empfohlen, Unpassendes abgeraten | `Project.from_goals`, `set_goals`, `goal_check` | `ziele` | ✚ Neue KI nach Zielen |
-| **2. Techniken** | 92 bewährte Verfahren in 13 Kategorien mit einem Häkchen | `enable`, `disable`, `techniques` | `techniken` | Techniken |
+| **2. Techniken** | 112 bewährte Verfahren in 14 Kategorien mit einem Häkchen | `enable`, `disable`, `techniques` | `techniken` | Techniken |
 | **3. Einstellungen** | jede einzelne: An (empfohlen) · Aus · Eigen | `switch`, `set(…, "aus")`, `switches` | `schalter` | Formular + Ansicht |
 
 **Ziel-Assistent** – Beispiel `evaluate_goals({"description": "Pflanzenkrankheiten per Handykamera in Echtzeit",
@@ -215,13 +253,113 @@ QK-Norm, z-Loss …), gegen Auswendiglernen (Dropout, DropPath, Weight-Decay, La
 Early Stopping, Kreuzvalidierung …), Performance (bf16, torch.compile, TF32, GQA …), große Modelle auf kleiner Hardware
 (Checkpointing, 8-Bit-AdamW, Adafactor, LoRA/QLoRA, Streaming, SSD-Streaming, device_map, LISA …), Cluster (DDP, ZeRO-1,
 FSDP), automatische Suche, Schwarmintelligenz (Partikelschwarm, föderiert, Model Soup), Evolution (genetisch, PBT,
-Evolution Strategies), Daten, Datenschutz (DP-SGD), Überwachung, Kompression, Experimentelles (Lookahead, Gradient
-Centralization, Grokfast, Lion, Muon …). Jede Technik zeigt, wer sie nutzt, und `disable` stellt den vorherigen
+Evolution Strategies), Daten (Augmentierung, Klassengewichte, BPE …), Datenschutz (DP-SGD), Überwachung (Modellkarte,
+Fortsetzen …), Kompression, **Bewertung & Vertrauen** (Testmenge, stratifizierte/zeitliche Aufteilung, Kalibrierung,
+Schwelle, Enthaltung, Conformal, MC-Dropout, TTA, PGD/FGSM, Beam Search, Wiederholungssperre, Datenprüfung,
+Robustheitsprüfung), Experimentelles (Lookahead, Gradient Centralization, Grokfast, Lion, Muon …). Jede Technik zeigt, wer sie nutzt, und `disable` stellt den vorherigen
 Zustand exakt wieder her. Vollständige Liste: [`docs/MOEGLICHKEITEN.md`](docs/MOEGLICHKEITEN.md#techniken-katalog).
 
 **Schalter je Einstellung** – `an` = empfohlener Wert, `aus` = wirkungslos (Dropout 0, Mixup 0, Komponente `none`, Liste
 leer …), `eigen` = eigener Wert (wird beim Ausschalten gemerkt). Gruppen lassen sich als Ganzes schalten
 (`p.switch("training.regularization", "aus")`), `p.switch_overview()` zeigt kompakt, was an ist.
+
+## Perfektions-Check: was braucht meine KI?
+
+Je nach Anwendung braucht eine KI andere Dinge: Zeitreihen eine **zeitliche** Aufteilung, Klassifikation mit seltenen
+Klassen **Klassengewichte** und **F1** statt Genauigkeit, Segmentierung **IoU/Dice** und ein **U-Net**, Sprachmodelle
+einen **BPE-Tokenizer** und eine **Wiederholungssperre**, Entscheidungen über Menschen einen **Fairness-Bericht** …
+Der Anforderungs-Katalog (`ki_baukasten/requirements.py`, 53 Anforderungen) beschreibt das für alle Anwendungen und
+Phasen; der Perfektions-Check wendet ihn auf das eigene Projekt an:
+
+```python
+p = Project.from_preset("zeitreihen_lstm")
+print(p.perfection_check())      # 51/100 – ○ Zeitliche Aufteilung (Pflicht) → einschalten: enable('zeitliche_aufteilung')
+p.apply_perfection()             # schaltet Testmenge, zeitliche Aufteilung, Early Stopping, Checkpoints … ein
+p.train(); p.test(); p.baseline()                 # offene Schritte ausführen → Punktzahl steigt
+```
+
+| Status | Bedeutung |
+|---|---|
+| ✓ aktiv / eingebaut | eingeschaltet bzw. passiert automatisch (z. B. leckfreie Vorverarbeitung) |
+| ○ aus | vorhanden, aber ausgeschaltet – mit der Technik, die es einschaltet |
+| ◇ offen | ein Schritt, der noch auszuführen ist (z. B. `project.test()`, `drift_report(...)`) |
+| ✗ fehlt | nicht im Baukasten – mit ehrlichem Hinweis auf Alternativen (z. B. Objekterkennung) |
+
+Welche Anforderungen gelten, ergibt sich aus Vorlage, Daten, Paradigma und Zielen (z. B. „Kunden“, „Patienten“ in
+der Beschreibung → *Entscheidungen über Menschen* → Fairness ist Pflicht). Alles bleibt an/abwählbar: `apply_perfection`
+nutzt nur die Techniken des Katalogs, `undo()` bzw. `disable(…)` nimmt sie zurück. Vollständige Tabelle:
+[`docs/ANFORDERUNGEN.md`](docs/ANFORDERUNGEN.md); CLI `perfektion`, GUI „Qualität → Perfektions-Check“.
+
+## Daten, Metriken & Bewertung
+
+```python
+p = Project.from_preset("tabellen_klassifikation")
+p.set("data", {"name": "csv", "path": "kunden.csv", "target": "kauft", "missing": "median", "scaling": "robust"})
+print(p.data_check())                    # Lecks, Duplikate, unausgewogene Klassen, NaN, Skalen … mit Abhilfe
+p.apply_data_fixes()                     # z. B. Klassengewichte, stratifizierte Aufteilung, Testmenge
+p.set("training.metrics", ["f1", "auroc", {"name": "precision", "average": "weighted"}])   # leer = automatisch
+p.set("training.callbacks", [{"name": "early_stopping", "monitor": "val_f1"}])            # Richtung: automatisch
+p.train()
+print(p.test())                          # nie benutzte Testmenge: test_f1, test_auroc, test_ece …
+print(p.baseline())                      # Basis (häufigste Klasse / Mittelwert) vs. Modell
+print(p.error_analysis()["sicherste_fehler"])
+print(p.drift_report({"inputs": neue_daten}))   # PSI/KS je Merkmal + Vorhersage-Drift
+```
+
+| Daten | Inhalt |
+|---|---|
+| `csv` | Zahlen- und Kategorie-Spalten, fehlende Werte (+ Indikator), Skalierung standard/robust/minmax, Ziel-Skalierung (Metriken in echten Einheiten), Zeilen-Aufteilung zufällig/stratifiziert/zeitlich |
+| `text_classification` | Texte mit Labels aus CSV/TSV, Tokenizer `zeichen`/`wort`/`bpe`, Attention-Maske |
+| `image_folder` | `ordner/<klasse>/*.png|jpg`, Normierung je Datensatz/ImageNet |
+| `segmentation` | Bilder + Masken (eigene Ordner oder synthetisch) → U-Net, IoU/Dice; Augmentierung bewegt die Masken mit |
+| `audio` | WAV-Ordner je Klasse (16-Bit-PCM, ohne Zusatzpakete) oder synthetisch → Log-Mel-Spektrogramm oder Wellenform |
+| `instructions` | Frage→Antwort (JSONL/CSV) fürs Instruction-Tuning; Verlust nur auf den Antworten, danach `p.ask("…")` |
+
+Metriken (Registry `metric`): Klassifikation `accuracy`, `top_k_accuracy`, `precision`, `recall`, `f1`,
+`balanced_accuracy`, `mcc`, `auroc`, `log_loss`, `ece`, `brier`; Regression `mae`, `mse`, `rmse`, `r2`, `mape`,
+`smape`, `max_error`; Sprache `perplexity`, `token_accuracy`; Seq2Seq `exact_match`, `bleu`; Segmentierung `iou`,
+`dice`; Multi-Label `multilabel_accuracy`, `subset_accuracy`, `multilabel_f1`. Berechnet werden sie über **alle**
+Validierungsbeispiele (nicht als Mittel über Batches – wichtig für F1/AUROC), Sprachmodelle sammeln dafür nur
+Token-IDs und Verluste statt voller Logits.
+
+## Vertrauen: Kalibrierung, Unsicherheit, Erklärungen, Fairness, Robustheit
+
+```python
+p.set("inference.conformal_alpha", 0.1)          # 90 % garantierte Abdeckung
+p.set("inference.uncertainty", "mc_dropout")     # oder "tta" bzw. "beides"
+p.set("inference.abstain_below", 0.7)            # unsichere Fälle → "unsicher"
+p.calibrate()                                    # Temperatur (+ Schwelle, + Conformal) auf der Validierung
+p.predict_with_uncertainty(x)    # {"vorhersage": [...], "wahrscheinlichkeit", "entropie", "streuung", "menge"}
+print(p.explain_prediction(x))   # Integrated Gradients (Zahlen), Occlusion (Bilder, Tokens)
+print(p.feature_importance())    # Permutations-Wichtigkeit je Merkmal
+print(p.fairness_report("geschlecht"))           # Positiv-Rate, TPR/FPR je Gruppe, Disparate Impact
+p.set("training.adversarial.method", "pgd")      # adversariales Training; prüfen: p.robustness_report()
+p.select_for_labeling(pool, n=50)                # Active Learning: was sollen Menschen beschriften?
+p.pseudo_label(unbeschriftet, threshold=0.95)    # semi-überwacht mittrainieren
+```
+
+Alles ist einzeln schaltbar (`project.inference`, `training.adversarial`) und als Technik im Katalog verfügbar
+(`kalibrierung`, `conformal`, `enthaltung`, `mc_dropout`, `tta`, `adversarial_training` …).
+
+## Einsatz: Modellkarte, Rohdaten, HTTP-Dienst
+
+`p.save(ordner)` legt neben Konfiguration und Gewichten auch **`vorverarbeitung.json`** (Tokenizer mit BPE-Merges,
+Tabellen-Spalten/Kategorien/Skalen, Klassennamen, Bild-Normierung, Audio-Merkmale – reines JSON), **`MODELLKARTE.md`**
+(Zweck, Daten, Training, Validierung **und Test**, Kalibrierung, Fairness, Robustheit, Grenzen, Nutzung, Versionen,
+Konfigurations-Prüfsumme) und **`umgebung.json`** ab. Danach geht es ohne die Trainingsdaten:
+
+```python
+q = Project.load("ausgaben/kunden_ki")
+q.predict_raw([{"alter": 30, "stadt": "Köln", "einkommen": 2500}])   # → {"vorhersage": ["ja"], ...}
+q.serve(port=8000)        # POST /vorhersage {"daten": [...]}, /frage, /generieren, GET /info, /gesundheit
+```
+
+Der HTTP-Dienst ist standardmäßig nur lokal erreichbar, im Netzwerk nur mit API-Schlüssel (`X-API-Key`), nimmt über
+HTTP keine Dateipfade an (Bilder/Audio als Base64) und begrenzt Anfragegröße und Batch. Lange Läufe setzen mit
+`training.resume_from = "auto"` beim neuesten Checkpoint fort. `project.generation` legt die Standard-Generierung fest
+(Temperatur, top-p, **Beam Search**, **Wiederholungssperre**), auch für den HTTP-Dienst.
+
+---
 
 ## Grundkonzepte
 
@@ -377,7 +515,7 @@ automatisch an Daten bzw. RL-Umgebung an – jede Anpassung wird gemeldet.
 | `mlp` | MLP: Breite je Schicht, Reihenfolge der Operationen, Residual/Projektion, Weight-/Spectral-Norm |
 | `cnn` | 1D/2D/3D; Stufen mit Blocktypen plain, residual, bottleneck, inverted_residual (MobileNet), convnext, depthwise_separable; SE, Stochastic Depth, Klassifikations- oder dichter Kopf |
 | `rnn` | LSTM/GRU/RNN/minGRU – **jede Schicht eigene Zellart/Breite/Richtung**, Pooling inkl. Attention |
-| `transformer` | decoder_only / encoder_only / encoder_decoder; Eingaben Tokens, kontinuierlich oder Bild-Patches (ViT); Generierung mit top-k/top-p/min-p/Wiederholungsstrafe |
+| `transformer` | decoder_only / encoder_only / encoder_decoder; Eingaben Tokens, kontinuierlich oder Bild-Patches (ViT); Generierung mit top-k/top-p/min-p/Wiederholungsstrafe, **Beam Search** und **n-Gramm-Sperre** |
 | `ssm` | Mamba-artiges selektives State-Space-Modell |
 | `hybrid` | SSM- und Attention-Schichten gemischt (Jamba-Prinzip) |
 | `autoencoder` | AE, VAE (β, Free Bits), Denoising, Sparse (L1/KL), VQ-VAE; MLP- oder Faltungs-Rückgrat |
@@ -392,6 +530,7 @@ automatisch an Daten bzw. RL-Umgebung an – jede Anpassung wird gemeldet.
 | `fusion` | Multimodal: mehrere Zweige mit eigenen Eingaben, Fusion concat/sum/gated/attention, Modality-Dropout |
 | `mixture_of_models` | Router über ganze Modelle (top-k, Lastverteilung) |
 | `multitask` | gemeinsamer Rumpf, mehrere Köpfe |
+| `unet` | U-Net für Segmentierung: Encoder-Decoder mit Skip-Verbindungen, Tiefe/Breite/Norm/Aktivierung/Hochskalierung wählbar, beliebige Bildgrößen |
 
 ### Transformer-Bausteine
 
@@ -428,8 +567,9 @@ Die vollständige Liste mit allen Argumenten und Tooltips steht in
 
 | Gebiet | Vorlagen |
 |---|---|
-| Sprache | `sprachmodell_mini`, `sprachmodell_moe`, `sprachmodell_mamba`, `sprachmodell_hybrid`, `sprachmodell_speichersparend`, `sprachmodell_qlora`, `sprachmodell_ram_streaming`, `text_klassifikation`, `bert_vortraining`, `uebersetzung_seq2seq` |
-| Bild | `bildklassifikation_cnn`, `bildklassifikation_vit`, `bildklassifikation_mobil` |
+| Sprache | `sprachmodell_mini`, `sprachmodell_moe`, `sprachmodell_mamba`, `sprachmodell_hybrid`, `sprachmodell_speichersparend`, `sprachmodell_qlora`, `sprachmodell_ram_streaming`, `sprachmodell_sft` (Instruction-Tuning), `text_klassifikation`, `bert_vortraining`, `uebersetzung_seq2seq` |
+| Bild | `bildklassifikation_cnn`, `bildklassifikation_vit`, `bildklassifikation_mobil`, `segmentierung_unet` |
+| Audio | `audio_klassifikation` (CNN auf Log-Mel-Spektrogrammen) |
 | Zeitreihen | `zeitreihen_lstm`, `zeitreihen_transformer`, `sequenz_gedaechtnis_rnn` |
 | Tabellen | `tabellen_klassifikation`, `tabellen_regression` |
 | Generativ | `gan_2d`, `diffusion_2d`, `vae_bilder` |
@@ -442,7 +582,10 @@ Die vollständige Liste mit allen Argumenten und Tooltips steht in
 
 Alle laufen ohne Downloads auf eingebauten synthetischen Daten. Beispiele mit Standardeinstellungen (CPU):
 Bild-CNN 100 %, Text-Klassifikation 100 %, Graph-Klassifikation 100 %, Multimodal-Fusion 99 %, Seq2Seq-Umkehrung 100 %,
-Anomalie-AUROC 1.0, PPO/DQN lösen CartPole (200/200).
+Anomalie-AUROC 1.0, PPO/DQN lösen CartPole (200/200), Segmentierung IoU 0,985, Audio 100 %, Instruction-Tuning
+beantwortet Rechenaufgaben, die es im Training nie gesehen hat (alle Beispielaufgaben sind eindeutig, Training und
+Validierung überschneiden sich nicht). Die Aufgabe `contains` der Text-Klassifikation ist jetzt ausgewogen (vorher
+97,5 % eine Klasse – die Genauigkeit war dadurch wertlos; die neue Datenprüfung erkennt so etwas sofort).
 
 ---
 
@@ -734,28 +877,34 @@ ki_baukasten/
 ├── core/          Param, BaseConfig, Tooltip/Level, Registry, ComponentSpec, Selektoren, Schalter, Fehler
 ├── components/    activations, normalization, initializers, positional, attention, feedforward, mixers, layers,
 │                  scan (schnelle lineare Rekurrenzen), cache (KV-/Zustands-Cache)
-├── models/        base, mlp, cnn, rnn, transformer (+ssm/hybrid), autoencoder, generative (gan/diffusion),
-│                  gnn, rl_nets, graph (freies Netz), composite (ensemble/pipeline/fusion/mixture/multitask),
-│                  external (Import fremder Modelle)
-├── training/      config, trainer, paradigms (+ Evolution Strategies), optimizers, schedulers, losses, callbacks
-│                  (+ LISA, SWA), data_utils, continual, distributed (DDP/ZeRO-1/FSDP), logger, lr_finder
+├── models/        base, mlp, cnn, rnn, transformer (+ssm/hybrid, Beam Search), autoencoder, generative
+│                  (gan/diffusion), gnn, rl_nets, graph (freies Netz), composite (ensemble/pipeline/fusion/mixture/
+│                  multitask), unet (Segmentierung), external (Import fremder Modelle)
+├── training/      config, trainer, paradigms (+ Evolution Strategies), optimizers, schedulers, losses, metrics,
+│                  callbacks (+ LISA, SWA), data_utils, continual, distributed (DDP/ZeRO-1/FSDP), logger, lr_finder
 │   └── rl/        environments, rewards, algorithms (ppo/a2c/reinforce/dqn)
 ├── memory/        config, manager, streaming (RAM-/SSD-Training), offload (Swapping, device_map), quant
 │                  (int8/int4/nf4), lora (LoRA/DoRA/QLoRA), estimator, execution (stückweise, OOM-Teilung)
 ├── tensor/        surgery (Tensor-Chirurgie), modules (Modul-Chirurgie), selection (Geltungsbereiche)
 ├── compress/      structure, methods (Pruning, Low-Rank, Sparsity), pipeline (Rezepte + Messung)
 ├── analysis/      architecture, advisor, export, benchmark (Größe/MACs/Latenz), targets (Zielsysteme), probe,
-│                  fallback (Notfall-Ausführung), goals (Ziel-Assistent)
-├── workflow/      config (Ablauf), search (Zufall/Gitter/Evolution/PSO/PBT), federated (FedAvg/FedProx, Model Soup)
+│                  fallback (Notfall-Ausführung), goals (Ziel-Assistent), datacheck, drift, inference
+│                  (Kalibrierung/Conformal/Unsicherheit), explain, fairness, robustness, modelcard
+├── workflow/      config (Ablauf), search (Zufall/Gitter/Evolution/PSO/PBT), federated (FedAvg/FedProx, Model
+│                  Soup), active (Active Learning, Pseudo-Labeling)
 ├── techniques.py  Techniken-Katalog (an/aus, Status)
-├── data/          datasets (synthetisch + CSV/Text/Tensor-Dateien)
+├── requirements.py Anforderungs-Katalog + Perfektions-Check
+├── data/          datasets (synthetisch), files (CSV-Vorverarbeitung, Texte, Bildordner, Aufteilungen), tokenizers
+│                  (Zeichen/Wort/BPE), domains (Segmentierung, Audio, Anweisungen), artifacts (Vorverarbeitung
+│                  speichern, Rohdaten → Eingaben)
 ├── presets/       Vorlagen je Anwendungsgebiet, Speicherprofile
 ├── ui/            cli, gui (Tkinter), assistant (Ziel-Assistent, Techniken-Fenster), inspector (Probelauf-Fenster),
-│                  docs (Referenz + Möglichkeiten-Katalog)
+│                  docs (Referenz + Möglichkeiten-Katalog), serve (HTTP-Dienst)
 └── project.py     Project-Fassade
-examples/          23 ausführlich kommentierte Beispiele + Beispiel-Konfigurationsdatei
-tests/             ~460 Tests (pytest), CI per GitHub Actions (Python 3.10 und 3.12)
-docs/              ARCHITEKTUR.md, MOEGLICHKEITEN.md (Katalog), PARAMETER_REFERENZ.md (beide automatisch erzeugt)
+examples/          27 ausführlich kommentierte Beispiele + Beispiel-Konfigurationsdatei
+tests/             ~530 Tests (pytest), CI per GitHub Actions (Python 3.10 und 3.12)
+docs/              ARCHITEKTUR.md, MOEGLICHKEITEN.md (Katalog), PARAMETER_REFERENZ.md, ANFORDERUNGEN.md
+                   (die letzten drei automatisch erzeugt)
 ```
 
 | Beispiel | Inhalt |
@@ -775,6 +924,10 @@ docs/              ARCHITEKTUR.md, MOEGLICHKEITEN.md (Katalog), PARAMETER_REFERE
 | `21_notfall_ausfuehrung.py` | Notfall-Optionen mit Schätzung, Training mit Basis auf der SSD, stückweise Inferenz |
 | `22_ablauf_suche_schwarm_evolution.py` | PSO, genetisch, PBT, föderiert, Model Soup, Evolution Strategies, `run()` |
 | `23_logger_und_cluster.py` | Logger-Ziele und -Stufen, eigener Logger, verteiltes Training mit 2 Prozessen |
+| `24_perfektions_check.py` | Anforderungen je Anwendung prüfen, alles Empfohlene einschalten, offene Schritte ausführen |
+| `25_eigene_csv_daten.py` | CSV mit Kategorien/Lücken, Datenprüfung, Metriken, Testmenge, Basis, Fehleranalyse, Drift |
+| `26_vertrauen.py` | Kalibrierung, Conformal, Enthaltung, MC-Dropout, Erklärungen, Fairness, PGD, Active Learning |
+| `27_einsatz_und_domaenen.py` | Speichern mit Modellkarte, Laden ohne Daten, HTTP-Dienst, Segmentierung, Audio, SFT + Beam Search |
 
 Konvention: **Code-Bezeichner englisch** (wie in PyTorch und Fachliteratur), **alle Erklärungen,
 Kommentare, Tooltips und Ausgaben deutsch**.
@@ -785,7 +938,7 @@ Kommentare, Tooltips und Ausgaben deutsch**.
 
 ```bash
 pip install pytest
-pytest            # ~460 Tests, ca. 60–90 s auf CPU
+pytest            # ~530 Tests, ca. 70–100 s auf CPU
 ```
 
 Geprüft werden u. a.: jede Komponente jeder Registry, jedes Modell vorwärts/rückwärts, Kausalität aller Mixer und
@@ -799,7 +952,13 @@ Konvergenz, Übernahme/Geltungsbereiche/Modul-Regeln, Ratgeber/Aufbau/Export/Rü
 (Empfehlungen je Szenario), SSD-Streaming trainingsgleich zu RAM-Streaming, device_map exakt, OOM-Teilung, LISA,
 Chunked Prefill, verteiltes Training (2 gloo-Prozesse = 1 Prozess mit doppeltem Batch für DDP/ZeRO-1/FSDP, GAN per
 All-Reduce), Logger-Stufen/-Ziele/Rotation, alle Suchverfahren, föderiert, Model Soup, Evolution Strategies,
-Spike-Schutz mit Rücksprung, Lookahead, DP-SGD.
+Spike-Schutz mit Rücksprung, Lookahead, DP-SGD. Runde 4: jede Metrik gegen bekannte Werte, Tokenizer-Rundlauf (auch
+über JSON), CSV-Vorverarbeitung leckfrei, Aufteilungen, Datenprüfung findet eingebaute Fehler, Drift, Testmenge bleibt
+beim Neutrainieren fest, Klassengewichte, Temperature Scaling, Conformal-Abdeckung ≥ 87 % bei α = 0,1,
+Integrated Gradients vollständig, Occlusion findet das entscheidende Token, Angriffe bleiben in der ε-Kugel,
+Fortsetzen vom Checkpoint, U-Net/Segmentierung, WAV-Lesen, SFT-Verlust nur auf Antworten, Beam Search,
+Wiederholungssperre, Laden ohne Trainingsdaten, HTTP-Dienst (inkl. API-Schlüssel, keine Dateipfade), Katalog-
+Konsistenz, Perfektions-Check je Anwendung und alle neuen CLI-Befehle.
 
 ---
 
@@ -833,5 +992,18 @@ Spike-Schutz mit Rücksprung, Lookahead, DP-SGD.
   SSD ist für Inferenz gedacht (Training mit Basis auf der SSD: `stream` + `storage = "disk"`).
 - **TensorBoard, W&B, MLflow** sind als Logger-Ziele eingebunden, in dieser Umgebung aber nicht installiert und daher
   nur auf „fehlt → Warnung, Training läuft weiter“ geprüft.
-- Die Vorlagen sind auf kleine synthetische Daten abgestimmt; für echte Projekte `data` auf `csv`, `text` oder
-  `tensor_file` umstellen (Größen passen sich automatisch an) und Umfang/Lernrate anpassen.
+- Die Vorlagen sind auf kleine synthetische Daten abgestimmt; für echte Projekte `data` auf `csv`, `text`,
+  `text_classification`, `image_folder`, `segmentation`, `audio`, `instructions` oder `tensor_file` umstellen (Größen
+  passen sich automatisch an) und Umfang/Lernrate anpassen.
+- **Nicht enthalten** (der Perfektions-Check sagt es ehrlich): Objekterkennung mit Bounding Boxes (YOLO/DETR) und
+  Empfehlungssysteme (Matrixfaktorisierung/Two-Tower); ebenso Spracherkennung (CTC), Video und Retrieval/RAG.
+- **Tokenizer** sind eigene, einfache Implementierungen (BPE auf Zeichenebene, nicht byte-basiert; unbekannte
+  Zeichen werden `<unk>`); zu Hugging-Face-Tokenizern sind sie nicht kompatibel.
+- **Conformal Prediction** garantiert die Abdeckung nur, wenn neue Daten wie die Kalibrierungsdaten verteilt sind
+  (Austauschbarkeit) – bei Drift nicht. **MC-Dropout** braucht Dropout im Modell; **Erklärungen** (Gradienten,
+  Occlusion, Permutation) sind Näherungen, keine kausalen Aussagen; der **Fairness-Bericht** beschreibt Unterschiede,
+  er bewertet sie nicht. **BLEU** wird auf Token-IDs mit Teacher Forcing berechnet (Näherung an Satz-BLEU).
+- **Adversariales Training** und **Robustheitsprüfung** gehen nur mit Zahlen-Eingaben (nicht mit Tokens).
+- Der **HTTP-Dienst** ist für Tests, Prototypen und kleine Lasten gedacht (ein Modell, Anfragen nacheinander, kein
+  TLS); für Produktion Export + eigener Server/Reverse-Proxy. **Audio** liest nur 16-Bit-PCM-WAV.
+- **PSI-Schwellen** (0,1 / 0,25) und die Grenzwerte der Datenprüfung sind bewährte Faustregeln, keine Gesetze.

@@ -1,6 +1,6 @@
 # KI-Baukasten – alle Möglichkeiten
 
-Automatisch erzeugt (`python -m ki_baukasten moeglichkeiten -o docs/MOEGLICHKEITEN.md`). 363 Komponenten in 26 Registries – jede überall per Name einsetzbar. Einzelheiten zu jeder Einstellung: [PARAMETER_REFERENZ.md](PARAMETER_REFERENZ.md), innerer Aufbau: [ARCHITEKTUR.md](ARCHITEKTUR.md).
+Automatisch erzeugt (`python -m ki_baukasten moeglichkeiten -o docs/MOEGLICHKEITEN.md`). 399 Komponenten in 27 Registries – jede überall per Name einsetzbar. Einzelheiten zu jeder Einstellung: [PARAMETER_REFERENZ.md](PARAMETER_REFERENZ.md), innerer Aufbau: [ARCHITEKTUR.md](ARCHITEKTUR.md).
 
 ## Bedienung in drei Ebenen
 
@@ -25,7 +25,10 @@ Jede Einstellung hat einen Zustand **an** (empfohlener Wert), **aus** (z. B. Dro
 | `text_klassifizieren` | Text einordnen (Stimmung, Spam, Thema) |
 | `uebersetzen` | Text umwandeln (Übersetzung, Zusammenfassung) |
 | `bild_klassifizieren` | Bilder erkennen/einordnen |
+| `bild_segmentieren` | Bilder pixelgenau einteilen (Segmentierung: Medizin, Satellit, Prüfung) |
 | `bild_erzeugen` | Bilder/Daten erzeugen |
+| `audio_klassifizieren` | Geräusche/Sprachbefehle erkennen |
+| `assistent` | Anweisungen befolgen / Fragen beantworten (Assistent, Instruction-Tuning) |
 | `zeitreihe_prognose` | Zeitreihen vorhersagen (Sensoren, Verkäufe, Energie) |
 | `tabelle_klassifizieren` | Tabellendaten einordnen |
 | `tabelle_regression` | Zahlen aus Tabellendaten vorhersagen |
@@ -40,7 +43,7 @@ Prioritäten: `genauigkeit` (möglichst gute Ergebnisse), `geschwindigkeit` (sch
 
 ## Techniken-Katalog
 
-92 Techniken, die Communitys, Forschung und Firmen nutzen – jede an/abwählbar (`p.enable('qlora')`, `p.disable('qlora')` stellt den vorherigen Zustand exakt wieder her).
+112 Techniken, die Communitys, Forschung und Firmen nutzen – jede an/abwählbar (`p.enable('qlora')`, `p.disable('qlora')` stellt den vorherigen Zustand exakt wieder her).
 
 ### Stabilität
 
@@ -170,7 +173,9 @@ Augmentierung, Ausgleich seltener Klassen, Curriculum.
 | `random_erasing` | Random Erasing (Cutout) | Zhong et al., timm |  |
 | `token_rauschen` | Token-Rauschen | BERT-Maskierung (Prinzip) |  |
 | `klassen_ausgleich` | Seltene Klassen ausgleichen | Standard bei unbalancierten Daten |  |
+| `bpe_tokenizer` | BPE-Tokenizer | GPT-2, LLaMA, RoBERTa |  |
 | `curriculum` | Curriculum (leicht → schwer) | Bengio et al. (2009) |  |
+| `klassengewichte` | Klassengewichte im Verlust | scikit-learn class_weight='balanced' |  |
 
 ### Datenschutz
 
@@ -197,6 +202,8 @@ Protokolle, Checkpoints, Seeds.
 | `gradienten_ueberwachung` | Gradienten je Schicht überwachen | W&B watch, TensorBoard |  |
 | `gewichts_ueberwachung` | Gewichte je Schicht überwachen | TensorBoard-Histogramme |  |
 | `zeitlimit` | Zeitlimit | SLURM-Praxis |  |
+| `modellkarte` | Modellkarte beim Speichern | Mitchell et al. (2019), Hugging Face Model Cards |  |
+| `fortsetzen` | Automatisch fortsetzen (neuester Checkpoint) | Lightning/Hugging Face 'resume_from_checkpoint' |  |
 
 ### Kompression & Einsatz
 
@@ -207,6 +214,29 @@ Nach dem Training verkleinern und exportieren.
 | `komprimieren_nach_training` | Nach dem Training komprimieren | Edge-Deployment |  |
 | `export_nach_training` | Nach dem Training exportieren | PyTorch 2 |  |
 | `qat` | Quantization-Aware Training | Google, Qualcomm (TFLite, AIMET) |  |
+
+### Bewertung & Vertrauen
+
+Ehrlich messen, Wahrscheinlichkeiten kalibrieren, Unsicherheit zeigen, robust gegen Störungen.
+
+| Kennung | Technik | Wer nutzt es | Hinweis |
+|---|---|---|---|
+| `testmenge` | Testmenge zurückhalten (15 %) | Standard in Forschung und Industrie |  |
+| `metriken_auto` | Passende Metriken automatisch | scikit-learn/torchmetrics-Praxis |  |
+| `stratifiziert` | Stratifizierte Aufteilung | scikit-learn StratifiedKFold |  |
+| `zeitliche_aufteilung` | Zeitliche Aufteilung (keine Zukunft im Training) | Prognose-Wettbewerbe (M4/M5) |  |
+| `kalibrierung` | Wahrscheinlichkeiten kalibrieren (Temperature Scaling) | Guo et al. (2017) |  |
+| `schwelle_optimieren` | Entscheidungsschwelle optimieren (F1) | Praxis in Kreditscoring/Medizin |  |
+| `enthaltung` | Bei Unsicherheit enthalten ('unsicher') | Selective Prediction / Reject Option |  |
+| `conformal` | Conformal Prediction (90 % garantiert) | Angelopoulos & Bates (2021) |  |
+| `mc_dropout` | Unsicherheit per MC-Dropout | Gal & Ghahramani (2016) |  |
+| `tta` | Test-Time Augmentation | Kaggle-Standard |  |
+| `adversarial_training` | Adversariales Training (PGD) | Madry et al. (2018) |  |
+| `fgsm_training` | Adversariales Training (FGSM, schnell) | Goodfellow et al. (2015), Wong et al. (2020) |  |
+| `beam_search` | Beam Search bei der Generierung | Übersetzungssysteme (Marian, T5) |  |
+| `keine_wiederholungen` | Keine Wiederholungs-Schleifen (n-Gramm-Sperre) | Hugging Face generate() |  |
+| `datenpruefung` | Datenprüfung vor dem Training | Google 'Data Validation for ML' |  |
+| `robustheitspruefung` | Robustheitsprüfung nach dem Training | Robustheits-Benchmarks (RobustBench) |  |
 
 ### Experimentell
 
@@ -257,7 +287,27 @@ Zusätzlich: Batch automatisch teilen bei Speichermangel (`memory.oom_strategy='
 
 ## Ablauf: Suche, Schwarm, Evolution
 
-`Project.run()` führt `workflow` aus: Suche (`random`, `grid`, `evolution`, `pso`, `pbt`) → Training (normal, föderiert FedAvg/FedProx, Model Soup) → Kreuzvalidierung → Kompression → Export. Einzeln: `tune(...)`, `federated_train(...)`, `model_soup(...)`, `cross_validate(k)`, `find_lr()`. Gradientenfrei: Paradigma `evolution_strategies`.
+`Project.run()` führt `workflow` aus: Datenprüfung → Suche (`random`, `grid`, `evolution`, `pso`, `pbt`) → Training (normal, föderiert FedAvg/FedProx, Model Soup) → Test → Basis-Vergleich → Kalibrierung → Robustheit/Fairness → Kreuzvalidierung → Kompression → Export → Speichern. Einzeln: `tune(...)`, `federated_train(...)`, `model_soup(...)`, `cross_validate(k)`, `find_lr()`. Gradientenfrei: Paradigma `evolution_strategies`.
+
+## Anforderungs-Katalog & Perfektions-Check
+
+53 Anforderungen in 6 Phasen (Daten, Modell, Training, Bewertung, Vertrauen & Sicherheit, Einsatz & Betrieb), je Anwendung; 51 davon sind im Baukasten umsetzbar. `project.perfection_check()` zeigt für das eigene Projekt aktiv · eingebaut · aus · offen · fehlt mit Punktzahl, `apply_perfection()` schaltet alles Empfohlene ein, CLI `perfektion`, GUI „Qualität“. Vollständig: [ANFORDERUNGEN.md](ANFORDERUNGEN.md).
+
+## Daten, Bewertung, Vertrauen, Einsatz
+
+| Bereich | Möglichkeiten | Wo |
+|---|---|---|
+| Eigene Daten | CSV (Kategorien, fehlende Werte + Indikator, Skalierung, Ziel-Skalierung), Texte mit Labels (Tokenizer zeichen/wort/bpe), Bildordner, Segmentierungs-Masken, Audio (WAV → Log-Mel), Anweisungen (SFT) | `data = csv`, `text_classification`, `image_folder`, `segmentation`, `audio`, `instructions` |
+| Aufteilung | zufällig, stratifiziert, zeitlich; Testmenge, die beim Neutrainieren fest bleibt | `training.validation_strategy`, `training.test_split`, `Project.test()` |
+| Datenprüfung & Drift | Lecks, Duplikate, Überlappung, Klassen, NaN, Skalen, abgeschnittene Texte; PSI/KS je Merkmal, Vorhersage-Drift | `data_check()`, `apply_data_fixes()`, `drift_report()` |
+| Metriken | 27 Metriken (Registry `metric`), automatisch je Aufgabe, über alle Beispiele, Richtung für Early Stopping/Suche automatisch | `training.metrics`, `training.auto_metrics` |
+| Bewertung | Basis-Vergleich, Fehleranalyse (Konfusionsmatrix, sicherste Fehler), Klassengewichte | `baseline()`, `error_analysis()`, `training.class_weights` |
+| Vertrauen | Temperature Scaling, Schwelle, Enthaltung, Conformal Prediction, MC-Dropout, TTA | `inference.*`, `calibrate()`, `predict_with_uncertainty()` |
+| Erklärbarkeit & Fairness | Gradient × Eingabe, Integrated Gradients, Occlusion (auch Tokens), Permutations-Wichtigkeit; Disparate Impact, Equalized Odds | `explain_prediction()`, `feature_importance()`, `fairness_report()` |
+| Robustheit | FGSM/PGD-Training, Robustheitsbericht (Rauschen/Angriffe) | `training.adversarial`, `robustness_report()` |
+| Wenige Labels | Active Learning (Unsicherheit, Marge, Entropie, Vielfalt), Pseudo-Labeling | `select_for_labeling()`, `pseudo_label()` |
+| Domänen | U-Net-Segmentierung, Audio-Klassifikation, Instruction-Tuning (Verlust nur auf Antworten), Beam Search, n-Gramm-Sperre | `model = unet`, `ask()`, `generation.*` |
+| Einsatz | Modellkarte, Umgebung, gespeicherte Vorverarbeitung, Rohdaten-Vorhersage, HTTP-Dienst, Fortsetzen vom Checkpoint | `model_card()`, `save/load`, `predict_raw()`, `serve()`, `training.resume_from` |
 
 ## Anpassen – jede Schicht, jedes Modul, jeder Tensor
 
@@ -386,9 +436,10 @@ Verstehen, was die KI tut.
 - **Tensor-Funktionen** (`function`, 18): `identity`, `softmax`, `log_softmax`, `l2_normalize`, `mean`, `sum`, `max`, `last`, `first`, `transpose`, `abs`, `square`, `exp`, `log1p`, `clamp`, `scale`, `detach`, `sign_ste`
 - **Sequenz-Mixer** (`sequence_mixer`, 6): `attention`, `ssm`, `rnn`, `conv`, `fourier`, `none`
 - **Positionskodierungen** (`positional`, 7): `none`, `sinusoidal`, `learned`, `rope`, `alibi`, `relative_bias`, `combined`
-- **Modelle** (`model`, 19): `autoencoder`, `cnn`, `ensemble`, `pipeline`, `fusion`, `mixture_of_models`, `multitask`, `extern`, `mlp`, `gan`, `diffusion`, `gnn`, `graph`, `actor_critic`, `q_network`, `rnn`, `transformer`, `ssm`, `hybrid`
+- **Modelle** (`model`, 20): `autoencoder`, `cnn`, `ensemble`, `pipeline`, `fusion`, `mixture_of_models`, `multitask`, `extern`, `mlp`, `gan`, `diffusion`, `gnn`, `graph`, `actor_critic`, `q_network`, `rnn`, `transformer`, `ssm`, `hybrid`, `unet`
 - **Callbacks** (`callback`, 9): `early_stopping`, `checkpoint`, `csv_logger`, `jsonl_logger`, `gradient_monitor`, `time_limit`, `swa`, `lisa`, `gradual_unfreeze`
 - **Verlustfunktionen** (`loss`, 17): `cross_entropy`, `bce`, `mse`, `l1`, `huber`, `smooth_l1`, `log_cosh`, `quantile`, `gaussian_nll`, `poisson_nll`, `focal`, `dice`, `kl_div`, `cosine`, `info_nce`, `hinge`, `nll`
+- **Metriken** (`metric`, 27): `accuracy`, `top_k_accuracy`, `precision`, `recall`, `f1`, `balanced_accuracy`, `mcc`, `auroc`, `log_loss`, `ece`, `brier`, `mae`, `mse`, `rmse`, `r2`, `mape`, `smape`, `max_error`, `perplexity`, `token_accuracy`, `exact_match`, `bleu`, `iou`, `dice`, `multilabel_accuracy`, `subset_accuracy`, `multilabel_f1`
 - **Optimierer** (`optimizer`, 13): `sgd`, `adam`, `adamw`, `nadam`, `radam`, `adamax`, `adagrad`, `adadelta`, `rmsprop`, `adafactor`, `lion`, `adamw8bit`, `muon`
 - **Trainings-Paradigmen** (`paradigm`, 13): `supervised`, `causal_lm`, `masked_lm`, `seq2seq`, `autoencoder`, `contrastive`, `distillation`, `gan`, `diffusion`, `preference`, `dpo`, `evolution_strategies`, `reinforcement`
 - **Lernraten-Zeitpläne** (`scheduler`, 12): `constant`, `linear`, `warmup_cosine`, `cosine_restarts`, `polynomial`, `exponential`, `step`, `inverse_sqrt`, `one_cycle`, `wsd`, `cyclic`, `plateau`
@@ -400,8 +451,8 @@ Verstehen, was die KI tut.
 - **Tensor-Operationen** (`tensor_op`, 22): `freeze`, `unfreeze`, `init`, `scale`, `add`, `set`, `noise`, `clamp`, `prune`, `low_rank`, `orthogonalize`, `load`, `custom`, `copy`, `tie`, `lr_scale`, `weight_decay`, `grad_scale`, `grad_clip`, `grad_noise`, `grad_mask`, `constraint`
 - **Tensor-Funktionen (Chirurgie)** (`tensor_function`, 6): `identity`, `abs`, `sign`, `normalize_rows`, `flip`, `shuffle`
 - **Kompressions-Schritte** (`compress_step`, 11): `prune_ffn`, `prune_heads`, `drop_layers`, `prune_mlp`, `low_rank`, `sparsify`, `heal`, `finetune`, `quantize`, `dtype`, `merge_lora`
-- **Datensätze** (`dataset`, 15): `multimodal`, `classification`, `regression`, `sequence_classification`, `text`, `seq2seq_toy`, `time_series`, `shapes`, `graphs`, `distribution_2d`, `preferences`, `anomaly`, `csv`, `tensor_file`, `none`
-- **Vorlagen (Presets)** (`preset`, 34): `sprachmodell_mini`, `sprachmodell_moe`, `sprachmodell_mamba`, `sprachmodell_hybrid`, `sprachmodell_speichersparend`, `sprachmodell_qlora`, `sprachmodell_ram_streaming`, `text_klassifikation`, `bert_vortraining`, `uebersetzung_seq2seq`, `bildklassifikation_cnn`, `bildklassifikation_vit`, `bildklassifikation_mobil`, `vae_bilder`, `zeitreihen_lstm`, `zeitreihen_transformer`, `sequenz_gedaechtnis_rnn`, `tabellen_klassifikation`, `tabellen_regression`, `gan_2d`, `diffusion_2d`, `graph_klassifikation`, `anomalie_autoencoder`, `reward_modell`, `rl_cartpole_ppo`, `rl_cartpole_dqn`, `rl_gitterwelt_belohnungen`, `rl_pendel_kontinuierlich`, `ensemble_tabellen`, `multimodal_fusion`, `mixture_of_models`, `freies_netz`, `kontrastiv_vortraining`, `forschung_experimentell`
+- **Datensätze** (`dataset`, 20): `multimodal`, `classification`, `regression`, `sequence_classification`, `text`, `seq2seq_toy`, `time_series`, `shapes`, `graphs`, `distribution_2d`, `preferences`, `anomaly`, `csv`, `text_classification`, `image_folder`, `segmentation`, `audio`, `instructions`, `tensor_file`, `none`
+- **Vorlagen (Presets)** (`preset`, 37): `sprachmodell_mini`, `sprachmodell_moe`, `sprachmodell_mamba`, `sprachmodell_hybrid`, `sprachmodell_speichersparend`, `sprachmodell_qlora`, `sprachmodell_ram_streaming`, `sprachmodell_sft`, `text_klassifikation`, `bert_vortraining`, `uebersetzung_seq2seq`, `bildklassifikation_cnn`, `bildklassifikation_vit`, `bildklassifikation_mobil`, `segmentierung_unet`, `audio_klassifikation`, `vae_bilder`, `zeitreihen_lstm`, `zeitreihen_transformer`, `sequenz_gedaechtnis_rnn`, `tabellen_klassifikation`, `tabellen_regression`, `gan_2d`, `diffusion_2d`, `graph_klassifikation`, `anomalie_autoencoder`, `reward_modell`, `rl_cartpole_ppo`, `rl_cartpole_dqn`, `rl_gitterwelt_belohnungen`, `rl_pendel_kontinuierlich`, `ensemble_tabellen`, `multimodal_fusion`, `mixture_of_models`, `freies_netz`, `kontrastiv_vortraining`, `forschung_experimentell`
 
 ## Kommandozeile
 
@@ -438,7 +489,13 @@ Verstehen, was die KI tut.
 | `automl` | automatische Hyperparameter-Suche |
 | `verteilt` | verteilt trainieren (mehrere GPUs/Rechner) |
 | `generieren` | aus gespeichertem Projekt generieren |
+| `perfektion` | Anforderungs-Katalog: Perfektions-Check eines Projekts |
+| `datenpruefung` | Daten prüfen (Lecks, Duplikate, Klassen …) |
+| `bewerten` | Validierung, Test, Basis, Fehleranalyse, Kalibrierung |
+| `modellkarte` | Modellkarte anzeigen/schreiben |
+| `drift` | neue Daten mit den Trainingsdaten vergleichen |
+| `bereitstellen` | als HTTP-Dienst starten |
 | `doku` | Parameter-Referenz exportieren |
 | `gui` | grafische Oberfläche |
 
-Grafische Oberfläche: `python -m ki_baukasten gui` – Menü (Datei · Assistent · Einstellungen · Techniken · Ausführen · Analyse · Einsatz · Hilfe), Ziel-Assistent, Techniken-Fenster mit Reitern, Einstellungsbaum mit Tooltips und An/Aus/Eigen-Schaltern je Einstellung, Ansichtsfilter, Probelauf & Gewichte, Reduzieren/Export mit Notfall-Ausführung, Modell importieren, Rückgängig/Wiederholen.
+Grafische Oberfläche: `python -m ki_baukasten gui` – Menü (Datei · Assistent · Einstellungen · Techniken · Ausführen · Analyse · Qualität · Einsatz · Hilfe), Ziel-Assistent, Techniken-Fenster mit Reitern, Perfektions-Check, Datenprüfung, Test, Basis, Fehleranalyse, Kalibrierung, Modellkarte, HTTP-Dienst, Einstellungsbaum mit Tooltips und An/Aus/Eigen-Schaltern je Einstellung, Ansichtsfilter, Probelauf & Gewichte, Reduzieren/Export mit Notfall-Ausführung, Modell importieren, Rückgängig/Wiederholen.
