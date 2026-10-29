@@ -129,5 +129,5 @@ def test_kan_ffn_and_yarn():
     assert rope.mscale > 1.0
     inv = rope._inv_freq(4, torch.device("cpu"))[1]
     base = 1.0 / (10000 ** (torch.arange(0, 4, 2).float() / 4))
-    assert inv[0] == pytest.approx(base[0])          # hohe Frequenz bleibt
-    assert inv[-1] < base[-1]                         # niedrige Frequenz wird interpoliert
+    assert float(inv[0]) == pytest.approx(float(base[0]))   # hohe Frequenz bleibt
+    assert float(inv[-1]) < float(base[-1])                 # niedrige Frequenz wird interpoliert
