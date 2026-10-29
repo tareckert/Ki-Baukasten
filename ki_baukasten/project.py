@@ -38,6 +38,7 @@ import torch
 from torch import nn
 
 from .core import BaseConfig, ComponentParam, ConfigError, ConfigListParam, Level, NestedParam, Param, T
+from .analysis.goals import GoalsConfig
 from .analysis.targets import DeploymentConfig
 from .compress import CompressionConfig
 from .memory import MemoryConfig, MemoryManager, estimate_memory
@@ -60,6 +61,7 @@ class ProjectConfig(BaseConfig):
         "Anwendungsgebiet (z. B. sprache, bild, zeitreihen, tabellen, rl …).", "Ordnet Vorlagen ein.",
         "Wird von Presets gesetzt."))
     description = Param("", tooltip=T("Freie Beschreibung.", "Dokumentation des Experiments.", "Was wird getestet?"))
+    goals = NestedParam(GoalsConfig, group="Ziele")
     model = ComponentParam("model", "mlp", group="Modell", tooltip=T(
         "Das Modell (beliebig aus der Registry 'model', auch Kombinationen).", "Architektur der KI.",
         "Siehe 'python -m ki_baukasten modelle'."))
@@ -116,6 +118,8 @@ class Project:
         self.last_compression: Any = None
         self._switch_memory: dict[str, Any] = {}     # beim Ausschalten gemerkte eigene Werte (für "an"/"eigen")
         self._loggers: list[Any] = []                # zur Laufzeit eingebundene Logger (add_logger)
+        self._technique_memory: dict[str, Any] = {}  # vorherige Werte eingeschalteter Techniken (für disable)
+        self.goal_report: Any = None                 # letzte Bewertung der Ziele (goal_check / from_goals)
 
     # ================================================================ Erzeugen
     @classmethod
@@ -127,6 +131,91 @@ class Project:
         if overrides:
             p.config.update(overrides)
         return p
+
+    @classmethod
+    def from_goals(cls, goals: Any = None, choice: int = 0, apply_techniques: bool = True,
+                   **goal_fields: Any) -> "Project":
+        """Neue KI aus **Zielen**: Aufgabe, Prioritäten, Daten, Zielgerät … → beste Vorlage + passende Techniken.
+
+        Beispiel::
+
+            p = Project.from_goals(task="text_klassifizieren", priorities=["geschwindigkeit", "datenschutz"],
+                                   data_size="klein", target="smartphone",
+                                   description="Spam-Erkennung direkt auf dem Handy")
+            print(p.goal_report)          # Empfehlungen, Abratungen, Techniken, Hinweise
+
+        Args:
+            choice: Index der Empfehlung (0 = beste).
+            apply_techniques: empfohlene Techniken direkt einschalten.
+        """
+        from .analysis.goals import evaluate_goals, interpret
+
+        data = goals.to_dict() if isinstance(goals, GoalsConfig) else dict(goals or {})
+        data.update(goal_fields)
+        g = interpret(GoalsConfig.from_dict(data))
+        report = evaluate_goals(g)
+        if not report.recommended:
+            raise ConfigError(f"Keine passende Vorlage für die Aufgabe '{g.task}' – Aufgabe/Beschreibung genauer "
+                              f"angeben. Aufgaben: {', '.join(t for t in GoalsConfig().params()['task'].choices)}.")
+        pick = report.recommended[min(choice, len(report.recommended) - 1)].preset
+        p = cls.from_preset(pick)
+        g.use_description = False         # erkannte Angaben sind übernommen; spätere Änderungen gelten wörtlich
+        p.config.goals = g
+        if g.target:
+            d = p.config.deployment
+            d.main_target = g.target
+            if g.target not in d.targets:
+                d.targets = list(d.targets) + [g.target]
+        from .analysis.goals import HEAVY
+
+        enabled = []
+        if apply_techniques:
+            for key, _why in report.techniques:
+                if key in HEAVY:
+                    continue                  # aufwendige Techniken nur auf ausdrücklichen Wunsch
+                try:
+                    if p.technique(key, "an"):
+                        enabled.append(key)
+                except ConfigError:
+                    pass                      # passt nicht zu dieser Vorlage
+        p._undo.clear()
+        p.goal_report = report
+        p._note(f"Vorlage '{pick}' nach Zielen gewählt" + (f"; Techniken eingeschaltet: {', '.join(enabled)}"
+                                                          if enabled else ""))
+        return p
+
+    def set_goals(self, **changes: Any) -> Any:
+        """Ziele ändern (z. B. ``set_goals(target="raspberry_pi", priorities=[...])``) und neu bewerten."""
+        self._snapshot()
+        try:
+            self.config.goals.update(changes)
+        except Exception:
+            self._undo.pop()
+            raise
+        return self.goal_check()
+
+    def goal_check(self, top: int = 4) -> Any:
+        """Bewertet das aktuelle Projekt gegen seine Ziele: passt das Modell, was ist besser, welche Techniken?"""
+        from .analysis.goals import evaluate_goals
+
+        self.goal_report = evaluate_goals(self.config.goals, top, project=self)
+        return self.goal_report
+
+    def apply_goal_techniques(self, include_heavy: bool = False) -> list[str]:
+        """Zu den Zielen passende Techniken einschalten (aufwendige wie DP-SGD/föderiert nur mit include_heavy)."""
+        from .analysis.goals import HEAVY
+
+        report = self.goal_check()
+        done = []
+        for key, _why in report.techniques:
+            if key in HEAVY and not include_heavy:
+                continue
+            try:
+                if self.technique(key, "an"):
+                    done.append(key)
+            except ConfigError:
+                pass
+        return done
 
     @classmethod
     def import_model(cls, path: str | Path, format: str = "auto", data: Any = "none", name: str | None = None,
@@ -273,6 +362,53 @@ class Project:
     def reset(self, pattern: str, **kw: Any) -> list[str]:
         """Kurzform für ``switch(pattern, "standard")`` (Standardwert wiederherstellen)."""
         return self.switch(pattern, "standard", **kw)
+
+    # ------------------------------------------------------------ Techniken (Katalog, an/aus)
+    def techniques(self, category: str | None = None, status: str | None = None,
+                   max_level: str | None = None) -> list:
+        """Katalog aller Techniken mit Status für dieses Projekt (``TechniqueState``)."""
+        from .techniques import CATALOG, status as tech_status
+
+        limit = Level.parse(max_level)
+        rows = [tech_status(self.config, t) for t in CATALOG
+                if (category is None or t.in_category(category)) and t.level.visible_at(limit)]
+        return [r for r in rows if status is None or r.status == status]
+
+    def technique(self, key: str, state: str = "an") -> list[str]:
+        """Eine Technik ein- (``an``) oder ausschalten (``aus``). Rückgängig mit ``undo()``."""
+        from .techniques import BY_KEY, disable, enable
+
+        if key not in BY_KEY:
+            from .core.errors import suggest
+
+            hint = suggest(key, list(BY_KEY))
+            raise ConfigError(f"Unbekannte Technik '{key}'." + (f" Meinten Sie {hint}?" if hint else "") +
+                              " Liste: projekt.techniques()")
+        trial = self.config.copy()
+        memory = {k: dict(v) for k, v in self._technique_memory.items()}
+        on = str(state).lower() in ("an", "ein", "on", "true", "1")
+        changed = (enable if on else disable)(trial, BY_KEY[key], memory)
+        trial.validate()
+        if changed:
+            self._snapshot()
+            self.config = trial
+            self._invalidate()
+        self._technique_memory = memory
+        return changed
+
+    def enable(self, *keys: str) -> list[str]:
+        """Techniken einschalten, z. B. ``p.enable("qlora", "gradient_clipping", "early_stopping")``."""
+        return [path for k in keys for path in self.technique(k, "an")]
+
+    def disable(self, *keys: str) -> list[str]:
+        """Techniken ausschalten (vorherige Werte kommen zurück)."""
+        return [path for k in keys for path in self.technique(k, "aus")]
+
+    def technique_overview(self, only_active: bool = False, max_level: str | None = None) -> str:
+        """Alle Techniken nach Kategorien mit Status (● an · ○ aus · ◐ teilweise · – passt nicht)."""
+        from .techniques import overview
+
+        return overview(self.config, only_active, max_level)
 
     def switches(self, pattern: str | None = None, state: str | None = None, max_level: str | None = None,
                  only_switchable: bool = False) -> list:
@@ -1003,8 +1139,15 @@ class Project:
         mc = self.config.memory
 
         def run(part: Any) -> Any:
+            part = to_device(part, device)
+            if mc.param_dtype != "float32":
+                from torch.utils._pytree import tree_map
+
+                from .memory.manager import DTYPES
+                part = tree_map(lambda t: t.to(DTYPES[mc.param_dtype]) if isinstance(t, torch.Tensor)
+                                and t.is_floating_point() else t, part)
             with mem.autocast():
-                return call_model(model, to_device(part, device), **kwargs)
+                return call_model(model, part, **kwargs)
 
         try:
             out, _ = run_chunked(run, inputs, chunk_size, on_oom=mc.oom_strategy == "batch_teilen",

@@ -174,6 +174,9 @@ class Trainer:
         self._la_count: dict[str, int] = defaultdict(int)
         self._dp_sum: dict[int, torch.Tensor] = {}
         if self.cfg.privacy.enabled:
+            if any(isinstance(m, nn.modules.batchnorm._BatchNorm) for m in self.model.modules()):
+                raise ConfigError("DP-SGD (training.privacy) braucht Gradienten pro Beispiel – BatchNorm mischt Beispiele "
+                                  "eines Batches. Tipp: GroupNorm/LayerNorm verwenden.", "training.privacy.enabled")
             if self.scaler is not None:
                 raise ConfigError("DP-SGD (training.privacy) ist nicht mit fp16-Loss-Scaling kombinierbar.")
             self._split = max(1, self.cfg.batch_size)   # jedes Beispiel einzeln rechnen (Gradient pro Beispiel)
@@ -698,7 +701,7 @@ class Trainer:
             if hasattr(getattr(train_loader, "sampler", None), "set_epoch"):
                 train_loader.sampler.set_epoch(epoch)
             for batch in train_loader:
-                batch = to_device(batch, self.device, non_blocking=c.pin_memory)
+                batch = self._cast(to_device(batch, self.device, non_blocking=c.pin_memory))
                 self._count(batch)
                 before = self.global_step
                 metrics = self._train_step(batch)
@@ -750,6 +753,18 @@ class Trainer:
                 self._split *= 2
                 self.log(f"⚠ Speichermangel – Batch wird ab jetzt in {self._split} Stücke geteilt "
                          f"(effektive Batchgröße bleibt gleich, Akkumulation {self.accumulation}).", "warnung")
+
+    def _cast(self, batch: Any) -> Any:
+        """Gleitkomma-Eingaben in den Datentyp der Gewichte bringen (memory.param_dtype ≠ float32)."""
+        dtype = self.mem.cfg.param_dtype
+        if dtype == "float32":
+            return batch
+        from ..memory.manager import DTYPES
+
+        target = DTYPES[dtype]
+        from torch.utils._pytree import tree_map
+
+        return tree_map(lambda t: t.to(target) if isinstance(t, torch.Tensor) and t.is_floating_point() else t, batch)
 
     def _count(self, batch: Any) -> None:
         inputs = batch.get("inputs") if isinstance(batch, dict) else None
@@ -825,7 +840,7 @@ class Trainer:
             for i, batch in enumerate(loader):
                 if c.eval_max_batches and i >= c.eval_max_batches:
                     break
-                batch = to_device(batch, self.device)
+                batch = self._cast(to_device(batch, self.device))
                 n = _batch_size(batch)
                 with self.autocast():
                     m = self.paradigm.validation_step(self, batch)

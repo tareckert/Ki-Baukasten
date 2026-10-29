@@ -9,6 +9,7 @@ Befehle
 ==============  =================================================================
 Befehl          Zweck
 ==============  =================================================================
+ziele           Ziel-Assistent: Zweck & Prioritäten → empfohlene/abgeratene Modelle, Techniken; neues Projekt
 presets         Vorlagen nach Anwendungsgebiet auflisten
 modelle         alle Modelle mit Kurzbeschreibung
 komponenten     alle Registries bzw. Einträge einer Registry (``komponenten activation``)
@@ -23,6 +24,7 @@ aufbau          komplette Aufbau-Darstellung (Text, Markdown, Mermaid, JSON)
 optimieren      Ratgeber: Speicher-/Tempo-/Stabilitätsvorschläge (optional übernehmen)
 suche           Einstellungen per Volltext (Pfade + Tooltips) finden
 schalter        jede Einstellung An / Aus / Eigen: Übersicht, umschalten, speichern
+techniken       Katalog aller Techniken (Stabilität … Schwarm, Evolution) mit Status, an/aus
 vergleiche      zwei Vorlagen/Dateien vergleichen
 exportieren     Modell exportieren (torch.export, TorchScript, ONNX, state_dict)
 importieren     fremdes Modell laden (pt2, TorchScript, state_dict, safetensors, HF) → Projekt
@@ -34,6 +36,8 @@ schueler        Lehrer-Schüler: kleineres Modell per Distillation trainieren
 probelauf       Forward/Backward mit allen Wegen, Statistiken, Warnungen (+ Testlauf)
 moeglichkeiten  Katalog aller Möglichkeiten (Speicher, Tempo, Kompression, Training …)
 trainieren      trainieren (und speichern)
+ablauf          ganzer Ablauf: Suche → Training (normal/föderiert/Model Soup) → Prüfung → Kompression → Export
+automl          automatische Suche: Zufall, Gitter, Evolution, Partikelschwarm, PBT
 verteilt        verteilt trainieren: mehrere GPUs/Rechner/Prozesse (DDP, ZeRO-1, FSDP über torchrun)
 generieren      gespeichertes Projekt laden und Text/Samples erzeugen
 doku            vollständige Parameter-Referenz als Markdown exportieren
@@ -94,6 +98,43 @@ def _project(source: str, sets: list[str] | None = None):
                 raise
             p.set(path, raw)  # z. B. 'none' als Auswahlwert statt None
     return p
+
+
+def cmd_ziele(a: argparse.Namespace) -> None:
+    from ..analysis.goals import PRIORITIES, TASKS, evaluate_goals
+
+    if a.liste:
+        print("Aufgaben:\n" + "\n".join(f"  {k:<24} {v}" for k, v in TASKS.items()))
+        print("Prioritäten:\n" + "\n".join(f"  {k:<24} {v}" for k, v in PRIORITIES.items()))
+        return
+    goals: dict[str, Any] = {}
+    if a.quelle:
+        p = _project(a.quelle, a.setze)
+        goals = p.config.goals.to_dict()
+    for key, value in (("task", a.aufgabe), ("description", a.text), ("data_size", a.daten), ("labels", a.labels),
+                       ("sequence_length", a.sequenzen), ("target", a.ziel), ("training_hardware", a.hardware)):
+        if value is not None:
+            goals[key] = value
+    if a.prioritaeten:
+        goals["priorities"] = [x.strip() for x in a.prioritaeten.split(",") if x.strip()]
+    if a.vortrainiert:
+        goals["pretrained"] = True
+    if a.quelle:
+        p.config.goals.update(goals)
+        print(p.goal_check())
+        target_project = p
+    else:
+        print(evaluate_goals(goals))
+        target_project = None
+    if a.erstellen:
+        from ..project import Project
+
+        q = Project.from_goals(goals, choice=a.wahl)
+        q.config.save(a.erstellen, only_changed=True)
+        print(f"\nNeues Projekt aus Vorlage '{q.config.name}' gespeichert: {a.erstellen}")
+    elif target_project is not None and a.speichern:
+        target_project.config.save(a.speichern, only_changed=True)
+        print(f"Ziele gespeichert: {a.speichern}")
 
 
 def cmd_presets(a: argparse.Namespace) -> None:
@@ -269,6 +310,27 @@ def cmd_schalter(a: argparse.Namespace) -> None:
         print(f"Gespeichert: {a.speichern}")
 
 
+def cmd_techniken(a: argparse.Namespace) -> None:
+    p = _project(a.quelle, a.setze)
+    for key in a.an:
+        print(f"an:  {key} → {', '.join(p.enable(key)) or 'war schon an'}")
+    for key in a.aus:
+        print(f"aus: {key} → {', '.join(p.disable(key)) or 'war schon aus'}")
+    if a.kategorie:
+        from ..techniques import CATEGORIES
+
+        if a.kategorie not in CATEGORIES:
+            raise SystemExit(f"Unbekannte Kategorie '{a.kategorie}'. Verfügbar: {', '.join(CATEGORIES)}")
+        for row in p.techniques(a.kategorie, max_level=a.stufe):
+            t = row.technique
+            print(f"  {row}\n      {t.tooltip.what} {t.tooltip.why}" + (f"  [{t.hint}]" if t.hint else ""))
+    else:
+        print(p.technique_overview(a.nur_aktive, a.stufe))
+    if a.speichern:
+        p.config.save(a.speichern, only_changed=True)
+        print(f"Gespeichert: {a.speichern}")
+
+
 def cmd_vergleiche(a: argparse.Namespace) -> None:
     p = _project(a.quelle, a.setze)
     diff = p.diff(a.andere)
@@ -418,6 +480,25 @@ def cmd_trainieren(a: argparse.Namespace) -> None:
         print(f"Gespeichert in: {target}")
 
 
+def cmd_ablauf(a: argparse.Namespace) -> None:
+    p = _project(a.quelle, a.setze)
+    report = p.run()
+    print("Ablauf fertig: " + ", ".join(report))
+    if a.speichern:
+        print(f"Gespeichert in: {p.save(a.speichern)}")
+
+
+def cmd_automl(a: argparse.Namespace) -> None:
+    p = _project(a.quelle, a.setze)
+    space = json.loads(a.raum) if a.raum else None
+    result = p.tune(a.methode, space=space, trials=a.versuche, steps_per_trial=a.schritte,
+                    population=a.population, generations=a.generationen, metric=a.metrik, mode=a.richtung)
+    print(result)
+    if a.speichern:
+        p.config.save(a.speichern, only_changed=True)
+        print(f"Konfiguration mit den besten Einstellungen: {a.speichern}")
+
+
 def cmd_verteilt(a: argparse.Namespace) -> None:
     import shlex
     import subprocess
@@ -469,6 +550,25 @@ def build_parser() -> argparse.ArgumentParser:
         else:
             sp.add_argument("quelle", help="Preset-Name oder Konfigurationsdatei (.json/.yaml)")
         sp.add_argument("--setze", action="append", default=[], metavar="PFAD=WERT", help="Einstellung überschreiben")
+
+    sp = sub.add_parser("ziele", help="Ziel-Assistent: Modelle nach Zweck und Prioritäten")
+    sp.add_argument("quelle", nargs="?", help="vorhandenes Projekt prüfen (Preset oder Datei, optional)")
+    sp.add_argument("--setze", action="append", default=[])
+    sp.add_argument("--aufgabe", help="z. B. text_erzeugen, bild_klassifizieren, zeitreihe_prognose (--liste)")
+    sp.add_argument("--text", help="freie Beschreibung (Stichwörter wie Handy, Echtzeit, Datenschutz werden erkannt)")
+    sp.add_argument("--prioritaeten", help="Komma-Liste, z. B. genauigkeit,wenig_speicher,datenschutz")
+    sp.add_argument("--daten", choices=["winzig", "klein", "mittel", "gross"])
+    sp.add_argument("--labels", choices=["vorhanden", "wenige", "keine"])
+    sp.add_argument("--sequenzen", choices=["keine", "kurz", "mittel", "lang", "sehr_lang"])
+    sp.add_argument("--ziel", help="Zielgerät (smartphone, raspberry_pi, laptop_cpu, gaming_gpu …)")
+    sp.add_argument("--hardware", choices=["cpu", "laptop_gpu", "gaming_gpu", "apple_silicon", "rechenzentrum_gpu",
+                                           "cluster"])
+    sp.add_argument("--vortrainiert", action="store_true", help="vortrainiertes Modell anpassen (Feintuning)")
+    sp.add_argument("--erstellen", metavar="DATEI", help="neues Projekt aus der besten Empfehlung speichern")
+    sp.add_argument("--wahl", type=int, default=0, help="Index der Empfehlung für --erstellen (0 = beste)")
+    sp.add_argument("--speichern", help="geprüftes Projekt mit neuen Zielen speichern")
+    sp.add_argument("--liste", action="store_true", help="alle Aufgaben und Prioritäten zeigen")
+    sp.set_defaults(fn=cmd_ziele)
 
     sp = sub.add_parser("presets", help="Vorlagen auflisten")
     sp.add_argument("--gebiet", help="nur dieses Anwendungsgebiet")
@@ -557,6 +657,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--uebersicht", action="store_true", help="kompakte Übersicht zeigen")
     sp.add_argument("--speichern", help="Ergebnis als Konfigurationsdatei speichern")
     sp.set_defaults(fn=cmd_schalter)
+
+    sp = sub.add_parser("techniken", help="Techniken-Katalog mit Status, an/aus")
+    sp.add_argument("quelle", nargs="?", default="tabellen_klassifikation")
+    sp.add_argument("--setze", action="append", default=[])
+    sp.add_argument("--kategorie", help="nur diese Kategorie (stabilitaet, generalisierung, tempo, grosse_modelle, "
+                                        "cluster, automl, schwarm, evolution, daten, datenschutz, ueberwachung, "
+                                        "kompression, experimentell)")
+    sp.add_argument("--nur-aktive", action="store_true")
+    sp.add_argument("--stufe", default=None)
+    sp.add_argument("--an", action="append", default=[], metavar="KENNUNG")
+    sp.add_argument("--aus", action="append", default=[], metavar="KENNUNG")
+    sp.add_argument("--speichern", help="Konfiguration speichern")
+    sp.set_defaults(fn=cmd_techniken)
 
     sp = sub.add_parser("vergleiche", help="zwei Vorlagen/Dateien vergleichen")
     with_source(sp)
@@ -648,6 +761,25 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--epochen", type=int)
     sp.add_argument("--speichern", default=None, help="Zielordner (Standard: ausgaben/<name>; '-' = nicht speichern)")
     sp.set_defaults(fn=cmd_trainieren)
+
+    sp = sub.add_parser("ablauf", help="ganzen Ablauf ausführen (workflow)")
+    with_source(sp)
+    sp.add_argument("--speichern", help="Zielordner für das fertige Projekt")
+    sp.set_defaults(fn=cmd_ablauf)
+
+    sp = sub.add_parser("automl", help="automatische Hyperparameter-Suche")
+    with_source(sp)
+    sp.add_argument("--methode", default="random", choices=["random", "grid", "evolution", "pso", "pbt"])
+    sp.add_argument("--raum", help="Suchraum als JSON, z. B. '{\"training.optimizer.lr\": {\"min\": 1e-4, "
+                                   "\"max\": 1e-2, \"log\": true}}' (leer = automatisch)")
+    sp.add_argument("--versuche", type=int, default=12)
+    sp.add_argument("--schritte", type=int, default=60, help="Trainingsschritte pro Versuch")
+    sp.add_argument("--population", type=int, default=6)
+    sp.add_argument("--generationen", type=int, default=3)
+    sp.add_argument("--metrik", default="val_loss")
+    sp.add_argument("--richtung", default="min", choices=["min", "max"])
+    sp.add_argument("--speichern", help="Konfiguration mit den besten Einstellungen speichern")
+    sp.set_defaults(fn=cmd_automl)
 
     sp = sub.add_parser("verteilt", help="verteilt trainieren (mehrere GPUs/Rechner)")
     with_source(sp)
