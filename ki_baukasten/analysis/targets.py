@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from torch import nn
 
 from ..core import BaseConfig, Level, NestedParam, Param, T, format_number
+from .export import ExportConfig
 
 
 @dataclass(frozen=True)
@@ -111,6 +112,7 @@ class DeploymentConfig(BaseConfig):
         "Dokumentation von Zweck, Daten, Ergebnissen, Grenzen und Versionen – für Nachvollziehbarkeit und Vorgaben.",
         "an."))
     server = NestedParam(ServeConfig, level=Level.ADVANCED)
+    export = NestedParam(ExportConfig)
     student_steps = Param(None, type=int, min=1, nullable=True, tooltip=T(
         "Trainingsschritte eines empfohlenen Schüler-Modells (None = wie training).", "Distillation.", "None."),
         level=Level.ADVANCED)

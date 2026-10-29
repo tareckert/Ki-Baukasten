@@ -143,6 +143,7 @@ class Project:
         self.last_fairness: Any = None
         self.last_robustness: Any = None
         self.last_baseline: dict[str, float] = {}
+        self.last_export: Any = None                 # Bericht des letzten Exports (was entfernt/eingerechnet wurde)
         self._artifacts: dict[str, Any] | None = None  # gespeicherte Vorverarbeitung (Project.load)
 
     # ================================================================ Erzeugen
@@ -881,14 +882,37 @@ class Project:
 
     # ================================================================ Zielsysteme
     def _example_input(self) -> Any:
+        """Beispiel-Eingabe (eine Zeile der Daten, sonst ``model.example_input``) – geprüft, dass das Modell sie
+        annimmt (z. B. braucht ein Diffusionsmodell zusätzlich den Zeitschritt, ein Seq2Seq-Modell Decoder-Eingaben)."""
+        model = self._ensure_model()
+        device = self._device()
+        candidates = []
         try:
             bundle = self.data()
             if isinstance(bundle.train, dict) and "inputs" in bundle.train:
-                return bundle.train["inputs"][:1].to(self._device())
+                x = bundle.train["inputs"]
+                candidates.append(to_device(x[:1] if isinstance(x, torch.Tensor) else
+                                            {k: v[:1] for k, v in x.items()} if isinstance(x, dict) else x, device))
         except Exception:  # noqa: BLE001
             pass
-        model = self._ensure_model()
-        return model.example_input(1) if hasattr(model, "example_input") else None
+        if hasattr(model, "example_input"):
+            try:
+                candidates.append(to_device(model.example_input(1), device))
+            except Exception:  # noqa: BLE001
+                pass
+        was = model.training
+        model.eval()
+        try:
+            for ex in candidates:
+                try:
+                    with torch.no_grad():
+                        call_model(model, ex)
+                    return ex
+                except Exception:  # noqa: BLE001 - passt nicht → nächster Kandidat
+                    continue
+        finally:
+            model.train(was)
+        return candidates[0] if candidates else None
 
     def _macs(self) -> int | None:
         from .analysis.benchmark import count_macs
@@ -1681,8 +1705,10 @@ class Project:
         out, target, x = self._outputs(self._eval_data(data), limit)
         if x is None or not x.is_floating_point():
             raise ConfigError("Robustheitsprüfung braucht Zahlen-Eingaben (Tabellen, Bilder, Signale).")
+        from .training.paradigms import is_segmentation
+
         cls = self._is_classification(out, target)
-        metric = metric or ("accuracy" if cls else "mae")
+        metric = metric or ("iou" if is_segmentation(out, target) else "accuracy" if cls else "mae")
         fn = ComponentSpec.from_value("metric", metric).build()
         forward = self._forward_fn()
         model = self._ensure_model()
@@ -1937,19 +1963,33 @@ class Project:
             self._undo.pop()
         return chosen
 
-    def export(self, path: str | Path, fmt: str = "export", merge_lora: bool = True) -> Path:
-        """Modell exportieren: ``export`` (torch.export), ``torchscript``, ``onnx`` oder ``state_dict``."""
-        from .analysis import export_model
+    def export(self, path: str | Path, fmt: str = "export", merge_lora: bool | str | None = None,
+               **settings: Any) -> Path:
+        """Modell **schlank** exportieren: ``export`` (torch.export), ``torchscript``, ``onnx`` oder ``state_dict``.
+
+        Auf einer Kopie werden Trainings-Hüllen entfernt, EMA-Gewichte übernommen, LoRA eingerechnet, BatchNorm
+        gefaltet und ungenutzte Gewichte entfernt – jeder Schritt geprüft und einzeln schaltbar
+        (``deployment.export`` bzw. ``**settings``, z. B. ``dtype="float16"``). Bericht: ``project.last_export``.
+        """
+        from .analysis.export import export_model
 
         model = self._ensure_model()
-        example = None
-        try:
-            bundle = self.data()
-            if isinstance(bundle.train, dict) and "inputs" in bundle.train:
-                example = bundle.train["inputs"][:1].cpu()
-        except Exception:  # noqa: BLE001
-            example = None
-        return export_model(model, path, fmt, example, merge_lora)
+        cfg = self.config.deployment.export.copy()
+        if merge_lora is not None:
+            cfg.merge_lora = merge_lora if isinstance(merge_lora, str) else ("auto" if merge_lora else "nein")
+        cfg.update(settings)
+        example = self._example_input()
+        ema_state = None
+        trainer = self.trainer
+        if trainer is not None and trainer.ema is not None and not trainer.cfg.ema.apply_at_end:
+            ema_state = {k.replace("_orig_mod.", "").removeprefix("module."): v for k, v in trainer.ema.shadow.items()}
+        offloader = trainer.mem.offloader if trainer is not None else None
+        path, report = export_model(model, path, fmt, example, cfg=cfg, ema_state=ema_state, offloader=offloader,
+                                    return_report=True)
+        self.last_export = report
+        if self._verbose():
+            print(report)
+        return path
 
     def memory_report(self, batch_size: int | None = None) -> Any:
         model = self._ensure_model()
@@ -1981,7 +2021,7 @@ class Project:
         if not is_main_process():
             return d
         d.mkdir(parents=True, exist_ok=True)
-        self.config.save(d / "projekt.json")
+        self.config.save(d / "projekt.json", only_changed=self.config.deployment.export.compact_config)
         if state is not None:
             torch.save(state, d / "modell.pt")
         (d / "verlauf.json").write_text(json.dumps(self.history, ensure_ascii=False, indent=1, default=str),

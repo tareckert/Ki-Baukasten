@@ -205,17 +205,18 @@ class MemoryManager:
         elif c.offload.mode == "split":
             self.offloader = SplitManager(model, c.offload, self.device)  # type: ignore[assignment]
             self.offloader.attach()
+        elif c.offload.mode != "none" and training and any(
+                p.requires_grad for _, b in select_offload_blocks(model, c.offload) for p in b.parameters()):
+            # Auslagern (cpu/disk) ist für Inferenz gedacht; trainierbare Blöcke → gleichwertiges Streaming
+            storage = "disk" if c.offload.mode == "disk" else "ram"
+            warnings.warn(f"memory.offload.mode='{c.offload.mode}' mit trainierbaren Blöcken: im Training wird "
+                          f"trainierbares Streaming genutzt (storage='{storage}').")
+            blocks = [m for _, m in select_offload_blocks(model, c.offload)]
+            self.streams = enable_block_streaming(model, blocks, self.device, c.offload.pin_memory, c.offload.prefetch,
+                                                  storage, c.offload.directory)
         elif c.offload.mode != "none":
             self.offloader = OffloadManager(model, c.offload, self.device)
             self.offloader.attach()
-            if training and self.offloader.trainable_offloaded():
-                raise ConfigError(
-                    f"Offload-Modus '{c.offload.mode}' ist nur für Inferenz oder eingefrorene Blöcke, "
-                    f"trainierbar sind aber: {self.offloader.trainable_offloaded()[:3]} … "
-                    "→ memory.offload.mode='stream' (trainierbares Auslagern in den RAM) verwenden "
-                    "oder die Blöcke einfrieren.",
-                    "memory.offload.mode",
-                )
         else:
             model = model.to(self.device)
         if c.channels_last:

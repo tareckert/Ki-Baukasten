@@ -106,6 +106,14 @@ class EMAConfig(BaseConfig):
                          level=Level.ADVANCED)
     use_for_eval = Param(True, tooltip=T(
         "EMA-Gewichte für Evaluierung verwenden.", "Bewertet das gemittelte Modell.", "Standard: an."))
+    apply_at_end = Param(True, tooltip=T(
+        "Am Ende des Trainings die EMA-Gewichte ins Modell übernehmen.",
+        "Vorhersage, Speichern und Export nutzen dann genau das Modell, dessen Werte in der Validierung "
+        "angezeigt wurden.", "an (aus: letzte Trainingsgewichte behalten)."))
+    warmup = Param(True, tooltip=T(
+        "Abklingrate anfangs kleiner: min(decay, (1+n)/(10+n)).",
+        "Ohne Aufwärmen enthält die EMA nach kurzen Läufen fast nur die zufälligen Startgewichte.", "an."),
+        level=Level.ADVANCED)
 
 
 class CurriculumConfig(BaseConfig):

@@ -61,6 +61,8 @@ from __future__ import annotations
 import torch
 from torch.autograd.function import once_differentiable
 
+from ..core.runtime import is_exporting
+
 SCAN_MODES = {
     "auto": "CPU: fusionierte Schleife, GPU: chunked",
     "parallel": "Hillis-Steele über die ganze Sequenz (log₂T Runden)",
@@ -231,7 +233,7 @@ def linear_scan(a: torch.Tensor, b: torch.Tensor, h0: torch.Tensor | None = None
     if h0 is not None:
         # h0 in den ersten Schritt einrechnen: b_0 ← b_0 + a_0·h0 (Rest bleibt unverändert).
         b = torch.cat([b[:, :1] + a[:, :1] * h0.unsqueeze(1), b[:, 1:]], 1)
-    if memory_efficient and torch.is_grad_enabled() and (a.requires_grad or b.requires_grad):
+    if memory_efficient and torch.is_grad_enabled() and (a.requires_grad or b.requires_grad) and not is_exporting():
         return LinearScanFunction.apply(a, b, mode, chunk_size)
     return scan_raw(a, b, mode, chunk_size)
 
@@ -315,7 +317,7 @@ def selective_scan(u: torch.Tensor, delta: torch.Tensor, A: torch.Tensor, B: tor
         ``(y [B, T, E], letzter Zustand [B, E, N])``.
     """
     tracking = torch.is_grad_enabled() and any(t is not None and t.requires_grad for t in (u, delta, A, B, C, D, h0))
-    if backward == "fused" and tracking:
+    if backward == "fused" and tracking and not is_exporting():
         return SelectiveScanFunction.apply(u, delta, A, B, C, D, h0, mode, chunk_size)
     dA = torch.exp(delta.unsqueeze(-1) * A)
     dBu = delta.unsqueeze(-1) * B.unsqueeze(2) * u.unsqueeze(-1)

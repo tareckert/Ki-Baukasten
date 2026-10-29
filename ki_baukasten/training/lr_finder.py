@@ -77,11 +77,16 @@ def find_lr(project: Any, min_lr: float = 1e-7, max_lr: float = 1.0, steps: int 
         if corrected > diverge * best and i > 5:
             break
     if len(result.losses) >= 5:
-        start = max(1, len(result.losses) // 10)          # verrauschten Anfang überspringen
-        k = min(range(start, len(result.losses)), key=result.losses.__getitem__)
-        result.min_loss_lr = result.lrs[k]
-        logs = [math.log10(x) for x in result.lrs]
-        grads = {j: (result.losses[j + 1] - result.losses[j - 1]) / (logs[j + 1] - logs[j - 1])
-                 for j in range(start, k)}
-        result.suggestion = result.lrs[min(grads, key=grads.__getitem__)] if grads else result.min_loss_lr / 10
+        losses, lrs = result.losses, result.lrs
+        start = max(1, len(losses) // 10)                 # verrauschten Anfang überspringen
+        k = min(range(start, len(losses)), key=losses.__getitem__)
+        result.min_loss_lr = lrs[k]
+        diverged = next((j for j in range(k, len(losses)) if losses[j] > 1.5 * losses[k]), None)
+        if losses[start] - losses[k] < 0.02 * abs(losses[start]):
+            # kein klares Tal (flache, verrauschte Kurve): Faustregel "Lernrate, bei der es kippt, ÷ 10"
+            result.suggestion = lrs[diverged] / 10 if diverged is not None else lrs[-1] / 10
+        else:
+            logs = [math.log10(x) for x in lrs]
+            grads = {j: (losses[j + 1] - losses[j - 1]) / (logs[j + 1] - logs[j - 1]) for j in range(start, k)}
+            result.suggestion = lrs[min(grads, key=grads.__getitem__)] if grads else result.min_loss_lr / 10
     return result

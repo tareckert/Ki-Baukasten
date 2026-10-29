@@ -201,13 +201,75 @@ def find_collate(ds: Any) -> Callable | None:
     return None
 
 
+def _tensor_source(ds: Any) -> tuple[dict, torch.Tensor | None] | None:
+    """(Tensor-dict, Index-Abbildung) für ``DictDataset`` und (verschachtelte) ``Subset`` davon – sonst ``None``."""
+    mapping = None
+    while isinstance(ds, Subset):
+        idx = torch.as_tensor(list(ds.indices), dtype=torch.long)
+        mapping = idx if mapping is None else idx[mapping]
+        ds = ds.dataset
+    if not isinstance(ds, DictDataset) or getattr(ds, "collate_fn", None) is not None:
+        return None
+
+    def all_tensors(obj: Any) -> bool:
+        if isinstance(obj, dict):
+            return all(all_tensors(v) for v in obj.values())
+        return isinstance(obj, torch.Tensor) and obj.dim() > 0
+    return (ds.data, mapping) if all_tensors(ds.data) else None
+
+
+def _take(obj: Any, idx: torch.Tensor) -> Any:
+    if isinstance(obj, dict):
+        return {k: _take(v, idx) for k, v in obj.items()}
+    return obj.index_select(0, idx) if idx.device == obj.device else obj[idx.to(obj.device)]
+
+
+class TensorBatchLoader(DataLoader):
+    """DataLoader für Daten, die als Tensoren im Speicher liegen: holt jeden Batch mit **einem** Index-Zugriff
+    je Tensor statt Beispiel für Beispiel zu lesen und wieder zusammenzufügen (bei kleinen Modellen oft der
+    größte Zeitfresser). Reihenfolge, Sampler, ``drop_last`` und Länge verhalten sich exakt wie beim
+    normalen ``DataLoader``; die Batches sind identisch zu ``default_collate``."""
+
+    def __init__(self, dataset: Dataset, data: dict, mapping: torch.Tensor | None, batch_size: int, shuffle: bool,
+                 drop_last: bool, sampler: Sampler | None, pin_memory: bool):
+        self._data, self._mapping, self._pin = data, mapping, pin_memory and torch.cuda.is_available()
+        super().__init__(dataset, batch_size=batch_size, shuffle=shuffle and sampler is None, drop_last=drop_last,
+                         sampler=sampler, collate_fn=collate)
+
+    def __iter__(self):
+        batches = iter(self.batch_sampler)
+        # wie DataLoader: einen Basis-Seed ziehen → gleicher Zufallsverlauf (Reihenfolge, Dropout …) wie bisher
+        torch.empty((), dtype=torch.int64).random_(generator=self.generator)
+        for indices in batches:
+            idx = torch.as_tensor(indices, dtype=torch.long)
+            if self._mapping is not None:
+                idx = self._mapping[idx]
+            batch = _take(self._data, idx)
+            if self._pin:
+                batch = pin(batch)
+            yield batch
+
+
+def pin(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {k: pin(v) for k, v in obj.items()}
+    return obj.pin_memory() if isinstance(obj, torch.Tensor) and obj.device.type == "cpu" else obj
+
+
 def make_loader(data: Any, batch_size: int, shuffle: bool, drop_last: bool = False, num_workers: int = 0,
                 pin_memory: bool = False, sampler: Sampler | None = None,
                 collate_fn: Callable | None = None) -> DataLoader:
-    """Baut einen DataLoader (ein vorhandener DataLoader wird unverändert zurückgegeben)."""
+    """Baut einen DataLoader (ein vorhandener DataLoader wird unverändert zurückgegeben).
+
+    Liegen die Daten als Tensoren im Speicher (Standardfall) und laufen keine Hintergrundprozesse, entsteht ein
+    ``TensorBatchLoader`` (gleiche Batches, viel weniger Aufwand je Batch).
+    """
     if isinstance(data, DataLoader):
         return data
     ds = as_dataset(data)
+    source = _tensor_source(ds) if collate_fn is None and num_workers == 0 else None
+    if source is not None:
+        return TensorBatchLoader(ds, source[0], source[1], batch_size, shuffle, drop_last, sampler, pin_memory)
     return DataLoader(ds, batch_size=batch_size, shuffle=shuffle and sampler is None, drop_last=drop_last,
                       num_workers=num_workers, pin_memory=pin_memory, sampler=sampler,
                       collate_fn=collate_fn or find_collate(ds) or collate)

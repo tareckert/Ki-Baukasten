@@ -151,6 +151,20 @@ def auto_loss(pred: torch.Tensor, target: torch.Tensor, task: str = "auto", labe
     return F.mse_loss(pred.float(), t)
 
 
+def accuracy_tensor(pred: Any, target: Any, ignore_index: int = -100) -> torch.Tensor | None:
+    """Genauigkeit als 0-dim-Tensor **ohne Synchronisation** (``None``, wenn nicht anwendbar; NaN, wenn kein
+    Ziel gültig ist – wird beim Mitteln übersprungen)."""
+    if not isinstance(pred, torch.Tensor) or not isinstance(target, torch.Tensor):
+        return None
+    if target.is_floating_point() or pred.dim() != target.dim() + 1:
+        return None
+    valid = target != ignore_index
+    guess = pred.argmax(1) if is_segmentation(pred, target) else pred.argmax(-1)
+    n = valid.sum()
+    hits = ((guess == target) & valid).sum()
+    return torch.where(n > 0, hits.float() / n.clamp_min(1), torch.full((), float("nan"), device=pred.device))
+
+
 def accuracy(pred: torch.Tensor, target: torch.Tensor, ignore_index: int = -100) -> float | None:
     """Klassifikationsgenauigkeit (oder ``None``, wenn nicht anwendbar)."""
     if not isinstance(pred, torch.Tensor) or not isinstance(target, torch.Tensor):
@@ -267,10 +281,10 @@ class Supervised(Paradigm):
             if train and adv.method != "keine" and isinstance(inputs, torch.Tensor) and inputs.is_floating_point() \
                     and isinstance(targets, torch.Tensor):
                 loss = (1 - adv.ratio) * loss + adv.ratio * self._adversarial_loss(trainer, batch, inputs, targets)
-        metrics = {"loss": float(loss.detach())}
+        metrics = {"loss": loss.detach()}
         if not isinstance(targets, dict):
             pred = main_output(out).detach()
-            acc = accuracy(pred, targets)
+            acc = accuracy_tensor(pred, targets)
             if acc is not None:
                 metrics["accuracy"] = acc
             if not train:
@@ -318,10 +332,11 @@ class CausalLM(Paradigm):
             aux = trainer.model_aux_loss()
             if aux is not None:
                 loss = loss + aux
-        lv = float(loss.detach())
+        lv = loss.detach()
         if not train:
             trainer.collect(logits.detach(), tgt, "sprache")
-        return loss, {"loss": lv, "perplexity": math.exp(min(lv, 30)), "accuracy": accuracy(logits.detach(), tgt) or 0.0}
+        return loss, {"loss": lv, "perplexity": torch.exp(lv.float().clamp(max=30)),
+                      "accuracy": accuracy_tensor(logits.detach(), tgt)}
 
 
 class MaskedLMConfig(BaseConfig):
@@ -374,7 +389,7 @@ class MaskedLM(Paradigm):
                 loss = loss + aux
         if not train:
             trainer.collect(logits.detach(), tgt, "sprache")
-        return loss, {"loss": float(loss.detach()), "accuracy": accuracy(logits.detach(), tgt) or 0.0}
+        return loss, {"loss": loss.detach(), "accuracy": accuracy_tensor(logits.detach(), tgt)}
 
 
 class Seq2SeqConfig(BaseConfig):
@@ -409,11 +424,11 @@ class Seq2Seq(Paradigm):
                     labels[labels == self.cfg.pad_token_id] = -100
                 loss = F.cross_entropy(out.reshape(-1, out.shape[-1]).float(), labels.reshape(-1), ignore_index=-100,
                                        label_smoothing=self.cfg.label_smoothing)
-                acc = accuracy(out.detach(), labels)
+                acc = accuracy_tensor(out.detach(), labels)
             aux = trainer.model_aux_loss()
             if aux is not None:
                 loss = loss + aux
-        m = {"loss": float(loss.detach())}
+        m = {"loss": loss.detach()}
         if acc is not None:
             m["accuracy"] = acc
         if not train:
@@ -472,15 +487,15 @@ class AutoencoderParadigm(Paradigm):
                 red = "sum" if "kl" in out else "mean"
             r = per.flatten(1).sum(1).mean() if red == "sum" else per.mean()
             loss = r
-            metrics = {"reconstruction": float(r.detach())}
+            metrics = {"reconstruction": r.detach()}
             if "kl" in out:
                 beta = getattr(trainer.model.config, "beta", 1.0) * self._kl_factor(trainer.global_step)
                 loss = loss + beta * out["kl"]
-                metrics["kl"] = float(out["kl"].detach())
+                metrics["kl"] = out["kl"].detach()
             aux = trainer.model_aux_loss()
             if aux is not None:
                 loss = loss + aux
-        metrics["loss"] = float(loss.detach())
+        metrics["loss"] = loss.detach()
         return loss, metrics
 
     def _kl_factor(self, step: int) -> float:
@@ -532,8 +547,8 @@ class Contrastive(Paradigm):
             logits = za @ zb.T / self.cfg.temperature
             labels = torch.arange(za.shape[0], device=za.device)
             loss = 0.5 * (F.cross_entropy(logits, labels) + F.cross_entropy(logits.T, labels))
-        acc = float((logits.argmax(-1) == labels).float().mean())
-        return loss, {"loss": float(loss.detach()), "accuracy": acc}
+        acc = (logits.detach().argmax(-1) == labels).float().mean()
+        return loss, {"loss": loss.detach(), "accuracy": acc}
 
 
 # ===========================================================================
@@ -715,12 +730,12 @@ class Distillation(Paradigm):
                                     "Ausgabegrößen.")
             kd = _kd_divergence(s, t, c.kd_loss, c.temperature, mask if s.dim() == 3 else None)
             loss = c.alpha * kd
-            m = {"distill": float(kd.detach())}
+            m = {"distill": kd.detach()}
             if c.feature_weight > 0 and self._feats["s"]:
                 feat = sum(_feature_distance(a, b.detach(), c.feature_loss)
                            for a, b in zip(self._feats["s"], self._feats["t"])) / len(self._feats["s"])
                 loss = loss + c.feature_weight * feat
-                m["features"] = float(feat.detach())
+                m["features"] = feat.detach()
             if c.alpha < 1 and task != "none":
                 if task == "causal_lm":
                     hard = F.cross_entropy(s[:, :-1].reshape(-1, s.shape[-1]).float(), inputs[:, 1:].reshape(-1),
@@ -732,18 +747,18 @@ class Distillation(Paradigm):
                     hard = None
                 if hard is not None:
                     loss = loss + (1 - c.alpha) * hard
-                    m["hard"] = float(hard.detach())
+                    m["hard"] = hard.detach()
             if targets is not None:
-                acc = accuracy(s.detach(), targets)
+                acc = accuracy_tensor(s.detach(), targets)
                 if acc is not None:
                     m["accuracy"] = acc
                 if not train and isinstance(targets, torch.Tensor):
                     trainer.collect(s.detach(), targets)
             elif task == "causal_lm":
-                m["accuracy"] = float((s[:, :-1].argmax(-1) == inputs[:, 1:]).float().mean())
-            m["agreement"] = float((s.detach().argmax(-1) == t.argmax(-1)).float().mean()) \
-                if s.shape[-1] == t.shape[-1] else float("nan")
-        m["loss"] = float(loss.detach())
+                m["accuracy"] = (s.detach()[:, :-1].argmax(-1) == inputs[:, 1:]).float().mean()
+            if s.shape[-1] == t.shape[-1]:
+                m["agreement"] = (s.detach().argmax(-1) == t.argmax(-1)).float().mean()
+        m["loss"] = loss.detach()
         return loss, m
 
 
@@ -837,7 +852,7 @@ class GANParadigm(Paradigm):
                 g = torch.autograd.grad(d_real.sum(), real_in, create_graph=True)[0]
                 loss_d = loss_d + 0.5 * c.r1_penalty * g.flatten(1).square().sum(1).mean()
             trainer.optimize(loss_d, key="discriminator")
-        m.update(loss_d=float(loss_d.detach()), d_real=float(d_real.detach().mean()), d_fake=float(d_fake.detach().mean()))
+        m.update(loss_d=loss_d.detach(), d_real=d_real.detach().mean(), d_fake=d_fake.detach().mean())
 
         d_params = self._d_params(model)
         for p in d_params:  # Diskriminator einfrieren → keine Gradienten beim Generator-Schritt
@@ -848,7 +863,7 @@ class GANParadigm(Paradigm):
         trainer.optimize(loss_g, key="generator")
         for p in d_params:
             p.requires_grad_(True)
-        m["loss_g"] = float(loss_g.detach())
+        m["loss_g"] = loss_g.detach()
         m["loss"] = m["loss_g"]
         return m
 
@@ -911,7 +926,7 @@ class DiffusionParadigm(Paradigm):
                     w = clipped / snr if p == "eps" else (clipped / (snr + 1) if p == "v" else clipped)
                 per = per * w
             loss = per.mean()
-        return loss, {"loss": float(loss.detach())}
+        return loss, {"loss": loss.detach()}
 
 
 # ===========================================================================
@@ -942,8 +957,7 @@ class Preference(Paradigm):
             if self.cfg.center_coef:
                 loss = loss + self.cfg.center_coef * (rc + rr).square().mean()
         rc, rr = rc.detach(), rr.detach()
-        return loss, {"loss": float(loss.detach()), "accuracy": float((rc > rr).float().mean()),
-                      "reward_margin": float((rc - rr).mean())}
+        return loss, {"loss": loss.detach(), "accuracy": (rc > rr).float().mean(), "reward_margin": (rc - rr).mean()}
 
 
 class DPOConfig(BaseConfig):
@@ -996,8 +1010,8 @@ class DPO(Paradigm):
                 loss = (-(1 - c.label_smoothing) * F.logsigmoid(c.beta * delta)
                         - c.label_smoothing * F.logsigmoid(-c.beta * delta)).mean()
         delta = delta.detach()
-        return loss, {"loss": float(loss.detach()), "accuracy": float((delta > 0).float().mean()),
-                      "reward_margin": float((c.beta * delta).mean())}
+        return loss, {"loss": loss.detach(), "accuracy": (delta > 0).float().mean(),
+                      "reward_margin": (c.beta * delta).mean()}
 
 
 # ===========================================================================

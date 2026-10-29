@@ -165,7 +165,17 @@ def _blocks(cfg: BaseConfig) -> bool:
 
 
 def _linear_blocks(cfg: BaseConfig) -> bool:
-    return cfg.get("model").name not in ("cnn", "gnn")
+    return cfg.get("model").name not in ("cnn", "gnn", "unet")
+
+
+def _dp_changes(cfg: BaseConfig) -> dict[str, Any]:
+    """DP-SGD + BatchNorm → GroupNorm (BatchNorm mischt Beispiele; wie Opacus' ModuleValidator.fix)."""
+    changes: dict[str, Any] = {"training.privacy.enabled": True}
+    for path in cfg.find("model.**.norm"):
+        value = cfg.get(path)
+        if getattr(value, "name", None) == "batchnorm":
+            changes[path] = "groupnorm"
+    return changes
 
 
 def _data_paradigm(cfg: BaseConfig) -> bool:
@@ -301,9 +311,11 @@ CATALOG: list[Technique] = [
         "Mehrere Hintergrundprozesse laden und gepinnter Speicher.", "Die GPU wartet nicht auf Daten.",
         "Große Datensätze, Bilder von der Platte."), {"training.num_workers": 4, "training.pin_memory": True},
         "PyTorch-DataLoader-Praxis", level=Level.ADVANCED),
-    _K("fused_optimizer", "Fusionierter Optimierer", "tempo", T(
-        "Optimierer-Schritt in einem einzigen GPU-Kernel.", "Spürbar schneller bei vielen Parametern.", "CUDA."),
-        {"training.optimizer.fused": True}, "PyTorch AdamW(fused=True)", "nur CUDA", level=Level.EXPERT),
+    _K("fused_optimizer", "Fusionierter Optimierer (erzwingen)", "tempo", T(
+        "Optimierer-Schritt in einem einzigen Kernel – erzwungen (Standard: automatisch, wenn das Gerät es kann).",
+        "Spürbar schneller bei vielen Parametern, auf CPU und GPU.", "CUDA, CPU."),
+        {"training.optimizer.fused": True}, "PyTorch AdamW(fused=True)", "Standard ist bereits automatisch",
+        level=Level.EXPERT),
     _K("gqa", "Grouped-Query-Attention", "tempo", T(
         "Mehrere Query-Köpfe teilen sich Key/Value-Köpfe.", "KV-Cache und Projektionen ÷ 4 – schnellere Generierung.",
         "Sprachmodelle."), _gqa, "LLaMA 2/3, Mistral, Gemma", also=("grosse_modelle",), check=_gqa_on,
@@ -355,8 +367,8 @@ CATALOG: list[Technique] = [
     _K("layerweise", "Schicht für Schicht von der SSD (Inferenz)", "grosse_modelle", T(
         "Jede Schicht wird nur zum Rechnen geladen und sofort wieder freigegeben.",
         "Riesige Modelle auch auf kleinen Rechnern ausführen (langsam).", "Batch-Auswertungen großer Modelle."),
-        {"memory.offload.mode": "disk", "memory.offload.keep_resident": 0}, "AirLLM", "nur Inferenz (vor dem Training "
-        "ausschalten oder Blöcke einfrieren)", level=Level.ADVANCED, applies=_blocks),
+        {"memory.offload.mode": "disk", "memory.offload.keep_resident": 0}, "AirLLM", "beim Training trainierbarer "
+        "Blöcke automatisch als SSD-Streaming", level=Level.ADVANCED, applies=_blocks),
     _K("lisa", "LISA: wenige Blöcke gleichzeitig trainieren", "grosse_modelle", T(
         "Immer nur zwei zufällig wechselnde Blöcke sind trainierbar.", "Speicher fast wie LoRA, volle Gewichte.",
         "Feintuning großer Modelle."), {"+training.callbacks": {"name": "lisa"}}, "LISA (Pan et al. 2024)",
@@ -425,7 +437,8 @@ CATALOG: list[Technique] = [
     _K("pbt", "Population Based Training", "evolution", T(
         "Eine Population trainiert gleichzeitig; Schlechte übernehmen Gewichte und Einstellungen der Guten.",
         "Einstellungen passen sich während des Trainings an – ein Lauf statt vieler.", "Lange Trainings."),
-        {"workflow.search.method": "pbt"}, "DeepMind (AlphaStar), Waymo", also=("automl",), level=Level.ADVANCED),
+        {"workflow.search.method": "pbt"}, "DeepMind (AlphaStar), Waymo", also=("automl",), level=Level.ADVANCED,
+        applies=_data_paradigm),
     _K("evolution_strategies", "Evolution Strategies (ohne Backward)", "evolution", T(
         "Gewichte zufällig stören und aus der Fitness die Richtung schätzen.",
         "Gradientenfrei – auch für nicht differenzierbare Ziele, trivial parallel.", "Kleine Modelle, Forschung."),
@@ -460,8 +473,9 @@ CATALOG: list[Technique] = [
     # ------------------------------------------------------------------ Datenschutz
     _K("dp_sgd", "Differential Privacy (DP-SGD)", "datenschutz", T(
         "Gradient jedes Beispiels begrenzen und verrauschen.", "Das Modell merkt sich keine Einzelpersonen.",
-        "Medizin, Finanzen, Nutzerdaten."), {"training.privacy.enabled": True}, "Google, Apple, US-Zensus",
-        "langsam (jedes Beispiel einzeln)", level=Level.ADVANCED,
+        "Medizin, Finanzen, Nutzerdaten."), _dp_changes, "Google, Apple, US-Zensus",
+        "langsam (jedes Beispiel einzeln); BatchNorm wird dafür durch GroupNorm ersetzt", level=Level.ADVANCED,
+        check=lambda c: bool(c.get("training.privacy.enabled")),
         applies=lambda c: c.get("training.paradigm").name in ("supervised", "causal_lm", "masked_lm", "seq2seq")),
 
     # ------------------------------------------------------------------ Überwachung & Reproduzierbarkeit

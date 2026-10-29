@@ -50,6 +50,14 @@ POSITIONALS = create_registry(
 class PositionalEncoding(nn.Module):
     """Basisklasse mit drei (standardmäßig wirkungslosen) Eingriffspunkten."""
 
+    #: Größte unterstützte Position + 1 (``None`` = unbegrenzt) – wird in Python geprüft (kein GPU-Sync, exportierbar).
+    max_positions: int | None = None
+
+    def check_length(self, length: int) -> None:
+        """Länge der Positionen prüfen (reine Python-Zahlen → keine Synchronisation, kein Export-Hindernis)."""
+        if self.max_positions is not None and length > self.max_positions:
+            raise ValueError(f"Sequenz länger als max_seq_len={self.max_positions} der Positionskodierung.")
+
     def embed(self, x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
         """Absolute Kodierung auf Embeddings ``x`` ``[B, T, D]``."""
         return x
@@ -83,10 +91,9 @@ class SinusoidalPositional(PositionalEncoding):
         pe[:, 1::2] = torch.cos(pos * div[: pe[:, 1::2].shape[1]])
         self.register_buffer("pe", pe, persistent=False)
         self.scale = scale
+        self.max_positions = max_len
 
     def embed(self, x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
-        if positions.max() >= self.pe.shape[0]:
-            raise ValueError(f"Sequenz länger als max_seq_len={self.pe.shape[0]} der Positionskodierung.")
         return x + self.scale * self.pe[positions].to(x.dtype)
 
 
@@ -97,10 +104,9 @@ class LearnedPositional(PositionalEncoding):
         super().__init__()
         self.embedding = nn.Embedding(max_len, d_model)
         nn.init.normal_(self.embedding.weight, std=init_std)
+        self.max_positions = max_len
 
     def embed(self, x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
-        if positions.max() >= self.embedding.num_embeddings:
-            raise ValueError(f"Sequenz länger als max_seq_len={self.embedding.num_embeddings}.")
         return x + self.embedding(positions).to(x.dtype)
 
 
@@ -246,6 +252,8 @@ class CombinedPositional(PositionalEncoding):
     def __init__(self, parts: list[PositionalEncoding]):
         super().__init__()
         self.parts = nn.ModuleList(parts)
+        limits = [p.max_positions for p in parts if p.max_positions is not None]
+        self.max_positions = min(limits) if limits else None
 
     def embed(self, x, positions):
         for p in self.parts:

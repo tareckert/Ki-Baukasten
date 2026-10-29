@@ -531,6 +531,7 @@ class Transformer(BaseModel):
             h = torch.cat([self.prefix.expand(h.shape[0], -1, -1).to(h.dtype), h], dim=1)
             if mask is not None:
                 mask = torch.cat([torch.ones(mask.shape[0], self.n_prefix, dtype=mask.dtype, device=mask.device), mask], 1)
+        self.positional.check_length(offset + h.shape[1])
         positions = torch.arange(offset, offset + h.shape[1], device=h.device)
         h = self.positional.embed(h, positions)
         return self.embed_drop(self.embed_norm(h)), mask, positions

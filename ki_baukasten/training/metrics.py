@@ -45,7 +45,9 @@ METRICS = create_registry(
 
 
 def _cls(pred: torch.Tensor, target: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, int]:
-    """Logits [N, C] und Klassen [N] (ignore -100 entfernt)."""
+    """Logits [N, C] und Klassen [N] (ignore -100 entfernt); Segmentierung [N, C, H, W] → je Pixel."""
+    if pred.dim() == 4 and target.dim() == 3 and pred.shape[2:] == target.shape[1:]:
+        pred = pred.movedim(1, -1)
     if target.is_floating_point() or pred.dim() != target.dim() + 1:
         raise ValueError("Klassifikationsmetrik braucht Logits [N, C] und ganzzahlige Klassen [N].")
     logits = pred.reshape(-1, pred.shape[-1]).float()
@@ -172,6 +174,9 @@ R = METRICS.register
 
 def _accuracy(a):
     def fn(pred, target):
+        if not pred.is_floating_point() and pred.shape == target.shape:     # schon Klassen (z. B. Masken)
+            valid = target != -100
+            return float((pred == target)[valid].float().mean()) if valid.any() else float("nan")
         logits, y, _ = _cls(pred, target)
         return float((logits.argmax(-1) == y).float().mean()) if len(y) else float("nan")
     return fn

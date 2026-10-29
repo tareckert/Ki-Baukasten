@@ -33,6 +33,7 @@ from ..components.normalization import build_norm
 from ..core import (BaseConfig, ComponentParam, Level, NestedParam, Param, T, resolve_layer_config,
                     validate_overrides)
 from .base import MODELS, BaseModel, ModelConfig
+from ..core.runtime import is_exporting
 
 
 def scatter(src: torch.Tensor, index: torch.Tensor, n: int, reduce: str) -> torch.Tensor:
@@ -204,7 +205,11 @@ class GNN(BaseModel):
         if c.readout != "none":
             if batch is None:
                 batch = torch.zeros(h.shape[0], dtype=torch.long, device=h.device)
-            n_graphs = int(batch.max()) + 1
+            if is_exporting():                       # Graphanzahl datenabhängig, aber exportierbar
+                n_graphs = batch.max().item() + 1
+                torch._check_is_size(n_graphs)
+            else:
+                n_graphs = int(batch.max()) + 1
             h = scatter(h, batch.long(), n_graphs, c.readout)
         return self.head(h)
 

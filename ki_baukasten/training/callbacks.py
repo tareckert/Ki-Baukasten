@@ -27,6 +27,7 @@ Fabrik-Signatur: ``factory(args) -> Callback``. Eigene Callbacks einfach von
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import csv
 import json
@@ -168,7 +169,12 @@ class EarlyStopping(Callback):
         if _better(value, self.best, self.a.mode, self.a.min_delta, self.a.monitor):
             self.best, self.bad = value, 0
             if self.a.restore_best:
-                self.best_state = copy.deepcopy(trainer.model.state_dict())
+                # genau die Gewichte sichern, die bewertet wurden (bei EMA-Bewertung die EMA-Gewichte)
+                ema = getattr(trainer, "ema", None)
+                ctx = ema.applied(trainer.model) if ema is not None and trainer.cfg.ema.use_for_eval \
+                    else contextlib.nullcontext()
+                with ctx:
+                    self.best_state = copy.deepcopy(trainer.model.state_dict())
         else:
             self.bad += 1
             if self.bad > self.a.patience:
