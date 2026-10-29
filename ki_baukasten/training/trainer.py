@@ -47,6 +47,7 @@ from ..memory.execution import batch_len, free_memory, is_oom, split_batch
 from .config import TrainingConfig
 from .data_utils import (CurriculumSampler, as_dataset, difficulty_of, make_loader, split_dataset, to_device)
 from .distributed import DistributedContext
+from .logger import RunLogger, memory_now
 from .losses import build_losses
 
 
@@ -124,11 +125,16 @@ class Trainer:
     """
 
     def __init__(self, model: nn.Module, config: TrainingConfig | None = None, memory: MemoryConfig | None = None,
-                 surgeon: Any = None, teacher: nn.Module | None = None, callbacks: list | None = None):
+                 surgeon: Any = None, teacher: nn.Module | None = None, callbacks: list | None = None,
+                 log_backends: list | None = None, run_name: str = "training", run_config: dict | None = None):
         self.cfg = (config or TrainingConfig()).validate()
         set_seed(self.cfg.seed, self.cfg.deterministic)
         self.mem = MemoryManager(memory)
         self.dist = DistributedContext(self.cfg.distributed, self.mem.device)
+        self.logger = RunLogger(self.cfg.logging, self.cfg.verbose, self.dist.main, log_backends,
+                                self.cfg.log_every_steps)
+        self.run_name = run_name
+        self.run_config = run_config
         self.mem.device = self.dist.device
         self.device = self.mem.device
         self.model = self.mem.prepare_model(model, training=True)
@@ -159,6 +165,7 @@ class Trainer:
         self._micro: dict[str, int] = defaultdict(int)
         self._pending: set[str] = set()
         self._split = 1                          # >1 nach Speichermangel: Batch wird in so viele Stücke geteilt
+        self._seen = [0, 0, time.time()]         # Beispiele, Tokens, Zeitpunkt seit der letzten Ausgabe
 
     @property
     def accumulation(self) -> int:
@@ -171,9 +178,9 @@ class Trainer:
         return self.dist.unwrap(self.model)
 
     # ===================================================================== Aufbau
-    def log(self, text: str) -> None:
-        if self.cfg.verbose and self.dist.main:
-            print(text, flush=True)
+    def log(self, text: str, kind: str = "info") -> None:
+        """Meldung an alle Logger-Ziele (``kind``: info, warnung, eval, fortschritt, detail, debug)."""
+        self.logger.message(kind, text)
 
     def _layer_scale(self, name: str, n_layers: int) -> float:
         d = self.cfg.layerwise_lr_decay
@@ -320,7 +327,7 @@ class Trainer:
             self.optimizers[key].zero_grad(set_to_none=True)
             self._micro[key] = 0
             self._pending.discard(key)
-            self.log(f"⚠ {what} NaN/Inf – Schritt übersprungen (Gruppe '{key}').")
+            self.log(f"⚠ {what} NaN/Inf – Schritt übersprungen (Gruppe '{key}').", "warnung")
         return False
 
     def _clip(self, params: list[nn.Parameter]) -> float | None:
@@ -363,6 +370,12 @@ class Trainer:
                 if p.grad is not None:
                     p.grad.add_(torch.randn_like(p.grad) * std)
         grad_norm = self._clip(params)
+        lc = self.cfg.logging
+        primary = key == self.paradigm.primary_key or len(self.optimizers) == 1
+        if primary and lc.gradients_every_n_steps and (self.global_step + 1) % lc.gradients_every_n_steps == 0:
+            self.logger.metrics(self.global_step + 1, {f"{n}": float(p.grad.norm()) for n, p in
+                                                       self.model.named_parameters() if p.grad is not None},
+                                "gradientennorm", kind="info")
         for cb in self.callbacks:
             cb.on_before_step(self, key)
         if r.sam_rho > 0 and closure is not None:
@@ -381,11 +394,25 @@ class Trainer:
         if key == self.paradigm.primary_key or len(self.optimizers) == 1:
             self.global_step += 1
             self._last_grad_norm = grad_norm
+            if lc.weights_every_n_steps and self.global_step % lc.weights_every_n_steps == 0:
+                self._log_weights()
             e = self.cfg.ema
             if self.ema is not None and self.global_step >= e.start_step and self.global_step % e.update_every == 0:
                 self.ema.update(self.model)
             self.mem.after_step(self.global_step)
         return True
+
+    @torch.no_grad()
+    def _log_weights(self) -> None:
+        stats: dict[str, float] = {}
+        for n, p in self.model.named_parameters():
+            if p.numel() == 0:
+                continue
+            w = p.detach().float()
+            stats[f"{n}/norm"] = float(w.norm())
+            stats[f"{n}/std"] = float(w.std()) if w.numel() > 1 else 0.0
+            self.logger.histogram(self.global_step, f"gewichte/{n}", w)
+        self.logger.metrics(self.global_step, stats, "gewichte", kind="info")
 
     def _sam(self, params: list[nn.Parameter], closure: Callable[[], torch.Tensor], rho: float) -> None:
         """Sharpness-Aware Minimization: Gradient an der 'schlechtesten' Nachbarstelle bestimmen."""
@@ -449,7 +476,12 @@ class Trainer:
         Paradigmen mit eigener Schleife (z. B. ``reinforcement``) brauchen keine Daten.
         """
         if hasattr(self.paradigm, "run"):
-            return self.paradigm.run(self)
+            self.logger.start(self.run_name, self.run_config if self.run_config is not None else
+                              {"training": self.cfg.to_dict(), "memory": self.mem.cfg.to_dict()})
+            try:
+                return self.paradigm.run(self)
+            finally:
+                self.logger.close()
         if train_data is None:
             raise TrainingError(f"Paradigma '{self.cfg.paradigm.name}' braucht Trainingsdaten.")
         c = self.cfg
@@ -459,8 +491,14 @@ class Trainer:
         if not self.schedulers:
             self._build_schedulers(self.total_steps)
         n_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        self.logger.start(self.run_name, self.run_config if self.run_config is not None else
+                          {"training": c.to_dict(), "memory": self.mem.cfg.to_dict()})
         self.log(f"▶ Training: Paradigma '{c.paradigm.name}', {format_number(n_params)} trainierbare Parameter, "
-                 f"{self.total_steps} Schritte, Gerät {self.device}")
+                 f"{self.total_steps} Schritte, Gerät {self.device}"
+                 + (f", {self.dist.info.world_size} Prozesse ({c.distributed.strategy})" if self.dist.active else ""))
+        if self.logger.run is not None and any(not type(b).__name__.startswith("Console")
+                                               for b in self.logger.backends):
+            self.log(f"  Protokolle: {self.logger.run.directory}", "detail")
         for cb in self.callbacks:
             cb.on_train_start(self)
         start = time.time()
@@ -472,6 +510,7 @@ class Trainer:
                 train_loader.sampler.set_epoch(epoch)
             for batch in train_loader:
                 batch = to_device(batch, self.device, non_blocking=c.pin_memory)
+                self._count(batch)
                 before = self.global_step
                 metrics = self._train_step(batch)
                 for k, v in metrics.items():
@@ -495,6 +534,7 @@ class Trainer:
         for cb in self.callbacks:
             cb.on_train_end(self)
         self.log(f"■ Training beendet nach {self.global_step} Schritten ({time.time() - start:.1f} s).")
+        self.logger.close()
         return self.history
 
     def _train_step(self, batch: Any) -> dict[str, Any]:
@@ -520,23 +560,50 @@ class Trainer:
                 free_memory()
                 self._split *= 2
                 self.log(f"⚠ Speichermangel – Batch wird ab jetzt in {self._split} Stücke geteilt "
-                         f"(effektive Batchgröße bleibt gleich, Akkumulation {self.accumulation}).")
+                         f"(effektive Batchgröße bleibt gleich, Akkumulation {self.accumulation}).", "warnung")
+
+    def _count(self, batch: Any) -> None:
+        inputs = batch.get("inputs") if isinstance(batch, dict) else None
+        self._seen[0] += _batch_size(batch)
+        if isinstance(inputs, torch.Tensor) and not inputs.is_floating_point() and inputs.dim() == 2:
+            self._seen[1] += inputs.numel()
 
     def _after_step(self, running: dict[str, list[float]], start: float, val_loader: Any) -> None:
         c = self.cfg
+        lc = c.logging
         lr = next(iter(self.optimizers.values())).param_groups[0]["lr"]
         last = {k: v[-1] for k, v in running.items() if v}
         last["lr"] = lr
         for cb in self.callbacks:
             cb.on_step_end(self, last)
-        if self.global_step % c.log_every_steps == 0 or self.global_step == 1:
+        if self.logger.wants("debug"):
+            self.logger.metrics(self.global_step, last, "train_schritt", kind="debug")
+        if self.global_step % self.logger.every == 0 or self.global_step == 1:
             avg = {k: sum(v) / len(v) for k, v in running.items() if v}
             gn = getattr(self, "_last_grad_norm", None)
+            extra: dict[str, float] = {}
+            if lc.log_lr:
+                extra["lr"] = lr
+            if gn is not None and lc.log_grad_norm:
+                extra["grad_norm"] = gn
+            elapsed = max(1e-9, time.time() - self._seen[2])
+            if lc.log_throughput:
+                extra["beispiele_pro_s"] = self._seen[0] / elapsed
+                if self._seen[1]:
+                    extra["tokens_pro_s"] = self._seen[1] / elapsed
+            if lc.log_memory:
+                extra.update(memory_now())
+            self._seen = [0, 0, time.time()]
             parts = [f"{k}={v:.4g}" for k, v in avg.items()]
             if gn is not None:
                 parts.append(f"grad_norm={gn:.3g}")
-            self.log(f"  Schritt {self.global_step:>6}/{self.total_steps}  " + "  ".join(parts) +
-                     f"  lr={lr:.3g}  ({time.time() - start:.0f} s)")
+            line = f"  Schritt {self.global_step:>6}/{self.total_steps}  " + "  ".join(parts) + \
+                f"  lr={lr:.3g}  ({time.time() - start:.0f} s)"
+            if self.logger.wants("detail"):
+                line += "  " + "  ".join(f"{k}={v:.4g}" for k, v in extra.items()
+                                          if k not in ("lr", "grad_norm"))
+            self.log(line, "fortschritt")
+            self.logger.metrics(self.global_step, {**avg, **extra}, "train")
             self.history.append({"step": self.global_step, "epoch": self.epoch, "lr": lr, **avg})
             running.clear()
         if val_loader is not None and c.eval_every_steps and self.global_step % c.eval_every_steps == 0:
@@ -544,7 +611,8 @@ class Trainer:
 
     def _run_eval(self, loader: Any) -> dict[str, Any]:
         metrics = self.evaluate(loader)
-        self.log("  Validierung: " + "  ".join(f"{k}={v:.4g}" for k, v in metrics.items()))
+        self.log("  Validierung: " + "  ".join(f"{k}={v:.4g}" for k, v in metrics.items()), "eval")
+        self.logger.metrics(self.global_step, metrics, "eval", kind="eval")
         self.history.append({"step": self.global_step, "epoch": self.epoch, **metrics})
         for sched in self.schedulers.values():
             if hasattr(sched, "step_metric") and "val_loss" in metrics:

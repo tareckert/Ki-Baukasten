@@ -241,7 +241,7 @@ class GradientMonitor(Callback):
         norms = {n: float(p.grad.norm()) for n, p in trainer.model.named_parameters() if p.grad is not None}
         self.history.append(norms)
         top = sorted(norms.items(), key=lambda kv: -kv[1])[: self.a.top_k]
-        trainer.log("Größte Gradienten: " + ", ".join(f"{n}={v:.3g}" for n, v in top))
+        trainer.log("Größte Gradienten: " + ", ".join(f"{n}={v:.3g}" for n, v in top), "detail")
 
 
 class TimeLimit(Callback):
@@ -316,7 +316,7 @@ class LISA(Callback):
                         p.grad = None
                         for opt in trainer.optimizers.values():
                             opt.state.pop(p, None)       # Optimierer-Zustand freigeben
-        trainer.log(f"LISA: trainierbare Blöcke {self.active}")
+        trainer.log(f"LISA: trainierbare Blöcke {self.active}", "detail")
 
     def on_step_end(self, trainer, metrics):
         if self.blocks and trainer.global_step % self.a.every_n_steps == 0:

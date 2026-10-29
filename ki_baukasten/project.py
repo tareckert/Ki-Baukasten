@@ -113,6 +113,7 @@ class Project:
         self._teacher: nn.Module | None = None       # Lehrer für distillation (Project.distill)
         self.last_compression: Any = None
         self._switch_memory: dict[str, Any] = {}     # beim Ausschalten gemerkte eigene Werte (für "an"/"eigen")
+        self._loggers: list[Any] = []                # zur Laufzeit eingebundene Logger (add_logger)
 
     # ================================================================ Erzeugen
     @classmethod
@@ -433,9 +434,16 @@ class Project:
         return self._bundle
 
     # ================================================================ Bauen
+    def _verbose(self, kind: str = "info") -> bool:
+        """Konsolenausgabe des Projekts gemäß ``training.verbose`` und ``training.logging.level``."""
+        from .training.logger import KINDS, LEVELS
+
+        t = self.config.training
+        return t.verbose and LEVELS[t.logging.level] >= KINDS.get(kind, 2)
+
     def _note(self, text: str) -> None:
         self.notes.append(text)
-        if self.config.training.verbose:
+        if self._verbose():
             print(f"  ℹ {text}")
 
     def _fit_value(self, path: str, value: Any, mode: str = "set") -> None:
@@ -522,11 +530,12 @@ class Project:
                 val_data = None  # Anomalie-Testmenge hat Labels → separat mit anomaly_report() auswerten
         self._fit_warning()
         self.trainer = Trainer(self.model, self.config.training, self.config.memory, self.surgeon,
-                               teacher=self._teacher)
+                               teacher=self._teacher, log_backends=self._loggers, run_name=self.config.name,
+                               run_config=self.config.to_dict())
         self.model = self.trainer.module
         self.history = self.trainer.fit(train_data, val_data)
         d = self.config.deployment
-        if self.config.training.verbose and d.show_after_training:
+        if self._verbose() and d.show_after_training:
             try:
                 print()
                 print(self.deployment_overview())
@@ -539,7 +548,7 @@ class Project:
 
     def _fit_warning(self) -> None:
         """Mit gesetztem ``memory.memory_budget_gb``: vor dem Training prüfen und Notfall-Optionen nennen."""
-        if not (self.config.memory.memory_budget_gb and self.config.training.verbose):
+        if not (self.config.memory.memory_budget_gb and self._verbose("warnung")):
             return
         try:
             report = self.memory_report()
@@ -747,7 +756,7 @@ class Project:
             self.config.module_rules.append(ModuleRuleConfig.from_dict(r))
         self.model, self.trainer = model, None
         self.last_compression = report
-        if self.config.training.verbose:
+        if self._verbose():
             print(report)
         return report
 
@@ -782,6 +791,7 @@ class Project:
         if steps is not None:
             sp.config.training.max_steps = steps
         sp._teacher = teacher
+        sp._loggers = list(self._loggers)
         sp.train()
         return sp
 
@@ -823,7 +833,8 @@ class Project:
                                                          "task": task, "temperature": 2.0}}
         if method == "replay":
             train_data = mix_replay(train_data, old, replay_fraction, seed=t.seed or 0)
-        trainer = Trainer(model, t, self.config.memory, self.surgeon, teacher=teacher)
+        trainer = Trainer(model, t, self.config.memory, self.surgeon, teacher=teacher, log_backends=self._loggers,
+                          run_name=f"{self.config.name}_weiterlernen", run_config=self.config.to_dict())
         if method == "ewc":
             batches = self._batches(old, 8)
             fisher = fisher_information(trainer.model, batches, calibration_loss)
@@ -832,6 +843,15 @@ class Project:
         hist = trainer.fit(train_data, val_data)
         self.history = self.history + hist
         return hist
+
+    def add_logger(self, logger: Any) -> "Project":
+        """Eigenen Logger einbinden: ``logging.Logger``, ein ``LogBackend`` oder ein Objekt mit (einigen der)
+        Methoden ``start``, ``message(kind, text)``, ``metrics(step, werte, phase)``, ``histogram``, ``close``.
+
+        Umfang und Ziele aus der Konfiguration: ``training.logging`` (Stufe, Backends, Intervalle, Rotation).
+        """
+        self._loggers.append(logger)
+        return self
 
     def evaluate(self, data: Any = None) -> dict[str, float]:
         if self.trainer is None:

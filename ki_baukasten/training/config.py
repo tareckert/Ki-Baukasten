@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from ..core import (BaseConfig, ComponentListParam, ComponentParam, Level, NestedParam, Param, T)
 from .distributed import DistributedConfig
+from .logger import LoggingConfig
 
 
 class RegularizationConfig(BaseConfig):
@@ -197,6 +198,7 @@ class TrainingConfig(BaseConfig):
     log_every_steps = Param(10, min=1, group="Ablauf", tooltip=T(
         "Ausgabe des Fortschritts alle n Schritte.", "Übersicht im Terminal.", "10–100."))
     verbose = Param(True, group="Ablauf", tooltip=T("Fortschritt ausgeben.", "Konsolenausgabe.", "Standard: an."))
+    logging = NestedParam(LoggingConfig, group="Ablauf")
     callbacks = ComponentListParam("callback", group="Ablauf", tooltip=T(
         "Callbacks (Early Stopping, Checkpoints, Logger ...).", "Erweitern den Trainingsablauf.", "Nach Bedarf."))
     seed = Param(42, type=int, nullable=True, group="Ablauf", tooltip=T(

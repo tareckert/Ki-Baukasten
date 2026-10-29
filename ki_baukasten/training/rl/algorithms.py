@@ -109,9 +109,10 @@ class RLContext:
             avg = {k: sum(v) / len(v) for k, v in self.metrics.items() if v}
             lr = next(iter(t.optimizers.values())).param_groups[0]["lr"]
             avg["lr"] = lr
-            t.log(f"  Umgebungsschritte {self.env_steps:>8}/{self.rl.total_timesteps}  " +
+            t.log(kind="fortschritt", text=f"  Umgebungsschritte {self.env_steps:>8}/{self.rl.total_timesteps}  " +
                   "  ".join(f"{k}={v:.4g}" for k, v in avg.items()) + f"  ({time.time() - self.start:.0f} s)")
             t.history.append({"env_steps": self.env_steps, "step": t.global_step, **avg})
+            t.logger.metrics(t.global_step, {"env_steps": self.env_steps, **avg}, "train")
             for cb in t.callbacks:
                 cb.on_step_end(t, avg)
             self.metrics.clear()
