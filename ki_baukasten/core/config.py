@@ -57,6 +57,7 @@ import enum
 import json
 import math
 import re
+import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -670,13 +671,16 @@ class BaseConfig:
     __title__: ClassVar[str] = ""
     __tooltip__: ClassVar[Tooltip | None] = None
     _params: ClassVar[dict[str, Param]] = {}
+    _omitted: ClassVar[frozenset[str]] = frozenset()   # per __omit__ entfernte geerbte Parameter
 
     # ------------------------------------------------------------ Klassenaufbau
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Sammelt alle ``Param``-Definitionen inkl. geerbter (in Definitionsreihenfolge).
 
         Unterklassen können geerbte Parameter überschreiben, indem sie einen
-        Parameter gleichen Namens neu definieren (z. B. anderer Standardwert).
+        Parameter gleichen Namens neu definieren (z. B. anderer Standardwert), und
+        geerbte Parameter, die für sie nichts bewirken, mit ``__omit__ = ("name", …)``
+        entfernen – sie erscheinen dann weder in GUI/Doku noch in gespeicherten Dateien.
         """
         super().__init_subclass__(**kwargs)
         params: dict[str, Param] = {}
@@ -685,6 +689,10 @@ class BaseConfig:
         for name, value in cls.__dict__.items():
             if isinstance(value, Param):
                 params[name] = value
+        omitted = set(getattr(cls, "_omitted", frozenset())) | set(cls.__dict__.get("__omit__", ()))
+        for name in omitted:
+            params.pop(name, None)
+        cls._omitted = frozenset(omitted)
         cls._params = params
 
     @classmethod
@@ -882,6 +890,10 @@ class BaseConfig:
                 continue
             first = key.split(".", 1)[0]
             if first not in self._values and not isinstance(self, FreeConfig):
+                if first in type(self)._omitted:   # z. B. ältere Datei: amsgrad bei NAdam hat nie gewirkt
+                    warnings.warn(f"[{prefix + key}] '{first}' gibt es bei '{self.title()}' nicht (wirkt dort nicht) "
+                                  f"– ignoriert.", stacklevel=2)
+                    continue
                 raise UnknownParameterError(first, type(self)._params.keys(), path=prefix + key, owner=self.title())
             try:
                 current = self.get(key)

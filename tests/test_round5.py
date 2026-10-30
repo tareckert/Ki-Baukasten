@@ -226,7 +226,7 @@ def test_compact_config_roundtrip(tmp_path):
     d = p.save(tmp_path / "x")
     saved = json.loads((d / "projekt.json").read_text(encoding="utf-8"))
     assert "deployment" not in saved or "export" not in saved.get("deployment", {})
-    assert Project.load(d).config.to_dict() == {**p.config.to_dict(), "auto_fit_dims": False}
+    assert Project.load(d).config.to_dict() == p.config.to_dict()        # exakt wie gespeichert
     p.set("deployment.export.compact_config", False)
     full = json.loads((p.save(tmp_path / "y") / "projekt.json").read_text(encoding="utf-8"))
     assert len(json.dumps(full)) > len(json.dumps(saved))

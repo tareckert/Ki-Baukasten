@@ -71,6 +71,7 @@ class Technique:
     also: tuple[str, ...] = ()
     check: Callable[[BaseConfig], bool | None] | None = None   # eigener Status-Test (für berechnete Änderungen)
     applies: Callable[[BaseConfig], bool] | None = None        # passt die Technik zu Modell/Daten/Paradigma?
+    off: Callable[[BaseConfig], dict[str, Any]] | None = None  # eigenes Ausschalten (z. B. 'beides' → nur die andere)
 
     def changes_for(self, cfg: BaseConfig) -> dict[str, Any]:
         return self.changes(cfg) if callable(self.changes) else dict(self.changes)
@@ -190,8 +191,20 @@ def _classification(cfg: BaseConfig) -> bool:
 
 
 def _K(key, title, cat, tip, changes, used_by="", hint="", level=Level.BASIC, also=(), check=None,
-       applies=None) -> Technique:
-    return Technique(key, title, cat, tip, changes, used_by, hint, level, also, check, applies)
+       applies=None, off=None) -> Technique:
+    return Technique(key, title, cat, tip, changes, used_by, hint, level, also, check, applies, off)
+
+
+def _uncertainty(mode: str) -> dict[str, Callable]:
+    """MC-Dropout und TTA ergänzen sich: beide an → 'beides'; eines aus → das andere bleibt."""
+    other = {"mc_dropout": "tta", "tta": "mc_dropout"}[mode]
+
+    def current(cfg: BaseConfig) -> str:
+        return cfg.get("inference.uncertainty")
+
+    return {"changes": lambda cfg: {"inference.uncertainty": "beides" if current(cfg) in (other, "beides") else mode},
+            "check": lambda cfg: current(cfg) in (mode, "beides"),
+            "off": lambda cfg: {"inference.uncertainty": other if current(cfg) == "beides" else "keine"}}
 
 
 CATALOG: list[Technique] = [
@@ -237,7 +250,7 @@ CATALOG: list[Technique] = [
         {"model.logit_softcap": 30.0}, "Gemma 2", level=Level.EXPERT),
     _K("plateau_lr", "Lernrate bei Stillstand senken", "stabilitaet", T(
         "Lernrate halbieren, wenn sich die Validierung nicht mehr verbessert.", "Einfach und robust.",
-        "Klassische CNNs, Tabellen."), {"training.scheduler": "plateau"}, "ReduceLROnPlateau (Keras/PyTorch)",
+        "Klassische CNNs, Tabellen."), {"training.scheduler.name": "plateau"}, "ReduceLROnPlateau (Keras/PyTorch)",
         level=Level.ADVANCED),
 
     # ------------------------------------------------------------------ Gegen Auswendiglernen
@@ -580,11 +593,12 @@ CATALOG: list[Technique] = [
     _K("mc_dropout", "Unsicherheit per MC-Dropout", "vertrauen", T(
         "Mehrere Vorhersagen mit aktivem Dropout; die Streuung zeigt die Unsicherheit.",
         "Erkennt Eingaben, die das Modell nicht kennt.", "Modelle mit Dropout."),
-        {"inference.uncertainty": "mc_dropout"}, "Gal & Ghahramani (2016)", level=Level.ADVANCED, applies=_supervised),
+        _uncertainty("mc_dropout")["changes"], "Gal & Ghahramani (2016)", level=Level.ADVANCED, applies=_supervised,
+        check=_uncertainty("mc_dropout")["check"], off=_uncertainty("mc_dropout")["off"]),
     _K("tta", "Test-Time Augmentation", "vertrauen", T(
         "Vorhersage über das Original und gespiegelte Varianten mitteln.", "Meist 0,5–2 Punkte genauer und "
-        "stabiler.", "Bilder."), {"inference.uncertainty": "tta"}, "Kaggle-Standard", level=Level.ADVANCED,
-        applies=_images),
+        "stabiler.", "Bilder."), _uncertainty("tta")["changes"], "Kaggle-Standard", level=Level.ADVANCED,
+        applies=_images, check=_uncertainty("tta")["check"], off=_uncertainty("tta")["off"]),
     _K("adversarial_training", "Adversariales Training (PGD)", "vertrauen", T(
         "Zusätzlich auf gezielt gestörten Eingaben trainieren, die das Modell am stärksten täuschen.",
         "Robust gegen Angriffe und Rauschen; wirkt auch als Regularisierung.", "Sicherheitskritische Modelle."),
@@ -662,7 +676,7 @@ CATALOG: list[Technique] = [
         {"training.layerwise_lr_decay": 0.8}, "BEiT, ELECTRA", level=Level.EXPERT),
     _K("wsd", "Warmup-Stable-Decay-Zeitplan", "experimentell", T(
         "Konstante Lernrate mit kurzem Abklingen am Ende.", "Training jederzeit verlängerbar.", "Sprachmodelle."),
-        {"training.scheduler": "wsd"}, "MiniCPM, DeepSeek", level=Level.ADVANCED),
+        {"training.scheduler.name": "wsd"}, "MiniCPM, DeepSeek", level=Level.ADVANCED),
 ]
 
 BY_KEY = {t.key: t for t in CATALOG}
@@ -759,6 +773,14 @@ def disable(cfg: BaseConfig, tech: Technique, memory: dict[str, Any]) -> list[st
     changed = []
     known = tech.key in memory          # eingeschaltet in dieser Sitzung → exakt den vorherigen Zustand herstellen
     remembered = memory.pop(tech.key, {})
+    if tech.off is not None:            # eigenes Ausschalten (berücksichtigt, was andere Techniken eingestellt haben)
+        if tech.check is not None and not tech.check(cfg):
+            return []
+        for path, value in tech.off(cfg).items():
+            if not _same(cfg.get(path), value):
+                cfg.set(path, value)
+                changed.append(path)
+        return changed
     if callable(tech.changes):          # berechnete Änderungen: gemerkte Werte zurück, sonst Standard
         for path in remembered or tech.changes_for(cfg):
             if path in remembered:

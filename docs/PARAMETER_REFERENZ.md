@@ -4525,8 +4525,6 @@ Fabrik-Signatur: `factory(args, param_groups) -> torch.optim.Optimizer`
 | `weight_decay` | Kommazahl | `0.0` | ≥ 0.0 | Basis | **Was:** Gewichtsverfall: zieht Gewichte in Richtung 0.<br>**Nutzen:** Regularisiert gegen Überanpassung, hält Gewichte klein.<br>**Wofür:** AdamW: 0.01…0.1; SGD: 1e-4…5e-4.<br>**Tipp:** Biases/Normen werden standardmäßig ausgenommen (training.no_decay_patterns). |
 | `betas` | Liste[Kommazahl] | `[0.9, 0.999]` | Bereich 0.0 … 1.0 · Länge 2 | Fortgeschritten | **Was:** Abklingraten für 1. Moment (Richtung) und 2. Moment (Skalierung).<br>**Nutzen:** β₂ kleiner (0.95) stabilisiert große Modelle; β₁ steuert die Glättung.<br>**Wofür:** LLMs: [0.9, 0.95]; Standard: [0.9, 0.999]. |
 | `eps` | Kommazahl | `1e-08` | ≥ 0.0 | Experte | **Was:** Stabilisator im Nenner.<br>**Nutzen:** Verhindert Division durch ~0; größer = vorsichtigere Updates.<br>**Wofür:** fp16: 1e-6…1e-5. |
-| `amsgrad` | Ja/Nein | `False` |  | Experte | **Was:** AMSGrad-Variante (monotones 2. Moment).<br>**Nutzen:** Theoretische Konvergenzgarantie, praktisch selten besser.<br>**Wofür:** Experimente. |
-| `fused` | Ja/Nein (oder None) | `None` |  | Experte | **Was:** Fusionierte Implementierung (None = automatisch: fusioniert, wenn das Gerät es kann – CPU/GPU; False = Standard).<br>**Nutzen:** Ein Kernel für alle Parameter – auf CPU und GPU deutlich schneller.<br>**Wofür:** None lassen. |
 | `momentum_decay` | Kommazahl | `0.004` | ≥ 0.0 | Experte | **Was:** Momentum-Zerfall von NAdam.<br>**Nutzen:** Steuert Nesterov-Anteil über die Zeit.<br>**Wofür:** Selten. |
 
 #### `optimizer:radam` — Stufe Fortgeschritten
@@ -4654,8 +4652,6 @@ Fabrik-Signatur: `factory(args, param_groups) -> torch.optim.Optimizer`
 | `weight_decay` | Kommazahl | `0.01` | ≥ 0.0 | Basis | **Was:** Entkoppelter Gewichtsverfall (AdamW).<br>**Nutzen:** Korrekte Regularisierung für adaptive Optimierer – der Grund, AdamW statt Adam zu nehmen.<br>**Wofür:** 0.01…0.1 (LLMs 0.1). |
 | `betas` | Liste[Kommazahl] | `[0.9, 0.999]` | Bereich 0.0 … 1.0 · Länge 2 | Fortgeschritten | **Was:** Abklingraten für 1. Moment (Richtung) und 2. Moment (Skalierung).<br>**Nutzen:** β₂ kleiner (0.95) stabilisiert große Modelle; β₁ steuert die Glättung.<br>**Wofür:** LLMs: [0.9, 0.95]; Standard: [0.9, 0.999]. |
 | `eps` | Kommazahl | `1e-08` | ≥ 0.0 | Experte | **Was:** Stabilisator im Nenner.<br>**Nutzen:** Verhindert Division durch ~0; größer = vorsichtigere Updates.<br>**Wofür:** fp16: 1e-6…1e-5. |
-| `amsgrad` | Ja/Nein | `False` |  | Experte | **Was:** AMSGrad-Variante (monotones 2. Moment).<br>**Nutzen:** Theoretische Konvergenzgarantie, praktisch selten besser.<br>**Wofür:** Experimente. |
-| `fused` | Ja/Nein (oder None) | `None` |  | Experte | **Was:** Fusionierte Implementierung (None = automatisch: fusioniert, wenn das Gerät es kann – CPU/GPU; False = Standard).<br>**Nutzen:** Ein Kernel für alle Parameter – auf CPU und GPU deutlich schneller.<br>**Wofür:** None lassen. |
 | `block_size` | Ganzzahl | `256` | ≥ 16 | Experte | **Was:** Blockgröße der 8-Bit-Quantisierung der Optimierer-Zustände.<br>**Nutzen:** Jeder Block hat eine eigene Skala – kleiner = genauer, minimal mehr Speicher.<br>**Wofür:** 256. |
 | `min_8bit_size` | Ganzzahl | `4096` | ≥ 0 | Experte | **Was:** Parameter mit weniger Elementen behalten 32-Bit-Zustände.<br>**Nutzen:** Kleine Tensoren (Biases, Normen) sparen kaum, sind aber empfindlich.<br>**Wofür:** 4096. |
 | `dynamic_range` | Kommazahl | `14.0` | Bereich 2.0 … 40.0 | Experimentell | **Was:** Dynamikbereich der logarithmischen Quantisierung (natürlicher Log; 14 ≈ Faktor 10⁶ pro Block).<br>**Nutzen:** Größer = auch sehr kleine Werte darstellbar, aber gröbere Stufen.<br>**Wofür:** 14 (m), doppelt für v. |
@@ -5079,9 +5075,6 @@ Fabrik-Signatur: `factory(args, optimizer, total_steps)`
 |---|---|---|---|---|---|
 | `warmup_steps` | Ganzzahl (oder None) | `None` | ≥ 0 | Basis | **Was:** Anzahl Aufwärmschritte (überschreibt warmup_ratio).<br>**Nutzen:** Lernrate steigt langsam an – schützt vor Divergenz am Anfang.<br>**Wofür:** Transformer: 1–5 % der Schritte bzw. 500–2000 Schritte. |
 | `warmup_ratio` | Kommazahl | `0.3` | Bereich 0.0 … 1.0 | Basis | **Was:** Anteil des Anstiegs zur Maximal-Lernrate (pct_start).<br>**Nutzen:** Langer Anstieg, dann Abfall.<br>**Wofür:** 0.25–0.3. |
-| `warmup_type` | Text | `'linear'` | Auswahl: linear \| cosine \| exponential | Experte | **Was:** Form des Anstiegs.<br>**Nutzen:** Feinheit; linear ist Standard.<br>**Wofür:** Selten zu ändern. |
-| `warmup_start_factor` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Experte | **Was:** Startfaktor der Lernrate im Warmup (0 = bei 0 beginnen).<br>**Nutzen:** Sanfter oder härterer Start.<br>**Wofür:** 0–0.1. |
-| `min_lr_ratio` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Untergrenze der Lernrate relativ zur Start-Lernrate.<br>**Nutzen:** Verhindert, dass das Training am Ende 'einfriert'.<br>**Wofür:** LLMs: 0.1. |
 | `div_factor` | Kommazahl | `25.0` | ≥ 1.0 | Fortgeschritten | **Was:** Start-LR = max_lr / div_factor.<br>**Nutzen:** Startniveau.<br>**Wofür:** 25. |
 | `final_div_factor` | Kommazahl | `10000.0` | ≥ 1.0 | Fortgeschritten | **Was:** End-LR = Start-LR / final_div_factor.<br>**Nutzen:** Endniveau.<br>**Wofür:** 1e4. |
 
@@ -5138,7 +5131,8 @@ Fabrik-Signatur: `factory(args, optimizer, total_steps)`
 | `min_lr_ratio` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Untergrenze der Lernrate relativ zur Start-Lernrate.<br>**Nutzen:** Verhindert, dass das Training am Ende 'einfriert'.<br>**Wofür:** LLMs: 0.1. |
 | `factor` | Kommazahl | `0.5` | Bereich 0.0 … 1.0 | Basis | **Was:** Reduktionsfaktor bei Stillstand.<br>**Nutzen:** Wie stark die LR fällt.<br>**Wofür:** 0.1–0.5. |
 | `patience` | Ganzzahl | `2` | ≥ 0 | Basis | **Was:** Evaluierungen ohne Verbesserung bis zur Reduktion.<br>**Nutzen:** Geduld.<br>**Wofür:** 2–10. |
-| `mode` | Text | `'min'` | Auswahl: min \| max | Basis | **Was:** Ob die Metrik kleiner (Verlust) oder größer (Genauigkeit) besser ist.<br>**Nutzen:** Richtung.<br>**Wofür:** Verlust: min. |
+| `monitor` | Text | `'val_loss'` |  | Basis | **Was:** Beobachtete Validierungsmetrik (z. B. val_loss, val_accuracy).<br>**Nutzen:** Woran 'keine Verbesserung' gemessen wird.<br>**Wofür:** val_loss; fehlt sie, wird val_loss genommen. |
+| `mode` | Text | `'auto'` | Auswahl: auto \| min \| max | Basis | **Was:** Ob die Metrik kleiner (Verlust) oder größer (Genauigkeit) besser ist.<br>**Nutzen:** Richtung.<br>**Wofür:** auto. |
 | `threshold` | Kommazahl | `0.0001` | ≥ 0.0 | Experte | **Was:** Mindestverbesserung (relativ).<br>**Nutzen:** Rauschen ignorieren.<br>**Wofür:** 1e-4. |
 
 

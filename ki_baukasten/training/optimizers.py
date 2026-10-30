@@ -111,6 +111,7 @@ class AdamWConfig(AdamConfig):
 
 
 class AdamW8bitConfig(AdamWConfig):
+    __omit__ = ("amsgrad", "fused")          # eigene Implementierung: weder AMSGrad noch fusionierter Kernel
     block_size = Param(256, min=16, tooltip=T(
         "Blockgröße der 8-Bit-Quantisierung der Optimierer-Zustände.",
         "Jeder Block hat eine eigene Skala – kleiner = genauer, minimal mehr Speicher.", "256."),
@@ -125,6 +126,7 @@ class AdamW8bitConfig(AdamWConfig):
 
 
 class NAdamConfig(AdamConfig):
+    __omit__ = ("amsgrad", "fused")          # torch.optim.NAdam kennt beides nicht
     momentum_decay = Param(4e-3, min=0.0, tooltip=T(
         "Momentum-Zerfall von NAdam.", "Steuert Nesterov-Anteil über die Zeit.", "Selten."), level=Level.EXPERT)
 

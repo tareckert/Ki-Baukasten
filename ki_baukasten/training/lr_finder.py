@@ -4,7 +4,7 @@ ki_baukasten.training.lr_finder
 
 **Lernraten-Finder** (LR-Range-Test, Smith 2017 / fast.ai): Die Lernrate wird über wenige
 Schritte exponentiell von sehr klein nach sehr groß erhöht; aus der Verlustkurve ergibt sich
-eine gute Start-Lernrate (dort, wo der Verlust am stärksten fällt).
+eine gute Start-Lernrate (Valley-Regel: zwei Drittel entlang des längsten fallenden Abschnitts).
 
 Der Test läuft auf einer **Kopie** des Modells – das Projekt bleibt unverändert.
 """
@@ -27,7 +27,7 @@ class LRFinderResult:
     def __str__(self) -> str:
         if self.suggestion is None:
             return "LR-Finder: keine Empfehlung (Verlust fiel nicht)."
-        return (f"LR-Finder: empfohlene Lernrate ≈ {self.suggestion:.3g} (steilster Abfall), "
+        return (f"LR-Finder: empfohlene Lernrate ≈ {self.suggestion:.3g} (Valley-Regel), "
                 f"kleinster Verlust bei {self.min_loss_lr:.3g} – übernehmen mit "
                 f"projekt.set('training.optimizer.lr', {self.suggestion:.3g})")
 
@@ -81,12 +81,24 @@ def find_lr(project: Any, min_lr: float = 1e-7, max_lr: float = 1.0, steps: int 
         start = max(1, len(losses) // 10)                 # verrauschten Anfang überspringen
         k = min(range(start, len(losses)), key=losses.__getitem__)
         result.min_loss_lr = lrs[k]
-        diverged = next((j for j in range(k, len(losses)) if losses[j] > 1.5 * losses[k]), None)
-        if losses[start] - losses[k] < 0.02 * abs(losses[start]):
-            # kein klares Tal (flache, verrauschte Kurve): Faustregel "Lernrate, bei der es kippt, ÷ 10"
-            result.suggestion = lrs[diverged] / 10 if diverged is not None else lrs[-1] / 10
-        else:
-            logs = [math.log10(x) for x in lrs]
-            grads = {j: (losses[j + 1] - losses[j - 1]) / (logs[j + 1] - logs[j - 1]) for j in range(start, k)}
-            result.suggestion = lrs[min(grads, key=grads.__getitem__)] if grads else result.min_loss_lr / 10
+        result.suggestion = _valley(lrs, losses)
     return result
+
+
+def _valley(lrs: list[float], losses: list[float]) -> float:
+    """'Valley'-Regel (fastai): längster fallender Abschnitt der Kurve, Punkt bei zwei Dritteln davon.
+
+    Robuster als 'steilster Abfall' (springt bei verrauschten, flachen Kurven in viel zu kleine Werte) und als
+    'Minimum ÷ 10' (bei manchen Modellen viel zu groß) – in Vergleichen nie weit vom bewährten Wert entfernt.
+    """
+    n = len(losses)
+    length, prev = [1] * n, [-1] * n
+    for i in range(1, n):
+        for j in range(i):
+            if losses[i] < losses[j] and length[j] + 1 > length[i]:
+                length[i], prev[i] = length[j] + 1, j
+    end = max(range(n), key=length.__getitem__)
+    start = end
+    while prev[start] != -1:
+        start = prev[start]
+    return lrs[int(start + (end - start) * 2 / 3)]

@@ -92,22 +92,23 @@ Es gibt keine „verbotenen“ Einstellungen: auch experimentelle, exotische ode
 6. [Vertrauen: Kalibrierung, Unsicherheit, Erklärungen, Fairness, Robustheit](#vertrauen-kalibrierung-unsicherheit-erklärungen-fairness-robustheit)
 7. [Einsatz: Modellkarte, Rohdaten, HTTP-Dienst](#einsatz-modellkarte-rohdaten-http-dienst)
 8. [Leistung, Hardware & schlanker Export](#leistung-hardware--schlanker-export)
-9. [Grundkonzepte](#grundkonzepte)
-10. [Was alles drin ist](#was-alles-drin-ist)
-11. [Vorlagen nach Anwendungsgebiet](#vorlagen-nach-anwendungsgebiet)
-12. [Speicher & große Modelle](#speicher--große-modelle) – Streaming, Quantisierung, LoRA, 8-Bit-Optimierer
-13. [Notfall-Ausführung](#notfall-ausführung-wenn-es-trotz-verkleinern-nicht-passt)
-14. [Mamba, Generierung & KV-Cache](#mamba-generierung--kv-cache)
-15. [Modelle eindampfen, Lehrer-Schüler & Zielsysteme](#modelle-eindampfen-lehrer-schüler--zielsysteme)
-16. [Ablauf: Suche, Schwarm, Evolution, föderiert](#ablauf-suche-schwarm-evolution-föderiert)
-17. [Logger & Cluster](#logger--cluster)
-18. [Fremde Modelle importieren & Probelauf](#fremde-modelle-importieren--probelauf)
-19. [Aufbau, Ratgeber & Export](#aufbau-ratgeber--export)
-20. [Reinforcement Learning & Belohnungen](#reinforcement-learning--belohnungen)
-21. [Eigene Komponenten](#eigene-komponenten)
-22. [Projektstruktur](#projektstruktur)
-23. [Tests](#tests)
-24. [Ehrliche Grenzen](#ehrliche-grenzen)
+9. [Diagnose & automatisch verbessern](#diagnose--automatisch-verbessern) – nichts geht stillschweigend verloren
+10. [Grundkonzepte](#grundkonzepte)
+11. [Was alles drin ist](#was-alles-drin-ist)
+12. [Vorlagen nach Anwendungsgebiet](#vorlagen-nach-anwendungsgebiet)
+13. [Speicher & große Modelle](#speicher--große-modelle) – Streaming, Quantisierung, LoRA, 8-Bit-Optimierer
+14. [Notfall-Ausführung](#notfall-ausführung-wenn-es-trotz-verkleinern-nicht-passt)
+15. [Mamba, Generierung & KV-Cache](#mamba-generierung--kv-cache)
+16. [Modelle eindampfen, Lehrer-Schüler & Zielsysteme](#modelle-eindampfen-lehrer-schüler--zielsysteme)
+17. [Ablauf: Suche, Schwarm, Evolution, föderiert](#ablauf-suche-schwarm-evolution-föderiert)
+18. [Logger & Cluster](#logger--cluster)
+19. [Fremde Modelle importieren & Probelauf](#fremde-modelle-importieren--probelauf)
+20. [Aufbau, Ratgeber & Export](#aufbau-ratgeber--export)
+21. [Reinforcement Learning & Belohnungen](#reinforcement-learning--belohnungen)
+22. [Eigene Komponenten](#eigene-komponenten)
+23. [Projektstruktur](#projektstruktur)
+24. [Tests](#tests)
+25. [Ehrliche Grenzen](#ehrliche-grenzen)
 
 Ausführliche Erklärung des inneren Aufbaus und aller Eingriffspunkte: [`docs/ARCHITEKTUR.md`](docs/ARCHITEKTUR.md).
 
@@ -133,8 +134,9 @@ Die grafische Oberfläche nutzt Tkinter (in Python enthalten; unter Debian/Ubunt
 from ki_baukasten import Project
 
 # Variante 0: direkt aus den Daten – Datenart erkennen, Vorlage, Empfehlungen, Training, Test, Basis-Vergleich
-p = Project.auto("kunden.csv", target="kauft")
+p = Project.auto("kunden.csv", target="kauft", improve=2)   # + 2 Runden Diagnose → Maßnahmen → neu trainieren
 print(p.last_test, p.last_baseline)
+print(p.diagnose())                                 # was bremst das Modell noch? (mit konkreten Maßnahmen)
 p.save("ausgaben/kunden_ki")                        # inkl. Vorverarbeitung + Modellkarte → p.serve() / predict_raw
 
 # Variante A: nach Zielen – der Assistent wählt die Vorlage und schaltet passende Techniken ein
@@ -175,7 +177,8 @@ schueler = p.distill(width=0.5, depth=0.5)          # Lehrer-Schüler: kleineres
 ### Kommandozeile
 
 ```bash
-python -m ki_baukasten auto kunden.csv --ziel kauft --speichern ausgaben/kunden_ki  # Daten → fertige KI
+python -m ki_baukasten auto kunden.csv --ziel kauft --verbessern 2 --speichern ausgaben/kunden_ki  # Daten → fertige KI
+python -m ki_baukasten diagnose ausgaben/kunden_ki                               # was bremst das Modell? Maßnahmen
 python -m ki_baukasten hardware                                                  # Gerät + Automatik
 python -m ki_baukasten ziele --text "Bilder auf dem Handy in Echtzeit erkennen" --erstellen neu.json  # Assistent
 python -m ki_baukasten perfektion meine_ki.json --anwenden --speichern meine_ki.json  # Anforderungen prüfen + an
@@ -411,6 +414,49 @@ p.export("ausgaben/modell", "export")                 # .pt2 (torch.export) – 
 print(p.last_export)  # z. B. GAN: "18.434 Parameter (0.07 MB; vorher 35.459 / 0.14 MB) · 12 ungenutzte Tensoren
                       #  entfernt · geprüft: größte Abweichung zum Original 0"
 p.export("ausgaben/gpu", "export", dtype="bfloat16", fold_batchnorm=False)   # jeder Schritt einzeln schaltbar
+```
+
+---
+
+## Diagnose & automatisch verbessern
+
+**Diagnose nach dem Training** (`p.diagnose()`, CLI `diagnose`, GUI „Qualität → Diagnose“): liest aus Lernkurven,
+Kennzahlen und dem Basis-Vergleich, was das Modell bremst – und nennt je Befund konkrete, direkt anwendbare Maßnahmen
+(nur solche, die zu diesem Projekt passen und noch nicht an sind):
+
+| Befund | Erkennung | Maßnahmen (Auswahl) |
+|---|---|---|
+| Training instabil | NaN-Schritte übersprungen, Verlust-Spitzen | Clipping, Warmup, Lernrate ÷ 2 |
+| Modell lernt kaum | Trainingsverlust sinkt um < 3 % | LR-Finder, länger trainieren |
+| Training zu kurz | Validierung verbessert sich bis zum letzten Messpunkt | Schritte × 2 |
+| Überanpassung | Validierung wird nach dem Bestwert schlechter; Trainings- ≪ Validierungsverlust | Early Stopping, Dropout, Weight Decay, Augmentierung, Label Smoothing |
+| Kaum besser als die Basis | Genauigkeit/R² kaum über „häufigste Klasse/Mittelwert“ | LR-Finder, länger, Datenprüfung |
+| Seltene Klassen übersehen | balancierte Genauigkeit ≪ Genauigkeit | Klassengewichte, Ausgleich |
+| Schlecht kalibriert | ECE > 0,08 | Temperature Scaling |
+| Validierung zu optimistisch | Test deutlich schlechter als Validierung | Kreuzvalidierung |
+
+**Automatisch verbessern** (`p.improve(rounds=2)`, `Project.auto(..., improve=2)`, CLI `auto --verbessern 2`):
+Diagnose → Maßnahmen → neu trainieren; **behalten wird nur, was die Validierung verbessert**, sonst geht es mit dem
+besseren Stand weiter. Die Testmenge wird dabei nie benutzt – erst danach einmal `p.test()`.
+
+**Nichts geht stillschweigend verloren:**
+
+* `p.inactive_settings()` (und eine Meldung vor jedem Training) nennt geänderte Einstellungen, die gerade nichts
+  bewirken, mit Grund und Abhilfe – z. B. `memory.lora.rank = 16 wirkt nicht: LoRA ist aus → memory.lora.enabled = True`.
+* Schaltet eine Technik eine andere aus (z. B. `muon` ersetzt `lion`, `fsdp` ersetzt `ddp`), wird das gemeldet.
+* Direkt geänderte Aufbau-Einstellungen (`p.config.model.x = …` statt `p.set`) werden vor dem nächsten Training
+  erkannt; das Modell wird neu gebaut statt die Änderung zu übergehen.
+* `Project.auto(..., **einstellungen)`: ausdrückliche Wünsche gewinnen immer gegen die Automatik.
+* `save()`/`load()` behalten Test-, Basis- und Kalibrierungsergebnisse und die Konfiguration exakt (gleiche Prüfsumme).
+* Einstellungen, die eine Komponente nicht kennt, gibt es dort nicht mehr (z. B. `amsgrad` bei NAdam,
+  `warmup_type` bei One-Cycle); ältere Dateien laden mit einer Warnung.
+
+```python
+p.train()
+print(p.diagnose())                 # ✗ Modell lernt kaum: Trainingsverlust 1.128 → 1.123 (Rückgang < 3 %)
+                                    #     → Lernrate per LR-Finder bestimmen (Technik 'auto_lernrate') …
+r = p.improve(rounds=2)             # {'metrik': 'val_accuracy', 'start': 0.344, 'ende': 0.408, 'runden': [...]}
+p.test()
 ```
 
 ---
@@ -956,7 +1002,7 @@ ki_baukasten/
 │                  docs (Referenz + Möglichkeiten-Katalog), serve (HTTP-Dienst)
 └── project.py     Project-Fassade
 examples/          28 ausführlich kommentierte Beispiele + Beispiel-Konfigurationsdatei
-tests/             ~560 Tests (pytest), CI per GitHub Actions (Python 3.10 und 3.12)
+tests/             ~580 Tests (pytest), CI per GitHub Actions (Python 3.10 und 3.12)
 docs/              ARCHITEKTUR.md, MOEGLICHKEITEN.md (Katalog), PARAMETER_REFERENZ.md, ANFORDERUNGEN.md
                    (die letzten drei automatisch erzeugt)
 ```
@@ -983,6 +1029,7 @@ docs/              ARCHITEKTUR.md, MOEGLICHKEITEN.md (Katalog), PARAMETER_REFERE
 | `26_vertrauen.py` | Kalibrierung, Conformal, Enthaltung, MC-Dropout, Erklärungen, Fairness, PGD, Active Learning |
 | `27_einsatz_und_domaenen.py` | Speichern mit Modellkarte, Laden ohne Daten, HTTP-Dienst, Segmentierung, Audio, SFT + Beam Search |
 | `28_auto_hardware_export.py` | `Project.auto` aus einer CSV, Hardware-Bericht, Tempo-Vergleich mit reinem PyTorch, schlanker Export |
+| `29_diagnose_verbessern.py` | Diagnose nach dem Training, `improve` (nur Besseres bleibt), wirkungslose Einstellungen, Technik-Konflikte |
 
 Konvention: **Code-Bezeichner englisch** (wie in PyTorch und Fachliteratur), **alle Erklärungen,
 Kommentare, Tooltips und Ausgaben deutsch**.
@@ -993,7 +1040,7 @@ Kommentare, Tooltips und Ausgaben deutsch**.
 
 ```bash
 pip install pytest
-pytest            # ~560 Tests, ca. 80–110 s auf CPU
+pytest            # ~580 Tests, ca. 100–130 s auf CPU
 ```
 
 Geprüft werden u. a.: jede Komponente jeder Registry, jedes Modell vorwärts/rückwärts, Kausalität aller Mixer und
@@ -1020,7 +1067,17 @@ EMA-genaues Early Stopping, `TensorBatchLoader` = `DataLoader` (Batches und Zufa
 MoE-Zuteilung = Referenz, Hardware-Auflösung (Ampere/Volta/CPU simuliert), zweites `train()` mit SSD-Streaming,
 Techniken-Korrekturen, kompakte Konfiguration, `Project.auto` (Regression in echten Einheiten). Zusätzlich liefen
 alle 37 Vorlagen durch Training → Speichern/Laden (gleiche Ausgabe) → Export in alle Formate (gleiche Ausgabe) und
-jede anwendbare Technik auf sieben Vorlagen durch ein echtes Training.
+jede anwendbare Technik auf sieben Vorlagen durch ein echtes Training. Runde 6: `Project.auto` behält ausdrückliche
+Wünsche, direkt geänderte Aufbau-Einstellungen bauen neu, Speichern/Laden behält Ergebnisse und Prüfsumme, PBT behält
+sein trainiertes Modell, Test/Basis laufen auch nach föderiertem Training und Model Soup (mit eigener Testmenge),
+Kreuzvalidierung ohne Testmenge und in echten Einheiten, Planer-Techniken behalten Warmup, MC-Dropout + TTA
+kombinierbar, Technik-Konflikte werden gemeldet, wirkungslose Einstellungen werden erkannt (alle Vorlagen frei davon),
+geerbte wirkungslose Einstellungen entfernt, Sequenzmetriken mit Token-IDs, Plateau-Planer folgt der Metrik-Richtung,
+Diagnose (findet zu kleine Lernrate, gesundes Training ohne Befund, alle Modellarten) und `improve` (verbessert bzw.
+nimmt Verschlechterungen zurück). Für diese Runde liefen außerdem: eine Mitschrift aller gelesenen Einstellungen
+über die ganze Testsuite, ein Wirkungstest (jede Trainings-/Speicher-Einstellung umgestellt, Training verglichen),
+alle Technik-Paare auf Überschreibungen und jede Komponente jeder Registry (Verlust, Optimierer, Planer, Schicht,
+Zusammenführung, Metrik, Callback im echten Training).
 
 ---
 

@@ -321,6 +321,14 @@ Zusätzlich: Batch automatisch teilen bei Speichermangel (`memory.oom_strategy='
 | Automatisch einstellen | Lernrate (LR-Finder), Batchgröße passend zum GPU-Speicher | `training.auto_lr`, `training.auto_batch_size` |
 | Schlanker Export | Hüllen entfernen, EMA, LoRA exakt, BatchNorm falten, Ungenutztes entfernen, Präzision, Prüfung, kompakte projekt.json | `deployment.export.*`, `export(...)`, `last_export` |
 
+## Diagnose & automatisch verbessern
+
+| Bereich | Möglichkeiten | Wo |
+|---|---|---|
+| Diagnose | instabil, lernt kaum, zu kurz, Überanpassung, kaum besser als Basis, Klassen-Ungleichgewicht, Kalibrierung, keine Testmenge, Validierung zu optimistisch – je mit Maßnahmen | `diagnose()`, `apply_diagnosis()`, CLI `diagnose`, GUI „Qualität“ |
+| Verbessern | Diagnose → Maßnahmen → neu trainieren, nur Verbesserungen bleiben | `improve(rounds)`, `Project.auto(improve=…)`, CLI `auto --verbessern` |
+| Wirkungsprüfung | geänderte, aber wirkungslose Einstellungen mit Grund und Abhilfe; Technik-Konflikte | `inactive_settings()`, Meldung vor `train()` |
+
 ## Anpassen – jede Schicht, jedes Modul, jeder Tensor
 
 Was sich wie fein verändern lässt (jeweils für alle, nur bestimmte oder genau einen Treffer).
@@ -502,6 +510,7 @@ Verstehen, was die KI tut.
 | `verteilt` | verteilt trainieren (mehrere GPUs/Rechner) |
 | `generieren` | aus gespeichertem Projekt generieren |
 | `auto` | von den Daten zur fertigen KI in einem Schritt |
+| `diagnose` | Diagnose nach dem Training mit konkreten Maßnahmen (optional anwenden) |
 | `hardware` | Rechengerät und automatisch gewählte Einstellungen |
 | `perfektion` | Anforderungs-Katalog: Perfektions-Check eines Projekts |
 | `datenpruefung` | Daten prüfen (Lecks, Duplikate, Klassen …) |

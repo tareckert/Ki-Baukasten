@@ -339,7 +339,16 @@ def _quality_sections() -> list[str]:
            "| Automatisch einstellen | Lernrate (LR-Finder), Batchgröße passend zum GPU-Speicher | `training.auto_lr`, "
            "`training.auto_batch_size` |",
            "| Schlanker Export | Hüllen entfernen, EMA, LoRA exakt, BatchNorm falten, Ungenutztes entfernen, Präzision, "
-           "Prüfung, kompakte projekt.json | `deployment.export.*`, `export(...)`, `last_export` |", ""]
+           "Prüfung, kompakte projekt.json | `deployment.export.*`, `export(...)`, `last_export` |", "",
+           "## Diagnose & automatisch verbessern", "",
+           "| Bereich | Möglichkeiten | Wo |", "|---|---|---|",
+           "| Diagnose | instabil, lernt kaum, zu kurz, Überanpassung, kaum besser als Basis, Klassen-Ungleichgewicht, "
+           "Kalibrierung, keine Testmenge, Validierung zu optimistisch – je mit Maßnahmen | `diagnose()`, "
+           "`apply_diagnosis()`, CLI `diagnose`, GUI „Qualität“ |",
+           "| Verbessern | Diagnose → Maßnahmen → neu trainieren, nur Verbesserungen bleiben | `improve(rounds)`, "
+           "`Project.auto(improve=…)`, CLI `auto --verbessern` |",
+           "| Wirkungsprüfung | geänderte, aber wirkungslose Einstellungen mit Grund und Abhilfe; Technik-Konflikte | "
+           "`inactive_settings()`, Meldung vor `train()` |", ""]
     return out
 
 

@@ -609,7 +609,10 @@ class BaukastenGUI(tk.Tk):
                          ("Hardware & automatische Einstellungen",
                           lambda: self.log_write("\n" + self.project.hardware_report() + "\n")),
                          ("Notfall-Optionen (Training)…", lambda: self.fallback_dialog(None))])
-        menu("Qualität", [("Perfektions-Check (Anforderungen)", self.perfection_check),
+        menu("Qualität", [("Diagnose nach dem Training", self.diagnose),
+                          ("Automatisch verbessern (2 Runden)", self.improve),
+                          ("Wirkungslose Einstellungen", self.inactive_settings), None,
+                          ("Perfektions-Check (Anforderungen)", self.perfection_check),
                           ("Alles Empfohlene einschalten", self.apply_perfection), None,
                           ("Datenprüfung", lambda: self._run_bg("Datenprüfung", lambda: str(self.project.data_check()))),
                           ("Daten-Vorschläge übernehmen", self.apply_data_fixes), None,
@@ -677,6 +680,28 @@ class BaukastenGUI(tk.Tk):
         self._run_bg("Automatisch aus Daten", job)
 
     # ------------------------------------------------------------ Qualität
+    def diagnose(self) -> None:
+        if not self.project.history:
+            self.log_write("Erst trainieren – die Diagnose liest die Lernkurven.\n")
+            return
+        self.log_write("\n" + str(self.project.diagnose()) + "\n")
+
+    def improve(self) -> None:
+        def job():
+            r = self.project.improve(2)
+            self.after(0, self.refresh_tree)
+            lines = [f"Runde {x['runde']}: {r['metrik']} {x['vorher']:.4g} → {x['nachher']:.4g} "
+                     f"({'behalten' if x['behalten'] else 'verworfen'}) – " + "; ".join(x["massnahmen"])
+                     for x in r["runden"]]
+            return "\n".join(lines + [f"{r['metrik']}: {r['start']:.4g} → {r['ende']:.4g}"])
+
+        self._run_bg("Automatisch verbessern", job)
+
+    def inactive_settings(self) -> None:
+        items = self.project.inactive_settings()
+        self.log_write("\n" + ("\n".join(f"⚠ {i}" for i in items) if items else
+                               "✓ Alle geänderten Einstellungen wirken.") + "\n")
+
     def perfection_check(self) -> None:
         self.log_write("\n" + str(self.project.perfection_check()) + "\n")
 

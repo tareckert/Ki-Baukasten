@@ -23,7 +23,11 @@ def test_search_methods(method):
              "training.optimizer.weight_decay": [0.0, 0.1]}
     res = p.tune(method, space=space, trials=3, steps_per_trial=8, population=3, generations=2)
     assert res.trials and math.isfinite(res.best.score)
-    assert p.get("training.optimizer.lr") == res.best_params["training.optimizer.lr"]   # übernommen
+    # übernommen – bei PBT genau die Einstellungen des behaltenen (fertig trainierten) Modells
+    applied = res.pbt_best["params"] if method == "pbt" else res.best_params
+    assert p.get("training.optimizer.lr") == applied["training.optimizer.lr"]
+    if method == "pbt":
+        assert p.model is not None
     if method in ("evolution", "pso", "pbt"):
         assert {t.generation for t in res.trials} == {0, 1}
 

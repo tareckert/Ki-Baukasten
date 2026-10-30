@@ -567,7 +567,8 @@ def cmd_auto(a: argparse.Namespace) -> None:
     for item in a.setze:
         path, value = item.split("=", 1)
         over[path.strip()] = _parse_value(value.strip())
-    p = Project.auto(a.daten, target=a.ziel, description=a.beschreibung or "", steps=a.schritte, **over)
+    p = Project.auto(a.daten, target=a.ziel, description=a.beschreibung or "", steps=a.schritte,
+                     improve=a.verbessern, **over)
     if p.last_test:
         print("Test: " + "  ".join(f"{k}={v:.4g}" for k, v in p.last_test.items()))
     if p.last_baseline:
@@ -579,6 +580,21 @@ def cmd_auto(a: argparse.Namespace) -> None:
 
 def cmd_hardware(a: argparse.Namespace) -> None:
     print(_open(a.quelle).hardware_report())
+
+
+def cmd_diagnose(a: argparse.Namespace) -> None:
+    p = _open(a.quelle, a.setze)
+    if not p.history:
+        p.train()
+    print(p.diagnose())
+    if a.verbessern:
+        result = p.improve(a.verbessern)
+        for r in result["runden"]:
+            print(f"Runde {r['runde']}: {result['metrik']} {r['vorher']:.4g} → {r['nachher']:.4g} "
+                  f"({'behalten' if r['behalten'] else 'verworfen'}) – " + "; ".join(r["massnahmen"]))
+        print(f"{result['metrik']}: {result['start']:.4g} → {result['ende']:.4g}")
+        if a.speichern:
+            print(f"Gespeichert in: {p.save(a.speichern)}")
 
 
 def cmd_perfektion(a: argparse.Namespace) -> None:
@@ -945,8 +961,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--beschreibung", help="wofür die KI gedacht ist (z. B. 'Kreditentscheidungen für Kunden')")
     sp.add_argument("--schritte", type=int, help="Trainingsschritte (Standard: Vorlage)")
     sp.add_argument("--setze", action="append", default=[], metavar="PFAD=WERT")
+    sp.add_argument("--verbessern", type=int, default=0, metavar="RUNDEN",
+                    help="danach automatisch verbessern (Diagnose → Maßnahmen → neu trainieren, nur Besseres bleibt)")
     sp.add_argument("--speichern", default=None, help="Zielordner (Standard: ausgaben/<vorlage>)")
     sp.set_defaults(fn=cmd_auto)
+
+    sp = sub.add_parser("diagnose", help="Diagnose nach dem Training mit konkreten Maßnahmen (optional anwenden)")
+    sp.add_argument("quelle", nargs="?", default="tabellen_klassifikation",
+                    help="gespeicherter Projektordner, Preset oder Konfigurationsdatei (wird dann trainiert)")
+    sp.add_argument("--setze", action="append", default=[], metavar="PFAD=WERT")
+    sp.add_argument("--verbessern", type=int, default=0, metavar="RUNDEN", help="Maßnahmen anwenden und neu trainieren")
+    sp.add_argument("--speichern", help="verbessertes Projekt speichern")
+    sp.set_defaults(fn=cmd_diagnose)
 
     sp = sub.add_parser("hardware", help="Rechengerät und automatisch gewählte Einstellungen")
     sp.add_argument("quelle", nargs="?", default="tabellen_klassifikation")

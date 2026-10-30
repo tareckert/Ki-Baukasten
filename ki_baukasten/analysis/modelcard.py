@@ -67,6 +67,24 @@ def _table(rows: dict[str, Any]) -> list[str]:
     return ["| Kennzahl | Wert |", "|---|---|"] + [f"| {k} | {_fmt(v)} |" for k, v in rows.items()]
 
 
+def data_sizes(project: Any) -> dict[str, int]:
+    """Größen von Trainings-, Validierungs- und Testmenge (soweit bekannt)."""
+    out: dict[str, int] = {}
+    bundle = getattr(project, "_bundle", None)
+    if bundle is not None:
+        split = project._test_split
+        n_train = _len(split[1]) if split is not None else _len(bundle.train)
+        trainer = project.trainer
+        n_val = _len(trainer.val_data) if trainer is not None and trainer.val_data is not None else _len(bundle.val)
+        if n_train:
+            out["training"] = n_train
+        if n_val:
+            out["validierung"] = n_val
+    if getattr(project, "test_data", None) is not None and _len(project.test_data):
+        out["test"] = _len(project.test_data)
+    return out
+
+
 def _len(data: Any) -> int | None:
     try:
         return len(data) if not isinstance(data, dict) else len(next(iter(data.values())))
@@ -109,16 +127,12 @@ def model_card(project: Any) -> str:
     lines.append(f"- Datensatz: `{cfg.data.name}`" + (f" ({cfg.data.args.path})" if getattr(cfg.data.args, "path", None)
                                                       else ""))
     info = project._info() if hasattr(project, "_info") else {}
-    bundle = project._bundle
-    if bundle is not None:
-        split = project._test_split
-        n_train = _len(split[1]) if split is not None else _len(bundle.train)
-        n_val = _len(project.trainer.val_data) if project.trainer is not None and project.trainer.val_data is not None \
-            else _len(bundle.val)
-        if n_train:
-            lines.append(f"- Training: {n_train} Beispiele" + (f", Validierung: {n_val}" if n_val else ""))
-    if project.test_data is not None:
-        lines.append(f"- Testmenge (nie im Training): {_len(project.test_data)} Beispiele")
+    sizes = data_sizes(project) or getattr(project, "_saved_sizes", None) or {}
+    if sizes.get("training"):
+        lines.append(f"- Training: {sizes['training']} Beispiele" +
+                     (f", Validierung: {sizes['validierung']}" if sizes.get("validierung") else ""))
+    if sizes.get("test"):
+        lines.append(f"- Testmenge (nie im Training): {sizes['test']} Beispiele")
     if info.get("label_names"):
         lines.append("- Klassen: " + ", ".join(map(str, info["label_names"][:30])))
     if info.get("features"):

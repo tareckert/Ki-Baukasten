@@ -218,6 +218,17 @@ def _tensor_source(ds: Any) -> tuple[dict, torch.Tensor | None] | None:
     return (ds.data, mapping) if all_tensors(ds.data) else None
 
 
+def as_tensor_dict(ds: Any) -> dict | None:
+    """Tensor-dict eines ``DictDataset`` bzw. (verschachtelten) ``Subset`` davon – sonst ``None``."""
+    if isinstance(ds, dict):
+        return ds
+    source = _tensor_source(ds)
+    if source is None:
+        return None
+    data, mapping = source
+    return data if mapping is None else _take(data, mapping)
+
+
 def _take(obj: Any, idx: torch.Tensor) -> Any:
     if isinstance(obj, dict):
         return {k: _take(v, idx) for k, v in obj.items()}

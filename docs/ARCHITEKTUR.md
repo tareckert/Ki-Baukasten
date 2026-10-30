@@ -61,6 +61,8 @@ flowchart LR
 | Hardware-Automatik | `memory/hardware.py`, `training/optimizers.py` (`_fast`) | `memory.mixed_precision/matmul_precision = 'auto'`, `cudnn_benchmark`/`channels_last`/`training.pin_memory` = None, `hardware_report()` |
 | Schlanker Export | `analysis/export.py` | `deployment.export.*`, `export(...)`, `last_export` |
 | Ein-Aufruf-Einstieg | `project.py` (`Project.auto`, `detect_data`) | CLI `auto`, GUI „Datei → Automatisch aus Daten…“ |
+| Diagnose & Verbessern | `analysis/diagnosis.py` | `diagnose()`, `apply_diagnosis()`, `improve()`, `Project.auto(improve=…)`, CLI `diagnose` |
+| Wirkungsprüfung | `analysis/effects.py`, `core/config.py` (`__omit__`) | `inactive_settings()`, Meldung vor `train()` |
 | Einsatz | `analysis/modelcard.py`, `data/artifacts.py`, `ui/serve.py` | `model_card()`, `save()/load()`, `predict_raw()`, `serve()`, `deployment.server.*`, `generation.*` |
 
 ---
@@ -194,6 +196,21 @@ Gewichte – so bleibt jede Kombination aus Umbau, Kompression und Training repr
 4. **`prepare_for_export`** arbeitet auf einer Kopie: Hüllen entfernen → EMA → LoRA → BatchNorm falten → ungenutzte
    Tensoren entfernen (Platzhalter ohne Verwendung im `torch.export`-Graphen, sonst Parameter ohne Gradient) →
    Präzision. Jeder riskante Schritt wird mit dem Original verglichen und bei Abweichung zurückgenommen.
+
+## 5d. Nichts geht stillschweigend verloren – Diagnose und Verbessern
+
+1. **Wirkungsprüfung** (`analysis/effects.py`): eine Regeltabelle *Muster → Schalter* (z. B. `memory.lora.*` braucht
+   `memory.lora.enabled`). Gemeldet werden nur Einstellungen, die der Nutzer gegenüber der Vorlage geändert hat.
+2. **Aufbau-Signatur**: `build()` merkt sich Modell, Regeln und strukturbestimmende Speicher-Einstellungen; weicht die
+   Konfiguration vor `train()` davon ab (direkte Zuweisung statt `set`), wird neu gebaut.
+3. **`__omit__`** in einer Konfigurationsklasse entfernt geerbte Einstellungen, die dort nichts bewirken; `update`
+   überspringt sie beim Laden alter Dateien mit Warnung, `set` meldet einen Fehler.
+4. **Techniken**: `Project.technique` vergleicht den Status aller Techniken vor/nach dem Einschalten und meldet, was
+   dadurch ausgeschaltet wurde. Techniken mit eigenem `off` (MC-Dropout/TTA) schalten nur ihren Anteil aus.
+5. **Diagnose** (`analysis/diagnosis.py`) liest `history` (Trainings- und Validierungseinträge), die Zähler
+   `trainer.skipped_steps`/`loss_spikes` und `last_baseline`/`last_test`; Maßnahmen sind Techniken (nur, wenn
+   anwendbar und aus) oder Einstellungen. `improve()` sichert vor jeder Runde Konfiguration, Modell, Trainer und
+   Verlauf und stellt sie wieder her, wenn die Validierung nicht besser wird.
 
 ## 6. Eigene Bausteine integrieren
 

@@ -125,6 +125,7 @@ class SearchResult:
     metric: str
     mode: str
     trials: list[Trial] = field(default_factory=list)
+    pbt_best: Any = field(default=None, repr=False)     # PBT: behaltenes Mitglied (Projekt + Einstellungen)
 
     @property
     def best(self) -> Trial:
@@ -243,7 +244,18 @@ def run_search(project: Any, cfg: Any = None, progress: bool = True) -> SearchRe
         _pbt(project, dims, s, rng, result, say)
     else:
         raise ConfigError(f"Unbekanntes Suchverfahren '{method}'.", "workflow.search.method")
-    if s.apply_best and result.trials and math.isfinite(result.best.score):
+    best_pbt = result.pbt_best
+    if s.apply_best and best_pbt is not None:
+        # PBT hat schon trainiert: Modell behalten (ein update() würde es verwerfen) und genau seine
+        # Einstellungen übernehmen – nicht die eines früheren Durchgangs.
+        trained = best_pbt["project"]
+        project.config.update(best_pbt["params"])
+        project.model, project.trainer = trained.model, trained.trainer
+        project.history = list(trained.history)
+        if hasattr(project, "_structure_signature"):
+            project._built_from = project._structure_signature()
+        say(f"  ✓ Bestes PBT-Modell samt Einstellungen übernommen: {best_pbt['params']}")
+    elif s.apply_best and result.trials and math.isfinite(result.best.score):
         project.update(result.best_params)
         say(f"  ✓ Beste Einstellungen übernommen: {result.best_params}")
     return result
@@ -333,6 +345,4 @@ def _pbt(project, dims, s, rng, result: SearchResult, say) -> None:
             loser["params"] = params
             for path, value in params.items():
                 loser["project"].config.set(path, value)      # direkt: Modell bleibt erhalten
-    best = members[0]
-    project.model = best["project"].model
-    project.trainer = best["project"].trainer
+    result.pbt_best = members[0]          # Modell + genau die Einstellungen, mit denen es trainiert wurde

@@ -107,6 +107,7 @@ class InverseSqrtConfig(SchedulerConfig):
 
 
 class OneCycleConfig(SchedulerConfig):
+    __omit__ = ("warmup_type", "warmup_start_factor", "min_lr_ratio")  # eigener Verlauf über div_factor
     warmup_ratio = Param(0.3, min=0.0, max=1.0, tooltip=T(
         "Anteil des Anstiegs zur Maximal-Lernrate (pct_start).", "Langer Anstieg, dann Abfall.", "0.25–0.3."))
     div_factor = Param(25.0, min=1.0, tooltip=T("Start-LR = max_lr / div_factor.", "Startniveau.", "25."),
@@ -137,8 +138,12 @@ class PlateauConfig(SchedulerConfig):
         "Reduktionsfaktor bei Stillstand.", "Wie stark die LR fällt.", "0.1–0.5."))
     patience = Param(2, min=0, tooltip=T(
         "Evaluierungen ohne Verbesserung bis zur Reduktion.", "Geduld.", "2–10."))
-    mode = Param("min", choices=["min", "max"], tooltip=T(
-        "Ob die Metrik kleiner (Verlust) oder größer (Genauigkeit) besser ist.", "Richtung.", "Verlust: min."))
+    monitor = Param("val_loss", tooltip=T(
+        "Beobachtete Validierungsmetrik (z. B. val_loss, val_accuracy).", "Woran 'keine Verbesserung' gemessen wird.",
+        "val_loss; fehlt sie, wird val_loss genommen."))
+    mode = Param("auto", choices={"auto": "aus dem Metriknamen (Verlust: min, Genauigkeit: max)", "min": "kleiner "
+                                  "ist besser", "max": "größer ist besser"}, tooltip=T(
+        "Ob die Metrik kleiner (Verlust) oder größer (Genauigkeit) besser ist.", "Richtung.", "auto."))
     threshold = Param(1e-4, min=0.0, tooltip=T("Mindestverbesserung (relativ).", "Rauschen ignorieren.", "1e-4."),
                       level=Level.EXPERT)
 
@@ -184,11 +189,22 @@ class PlateauScheduler:
     def step(self) -> None:
         self.inner.step()
 
-    def step_metric(self, value: float) -> None:
+    def observe(self, metrics: dict[str, float]) -> None:
+        """Nach jeder Validierung: die beobachtete Metrik (``monitor``, sonst ``val_loss``) auswerten."""
+        key = self.a.monitor if self.a.monitor in metrics else "val_loss"
+        if key in metrics:
+            self.step_metric(metrics[key], key)
+
+    def step_metric(self, value: float, name: str | None = None) -> None:
         a = self.a
+        mode = a.mode
+        if mode == "auto":
+            from .metrics import direction
+
+            mode = direction(name or a.monitor)
         if self.best is None:
             better = True
-        elif a.mode == "min":
+        elif mode == "min":
             better = value < self.best - abs(self.best) * a.threshold
         else:
             better = value > self.best + abs(self.best) * a.threshold

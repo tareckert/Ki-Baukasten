@@ -178,6 +178,8 @@ class Trainer:
         self.total_steps = 0
         self.history: list[dict[str, Any]] = []
         self.should_stop = False
+        self.skipped_steps = 0          # wegen NaN/Inf übersprungene Schritte (für Project.diagnose)
+        self.loss_spikes = 0            # erkannte Verlust-Spitzen
         self._micro: dict[str, int] = defaultdict(int)
         self._pending: set[str] = set()
         self._split = 1                          # >1 nach Speichermangel: Batch wird in so viele Stücke geteilt
@@ -346,7 +348,7 @@ class Trainer:
             x = torch.where(flip[:, None, None, None], x.flip(-2), x)
             if mask is not None:
                 mask = torch.where(flip[:, None, None], mask.flip(-2), mask)
-        if a.crop_padding:
+        if a.crop_padding:              # Ausschnitte sind Sichten, stack ist ein einziger Kopier-Kernel
             pad = a.crop_padding
             h, w = x.shape[-2:]
             mode = "reflect" if pad < min(h, w) else "constant"
@@ -357,15 +359,19 @@ class Trainer:
             if mask is not None:
                 pm = torch.nn.functional.pad(mask[:, None].float(), (pad, pad, pad, pad), mode=mode)[:, 0].long()
                 mask = torch.stack([pm[i, dy[i]:dy[i] + h, dx[i]:dx[i] + w] for i in range(n)])
-        if a.random_erasing:
+        if a.random_erasing:            # ganzer Batch auf einmal (vorher ein Kernel je Bild)
             h, w = x.shape[-2:]
-            x = x.clone()
-            for i in range(n):
-                if float(torch.rand(())) < a.random_erasing:
-                    eh, ew = max(1, int(h * float(torch.empty(()).uniform_(0.1, 0.4)))), \
-                        max(1, int(w * float(torch.empty(()).uniform_(0.1, 0.4))))
-                    y0, x0 = int(torch.randint(0, h - eh + 1, ())), int(torch.randint(0, w - ew + 1, ()))
-                    x[i, :, y0:y0 + eh, x0:x0 + ew] = 0.0
+            dev = x.device
+            hit = torch.rand(n, device=dev) < a.random_erasing
+            eh = (h * torch.empty(n, device=dev).uniform_(0.1, 0.4)).long().clamp_min(1)
+            ew = (w * torch.empty(n, device=dev).uniform_(0.1, 0.4)).long().clamp_min(1)
+            y0 = (torch.rand(n, device=dev) * (h - eh + 1)).long()
+            x0 = (torch.rand(n, device=dev) * (w - ew + 1)).long()
+            ys, xs = torch.arange(h, device=dev), torch.arange(w, device=dev)
+            in_y = (ys >= y0[:, None]) & (ys < (y0 + eh)[:, None])
+            in_x = (xs >= x0[:, None]) & (xs < (x0 + ew)[:, None])
+            erase = in_y[:, :, None] & in_x[:, None, :] & hit[:, None, None]
+            x = x.masked_fill(erase[:, None], 0.0)
         return x, mask
 
     def _cutmix(self, x: torch.Tensor, targets: torch.Tensor, alpha: float) -> tuple[torch.Tensor, torch.Tensor]:
@@ -461,6 +467,7 @@ class Trainer:
         self.zero_grad()
         self._micro.clear()
         self._pending.clear()
+        self.loss_spikes += 1
         if sg.spike_action == "rollback" and self._good_state is not None:
             model_state, opt_states = self._good_state
             target = getattr(self.model, "_orig_mod", self.model)
@@ -524,6 +531,7 @@ class Trainer:
             raise TrainingError(f"{what} ist NaN/Inf (Schritt {self.global_step}). Tipp: Lernrate senken, "
                                 f"Clipping aktivieren, bf16 statt fp16.")
         if policy == "skip":
+            self.skipped_steps += 1
             self.optimizers[key].zero_grad(set_to_none=True)
             self._micro[key] = 0
             self._pending.discard(key)
@@ -921,8 +929,8 @@ class Trainer:
         self.logger.metrics(self.global_step, metrics, "eval", kind="eval")
         self.history.append({"step": self.global_step, "epoch": self.epoch, **metrics})
         for sched in self.schedulers.values():
-            if hasattr(sched, "step_metric") and "val_loss" in metrics:
-                sched.step_metric(metrics["val_loss"])
+            if hasattr(sched, "observe"):
+                sched.observe(metrics)
         for cb in self.callbacks:
             cb.on_eval_end(self, metrics)
         return metrics

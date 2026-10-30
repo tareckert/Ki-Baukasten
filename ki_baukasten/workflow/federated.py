@@ -81,10 +81,15 @@ def federated_training(project: Any, cfg: Any = None) -> list[dict[str, Any]]:
     from ..training import Trainer
 
     f = cfg if cfg is not None else project.config.workflow.federated
+    from ..training.data_utils import as_tensor_dict
+
     bundle = project.data()
-    if not isinstance(bundle.train, dict):
+    if bundle.test is not None:
+        project.test_data = bundle.test
+    train = as_tensor_dict(project._hold_out_test(bundle.train))     # Testmenge zurückhalten wie bei train()
+    if train is None:
         raise ConfigError("Föderiertes Lernen braucht Daten als dict von Tensoren.")
-    train, val = bundle.train, bundle.val
+    val = bundle.val
     if val is None and project.config.training.validation_split > 0:
         # Ohne eigene Validierungsdaten: einen Teil zurückhalten, um das globale Modell zu messen.
         n = next(v for v in train.values() if isinstance(v, torch.Tensor)).shape[0]
@@ -144,6 +149,10 @@ def model_soup(project: Any, runs: int = 4, mode: str = "greedy") -> dict[str, A
     start = copy.deepcopy(base.state_dict())
     results = []
     seed0 = project.config.training.seed or 0
+    bundle = project.data()
+    if bundle.test is not None:
+        project.test_data = bundle.test
+    project._hold_out_test(bundle.train)       # eine Testmenge für alle Läufe (sonst sähe die Suppe alles)
     for i in range(runs):
         cfg = project.config.copy()
         cfg.training.seed = seed0 + i
@@ -152,6 +161,7 @@ def model_soup(project: Any, runs: int = 4, mode: str = "greedy") -> dict[str, A
         cfg.workflow.soup_runs = 0
         q = Project(cfg)
         q._bundle = project._bundle
+        q.test_data, q._test_split = project.test_data, project._test_split
         q.model = copy.deepcopy(base)
         q.model.load_state_dict(start)
         q.train()

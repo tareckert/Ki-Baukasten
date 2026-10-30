@@ -138,7 +138,9 @@ class SeqPred:
 
 
 def _ids(pred: Any) -> torch.Tensor:
-    return pred.ids if isinstance(pred, SeqPred) else pred.argmax(-1)
+    if isinstance(pred, SeqPred):
+        return pred.ids
+    return pred if not pred.is_floating_point() else pred.argmax(-1)     # schon Token-IDs (z. B. generiert)
 
 
 def _token_nll(pred: Any, target: torch.Tensor) -> torch.Tensor:
