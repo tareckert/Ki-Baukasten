@@ -35,6 +35,7 @@ Regeln im verteilten Training
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from dataclasses import dataclass
@@ -44,6 +45,50 @@ import torch
 from torch import nn
 
 from ..core import BaseConfig, ConfigError, Level, Param, T
+
+
+@contextlib.contextmanager
+def _numpy_free_broadcast():
+    """ZeRO-1 sammelt Optimierer-Zustände über ``_broadcast_object`` ein, das empfangene Bytes per
+    ``tensor.numpy()`` liest – ohne installiertes NumPy scheitert dann jeder Checkpoint. Ist NumPy nicht
+    vorhanden, wird hier vorübergehend eine gleichwertige Variante ohne NumPy eingesetzt (gleiche Bytes,
+    gleiches Tempo); mit NumPy bleibt alles unverändert."""
+    try:
+        import numpy  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        yield
+        return
+    import ctypes
+    import io
+
+    import torch.distributed as dist
+    from torch.distributed.optim import zero_redundancy_optimizer as zro
+
+    def broadcast_object(obj: Any, src_rank: int, group: Any = dist.group.WORLD,
+                         device: torch.device = torch.device("cpu")) -> Any:
+        if dist.get_rank() == src_rank:
+            buffer = io.BytesIO()
+            torch.save(obj, buffer)
+            data = bytearray(buffer.getbuffer())
+            dist.broadcast(torch.LongTensor([len(data)]).to(device), src=src_rank, group=group)
+            dist.broadcast(torch.ByteTensor(data).to(device), src=src_rank, group=group)
+            return obj
+        length = torch.LongTensor([0]).to(device)
+        dist.broadcast(length, src=src_rank, group=group)
+        received = torch.empty([int(length.item())], dtype=torch.uint8, device=device)
+        dist.broadcast(received, src=src_rank, group=group)
+        received = received.cpu().contiguous()
+        raw = ctypes.string_at(received.data_ptr(), received.numel())
+        return torch.load(io.BytesIO(raw), map_location=device, weights_only=False)
+
+    original = zro._broadcast_object
+    zro._broadcast_object = broadcast_object
+    try:
+        yield
+    finally:
+        zro._broadcast_object = original
 
 #: Paradigmen, die das Modell nur über ``model(...)`` aufrufen (dann sind DDP-/FSDP-Wrapper sicher).
 FORWARD_ONLY = {"supervised", "causal_lm", "masked_lm", "seq2seq", "contrastive", "distillation", "preference",
@@ -238,7 +283,8 @@ class DistributedContext:
 
     def consolidate(self, opt: torch.optim.Optimizer) -> None:
         if self.active and type(opt).__name__ == "ZeroRedundancyOptimizer":
-            opt.consolidate_state_dict(to=0)
+            with _numpy_free_broadcast():
+                opt.consolidate_state_dict(to=0)
 
     def model_state(self, model: nn.Module) -> dict[str, torch.Tensor]:
         """Vollständiger state_dict (bei FSDP von allen Prozessen eingesammelt)."""
