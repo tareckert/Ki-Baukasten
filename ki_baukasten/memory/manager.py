@@ -32,7 +32,7 @@ from torch.utils.checkpoint import checkpoint
 from ..core import ConfigError, select_indices
 from .config import MemoryConfig
 from .lora import apply_lora
-from .offload import OffloadManager, select_offload_blocks
+from .offload import OffloadManager, SplitManager, select_offload_blocks
 from .quant import quantize_model, quantize_torchao
 from .streaming import enable_block_streaming
 
@@ -157,13 +157,24 @@ class MemoryManager:
         c = self.cfg
         if c.cpu_threads:
             torch.set_num_threads(c.cpu_threads)
-        torch.set_float32_matmul_precision(c.matmul_precision)
+        from .hardware import resolve
+
+        #: aufgelöste ``auto``-Einstellungen {name: (wert, begründung)} – siehe ``memory.hardware``
+        self.resolved = resolve(c, self.device)
+        torch.set_float32_matmul_precision(self.resolved["matmul_precision"][0])
+        if c.cudnn_benchmark:
+            torch.backends.cudnn.benchmark = True
         if c.max_memory_fraction and self.device.type == "cuda":
             torch.cuda.set_per_process_memory_fraction(c.max_memory_fraction, self.device)
 
     @property
+    def precision(self) -> str:
+        """Tatsächlich genutzte gemischte Präzision (``auto`` aufgelöst): none | bf16 | fp16."""
+        return self.resolved["mixed_precision"][0]
+
+    @property
     def autocast_dtype(self) -> torch.dtype | None:
-        return {"bf16": torch.bfloat16, "fp16": torch.float16}.get(self.cfg.mixed_precision)
+        return {"bf16": torch.bfloat16, "fp16": torch.float16}.get(self.precision)
 
     def apply_structure(self, model: nn.Module, training: bool = True) -> nn.Module:
         """Strukturelle Umbauten (Quantisierung, LoRA) – ohne Geräte-Platzierung."""
@@ -198,21 +209,41 @@ class MemoryManager:
             enable_gradient_checkpointing(model, c.checkpoint_layers)
         if c.offload.mode == "stream":
             blocks = [m for _, m in select_offload_blocks(model, c.offload)]
-            self.streams = enable_block_streaming(model, blocks, self.device, c.offload.pin_memory, c.offload.prefetch)
+            self.streams = enable_block_streaming(model, blocks, self.device, c.offload.pin_memory, c.offload.prefetch,
+                                                  c.offload.storage, c.offload.directory)
+        elif c.offload.mode == "split":
+            existing = getattr(model, "_ki_offloader", None)
+            if existing is not None:
+                self.offloader = existing
+            else:
+                self.offloader = SplitManager(model, c.offload, self.device)  # type: ignore[assignment]
+                self.offloader.attach()
+                model._ki_offloader = self.offloader
+        elif c.offload.mode != "none" and training and any(
+                p.requires_grad for _, b in select_offload_blocks(model, c.offload) for p in b.parameters()):
+            # Auslagern (cpu/disk) ist für Inferenz gedacht; trainierbare Blöcke → gleichwertiges Streaming
+            storage = "disk" if c.offload.mode == "disk" else "ram"
+            warnings.warn(f"memory.offload.mode='{c.offload.mode}' mit trainierbaren Blöcken: im Training wird "
+                          f"trainierbares Streaming genutzt (storage='{storage}').")
+            blocks = [m for _, m in select_offload_blocks(model, c.offload)]
+            self.streams = enable_block_streaming(model, blocks, self.device, c.offload.pin_memory, c.offload.prefetch,
+                                                  storage, c.offload.directory)
         elif c.offload.mode != "none":
-            self.offloader = OffloadManager(model, c.offload, self.device)
-            self.offloader.attach()
-            if training and self.offloader.trainable_offloaded():
-                raise ConfigError(
-                    f"Offload-Modus '{c.offload.mode}' ist nur für Inferenz oder eingefrorene Blöcke, "
-                    f"trainierbar sind aber: {self.offloader.trainable_offloaded()[:3]} … "
-                    "→ memory.offload.mode='stream' (trainierbares Auslagern in den RAM) verwenden "
-                    "oder die Blöcke einfrieren.",
-                    "memory.offload.mode",
-                )
+            existing = getattr(model, "_ki_offloader", None)
+            if existing is not None:              # schon ausgelagert – nicht erneut (SSD-Dateien blieben sonst leer)
+                self.offloader = existing
+            else:
+                self.offloader = OffloadManager(model, c.offload, self.device)  # type: ignore[assignment]
+                self.offloader.attach()
+                model._ki_offloader = self.offloader
         else:
             model = model.to(self.device)
-        if c.channels_last:
+        from .hardware import resolve
+
+        self.resolved = resolve(c, self.device, model)
+        if self.resolved["cudnn_benchmark"][0] and self.device.type == "cuda":
+            torch.backends.cudnn.benchmark = True
+        if self.resolved["channels_last"][0]:
             model = model.to(memory_format=torch.channels_last)
         if c.compile:
             model = torch.compile(model, mode=c.compile_mode)  # type: ignore[assignment]
@@ -231,7 +262,7 @@ class MemoryManager:
 
     def grad_scaler(self) -> torch.amp.GradScaler | None:
         mode = self.cfg.grad_scaler
-        use = mode == "on" or (mode == "auto" and self.cfg.mixed_precision == "fp16")
+        use = mode == "on" or (mode == "auto" and self.precision == "fp16")
         if not use:
             return None
         return torch.amp.GradScaler(self.device.type)

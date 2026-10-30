@@ -97,8 +97,9 @@ class AdamConfig(OptimizerConfig):
         "AMSGrad-Variante (monotones 2. Moment).", "Theoretische Konvergenzgarantie, praktisch selten besser.",
         "Experimente."), level=Level.EXPERT)
     fused = Param(None, type=bool, tooltip=T(
-        "Fusionierte CUDA-Implementierung (None = PyTorch entscheidet).", "Schneller auf GPUs.",
-        "Geschwindigkeit auf CUDA."), level=Level.EXPERT, group="Geschwindigkeit")
+        "Fusionierte Implementierung (None = automatisch: fusioniert, wenn das Gerät es kann – CPU/GPU; "
+        "False = Standard).", "Ein Kernel für alle Parameter – auf CPU und GPU deutlich schneller.",
+        "None lassen."), level=Level.EXPERT, group="Geschwindigkeit")
 
 
 class AdamWConfig(AdamConfig):
@@ -110,6 +111,7 @@ class AdamWConfig(AdamConfig):
 
 
 class AdamW8bitConfig(AdamWConfig):
+    __omit__ = ("amsgrad", "fused")          # eigene Implementierung: weder AMSGrad noch fusionierter Kernel
     block_size = Param(256, min=16, tooltip=T(
         "Blockgröße der 8-Bit-Quantisierung der Optimierer-Zustände.",
         "Jeder Block hat eine eigene Skala – kleiner = genauer, minimal mehr Speicher.", "256."),
@@ -124,6 +126,7 @@ class AdamW8bitConfig(AdamWConfig):
 
 
 class NAdamConfig(AdamConfig):
+    __omit__ = ("amsgrad", "fused")          # torch.optim.NAdam kennt beides nicht
     momentum_decay = Param(4e-3, min=0.0, tooltip=T(
         "Momentum-Zerfall von NAdam.", "Steuert Nesterov-Anteil über die Zeit.", "Selten."), level=Level.EXPERT)
 
@@ -398,6 +401,38 @@ class Muon(Optimizer):
 R = OPTIMIZERS.register
 
 
+_FUSED_DEVICES = ("cuda", "cpu", "mps", "xpu")
+
+
+def _fast(cls: type, a: BaseConfig, groups: Any, **kw: Any) -> torch.optim.Optimizer:
+    """Optimierer in der schnellsten verfügbaren Ausführung bauen.
+
+    ``fused = None`` (Standard): fusionierter Kernel, wenn alle Parameter Gleitkomma auf einem unterstützten
+    Gerät liegen (auf der CPU oft 3–5× schneller als die Einzel-Tensor-Variante), sonst ``foreach``, sonst die
+    Standardausführung. ``fused = False`` erzwingt die Standardausführung.
+    """
+    fused = kw.pop("fused", None)
+    params = [p for g in (groups if isinstance(groups, list) else [{"params": groups}])
+              for p in (g["params"] if isinstance(g, dict) else [g])]
+    devices = {p.device.type for p in params}
+    floating = all(p.is_floating_point() for p in params)
+    attempts: list[dict[str, Any]] = []
+    if fused is None and floating and len(devices) == 1 and devices <= set(_FUSED_DEVICES):
+        attempts += [{"fused": True}, {"foreach": True}]
+    elif fused:
+        attempts.append({"fused": True})
+    attempts.append({})
+    last: Exception | None = None
+    for extra in attempts:
+        try:
+            return cls(groups, **kw, **extra)
+        except (RuntimeError, TypeError, ValueError) as exc:  # Variante auf diesem Gerät/Typ nicht verfügbar
+            last = exc
+            if extra.get("fused") and fused:                   # ausdrücklich gewünscht → Fehler zeigen
+                raise
+    raise last  # type: ignore[misc]
+
+
 def _kw(a: BaseConfig, *names: str) -> dict[str, Any]:
     out = {}
     for n in names:
@@ -408,18 +443,20 @@ def _kw(a: BaseConfig, *names: str) -> dict[str, Any]:
     return out
 
 
-R("sgd", lambda a, g: torch.optim.SGD(g, nesterov=a.nesterov and a.momentum > 0,
-                                       **_kw(a, "lr", "momentum", "dampening", "weight_decay")),
+R("sgd", lambda a, g: _fast(torch.optim.SGD, a, g, nesterov=a.nesterov and a.momentum > 0,
+                                **_kw(a, "lr", "momentum", "dampening", "weight_decay")),
   config=SGDConfig, tooltip=T(
       "Stochastischer Gradientenabstieg (mit Momentum/Nesterov).",
       "Einfach, wenig Speicher, generalisiert oft am besten (CNNs).",
       "Bildklassifikation (ResNet), wenn genug Tuning-Zeit vorhanden.",
   ))
-R("adam", lambda a, g: torch.optim.Adam(g, **_kw(a, "lr", "betas", "eps", "weight_decay", "amsgrad", "fused")),
+R("adam", lambda a, g: _fast(torch.optim.Adam, a, g, **_kw(a, "lr", "betas", "eps", "weight_decay", "amsgrad",
+                                                             "fused")),
   config=AdamConfig, tooltip=T(
       "Adam: adaptive Schrittweite pro Parameter.", "Robust, schnell, wenig Tuning.",
       "Allzweck; mit weight_decay besser AdamW nehmen."))
-R("adamw", lambda a, g: torch.optim.AdamW(g, **_kw(a, "lr", "betas", "eps", "weight_decay", "amsgrad", "fused")),
+R("adamw", lambda a, g: _fast(torch.optim.AdamW, a, g, **_kw(a, "lr", "betas", "eps", "weight_decay", "amsgrad",
+                                                               "fused")),
   config=AdamWConfig, tags=("transformer",), tooltip=T(
       "AdamW: Adam mit entkoppeltem Gewichtsverfall.",
       "De-facto-Standard für Transformer und die meisten modernen Netze.", "Fast alles."))

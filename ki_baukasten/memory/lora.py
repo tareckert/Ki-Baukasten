@@ -203,19 +203,47 @@ def apply_lora(model: nn.Module, cfg: LoRAConfig) -> list[str]:
     return names
 
 
+#: Was ``merge_lora`` mit Adaptern auf **quantisierten** Basisschichten (QLoRA) macht.
+QUANTIZED_MERGE = {
+    "neu_quantisieren": "einrechnen und neu quantisieren (klein, aber verlustbehaftet: die Adapter-Korrektur ist oft "
+                        "kleiner als der Quantisierungsfehler)",
+    "behalten": "Adapter neben der quantisierten Basis behalten (exakt, klein – zwei kleine Zusatz-Matmuls)",
+    "entquantisieren": "in eine Gleitkomma-Schicht mit eingerechnetem Adapter umwandeln (exakt, größer)",
+}
+
+
 @torch.no_grad()
-def merge_lora(model: nn.Module) -> int:
-    """Rechnet alle Adapter in die Basisgewichte ein und entfernt sie. Liefert die Anzahl Schichten."""
+def merge_lora(model: nn.Module, quantized: str = "neu_quantisieren") -> int:
+    """Rechnet die Adapter in die Basisgewichte ein und entfernt sie. Liefert die Anzahl eingerechneter Schichten.
+
+    ``quantized`` (siehe ``QUANTIZED_MERGE``) steuert Schichten mit quantisierter Basis; Gleitkomma-Schichten
+    werden immer exakt eingerechnet.
+    """
+    if quantized not in QUANTIZED_MERGE:
+        raise ValueError(f"quantized='{quantized}' unbekannt. Erlaubt: {', '.join(QUANTIZED_MERGE)}.")
     n = 0
-    for module in list(model.modules()):
+    for name, module in list(model.named_modules()):
         if not getattr(module, "_ki_lora", False):
+            continue
+        is_quant = isinstance(module, QuantLinear)
+        if is_quant and quantized == "behalten":
             continue
         A, B, s = module.lora_A, module.lora_B, module.lora_scaling
         w = _base_weight(module, torch.float32) + s * (B.float() @ A.float())
         if module.lora_magnitude is not None:
             w = w * (module.lora_magnitude / w.norm(dim=1).clamp_min(1e-8)).unsqueeze(1)
+        if is_quant and quantized == "entquantisieren":
+            dense = nn.Linear(module.in_features, module.out_features, bias=module.bias is not None,
+                              device=w.device, dtype=module.compute_dtype or torch.float32)
+            dense.weight.copy_(w.to(dense.weight.dtype))
+            if module.bias is not None:
+                dense.bias.copy_(module.bias.to(dense.bias.dtype))
+            parent_name, _, attr = name.rpartition(".")
+            setattr(model.get_submodule(parent_name) if parent_name else model, attr, dense)
+            n += 1
+            continue
         base_cls = type(module)._ki_lora_base
-        if isinstance(module, QuantLinear):
+        if is_quant:
             data = quantize_weight(w, module.fmt, module.group_size)
             module.qweight.copy_(data["qweight"])
             module.scales.copy_(data["scales"])

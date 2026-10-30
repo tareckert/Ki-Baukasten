@@ -182,6 +182,7 @@ def capabilities_markdown() -> str:
            f"{total} Komponenten in {len(regs)} Registries – jede überall per Name einsetzbar. "
            "Einzelheiten zu jeder Einstellung: [PARAMETER_REFERENZ.md](PARAMETER_REFERENZ.md), "
            "innerer Aufbau: [ARCHITEKTUR.md](ARCHITEKTUR.md).", ""]
+    out += _overview_sections()
     for title, intro, rows in _CURATED:
         out += [f"## {title}", "", intro, "", "| Möglichkeit | Wo | Wirkung |", "|---|---|---|"]
         out += [f"| {a} | {b} | {c} |" for a, b, c in rows]
@@ -209,10 +210,146 @@ def capabilities_markdown() -> str:
     for action in parser._subparsers._group_actions:  # noqa: SLF001 - argparse bietet keine öffentliche Liste
         for choice in action._choices_actions:  # noqa: SLF001
             out.append(f"| `{choice.dest}` | {_esc(choice.help or '')} |")
-    out += ["", "Grafische Oberfläche: `python -m ki_baukasten gui` – Einstellungsbaum mit Tooltips, Prüfen, Bauen, "
-            "Speicher, Trainieren, Aufbau, Optimieren, Probelauf & Gewichte, Reduzieren/Export, Modell importieren, "
-            "Rückgängig/Wiederholen.", ""]
+    out += ["", "Grafische Oberfläche: `python -m ki_baukasten gui` – Menü (Datei · Assistent · Einstellungen · "
+            "Techniken · Ausführen · Analyse · Qualität · Einsatz · Hilfe; „Datei → Automatisch aus Daten…“), "
+            "Ziel-Assistent, Techniken-Fenster mit "
+            "Reitern, Perfektions-Check, Datenprüfung, Test, Basis, Fehleranalyse, Kalibrierung, Modellkarte, "
+            "HTTP-Dienst, "
+            "Einstellungsbaum mit Tooltips und An/Aus/Eigen-Schaltern je Einstellung, Ansichtsfilter, Probelauf & "
+            "Gewichte, Reduzieren/Export mit Notfall-Ausführung, Modell importieren, Rückgängig/Wiederholen.", ""]
     return "\n".join(out)
+
+
+def _overview_sections() -> list[str]:
+    """Bedienkonzept, Ziel-Assistent, Techniken-Katalog, Notfall-Ausführung, Logger, Cluster, Ablauf."""
+    from ..analysis.goals import PRIORITIES, TASKS
+    from ..techniques import CATALOG, CATEGORIES
+
+    out = ["## Bedienung in drei Ebenen", "",
+           "So bleibt es trotz über tausend Einstellungen übersichtlich:", "",
+           "| Ebene | Wofür | Wo |", "|---|---|---|",
+           "| 1. Ziele | Aufgabe, wichtige Punkte, Zielgerät angeben → Modell wird empfohlen, Unpassendes abgeraten | "
+           "`Project.from_goals(...)`, CLI `ziele`, GUI „Neue KI nach Zielen“ |",
+           "| 2. Techniken | bewährte Verfahren mit einem Häkchen an/aus (Status ● ○ ◐ –) | "
+           "`Project.enable/disable`, CLI `techniken`, GUI „Techniken“ |",
+           "| 3. Einstellungen | jede einzelne Einstellung: An · Aus · Eigen, mit Tooltip | "
+           "`Project.switch/set`, CLI `schalter`, GUI-Formular + Ansichtsfilter |", "",
+           "Jede Einstellung hat einen Zustand **an** (empfohlener Wert), **aus** (z. B. Dropout 0, Komponente "
+           "`none`) oder **eigen** (eigener Wert); Pflicht-Einstellungen (z. B. `d_model`) kennen nur an/eigen. "
+           "`p.set('**.dropout', 'aus')`, `p.switch('training.regularization', 'aus')`, `p.switch_overview()`.", "",
+           "## Ziel-Assistent", "",
+           "`Project.from_goals(task=…, priorities=[…], data_size=…, target=…, description='…')` bewertet alle "
+           "Vorlagen mit Begründung (✓ Stärken, ✗ Schwächen), rät von unpassenden ab, schlägt Techniken vor und "
+           "speichert die Ziele im Projekt (`goals`) – später änderbar: `set_goals(...)`, `goal_check()`.", "",
+           "| Aufgabe | Beschreibung |", "|---|---|"]
+    out += [f"| `{k}` | {v} |" for k, v in TASKS.items()]
+    out += ["", "Prioritäten: " + ", ".join(f"`{k}` ({v})" for k, v in PRIORITIES.items()) + ".", "",
+            "## Techniken-Katalog", "",
+            f"{len(CATALOG)} Techniken, die Communitys, Forschung und Firmen nutzen – jede an/abwählbar "
+            "(`p.enable('qlora')`, `p.disable('qlora')` stellt den vorherigen Zustand exakt wieder her).", ""]
+    for cat, (title, desc) in CATEGORIES.items():
+        out += [f"### {title}", "", desc, "", "| Kennung | Technik | Wer nutzt es | Hinweis |", "|---|---|---|---|"]
+        out += [f"| `{t.key}` | {_esc(t.title)} | {_esc(t.used_by)} | {_esc(t.hint)} |" for t in CATALOG
+                if t.category == cat]
+        out.append("")
+    out += ["## Notfall-Ausführung (wenn es trotz Verkleinern nicht passt)", "",
+            "`Project.fallback_options(ziel | budget_mb, training)`, `apply_fallback('auto' | kennung)`, "
+            "`reduce_for(ziel, fallback='auto')`, CLI `notfall`, GUI „Reduzieren / Export → Notfall-Ausführung“.", "",
+            "| Kennung | Wie | Modus |", "|---|---|---|",
+            "| `micro_batch` | Eingaben stückweise (`predict(chunk_size=…)`, `memory.oom_strategy`) | Inferenz |",
+            "| `split` | hintere Blöcke dauerhaft auf der CPU (`offload.mode=split`, device_map) | Inferenz/Training |",
+            "| `ram_offload` | Blöcke im RAM, einzeln aufs Gerät (`offload.mode=cpu`) | Inferenz |",
+            "| `disk_offload` / `layerweise_stapel` | Schicht für Schicht von der SSD (Memory-Map) | Inferenz |",
+            "| `quantisieren_nf4` | 4-Bit-Gewichte ohne Training | Inferenz |",
+            "| `sparsam` | Checkpointing + Mikro-Batches + Akkumulation + bf16 | Training |",
+            "| `optimierer_8bit` | 8-Bit-AdamW | Training |",
+            "| `lisa` | nur wenige, wechselnde Blöcke trainieren | Training |",
+            "| `lora` / `qlora` | nur Adapter trainieren (Basis ggf. 4 Bit) | Training |",
+            "| `stream` | Gewichte/Gradienten/Optimierer im RAM, Blöcke gestreamt | Training |",
+            "| `stream_disk_lora` | eingefrorene Basis auf der SSD, Adapter im RAM | Training |",
+            "| `cpu` | auf der CPU rechnen | beides |",
+            "| `cluster` | FSDP über mehrere Geräte | Training |", "",
+            "Zusätzlich: Batch automatisch teilen bei Speichermangel (`memory.oom_strategy='batch_teilen'`), "
+            "Chunked Prefill für lange Prompts (`generate(..., prefill_chunk=512)`), Laden per Memory-Map "
+            "(`Project.load(ordner, mmap=True)`).", "",
+            "## Logger", "",
+            "`training.logging`: Stufe `still` · `minimal` · `normal` · `ausfuehrlich` · `debug`; Ziele frei kombinierbar "
+            "(`console`, `datei` mit Rotation, `jsonl`, `csv`, `python` (Standard-logging), `tensorboard`, `wandb`, "
+            "`mlflow`), eigene Stufe je Ziel, Intervalle, Durchsatz/Speicher/Lernrate/Gradientennorm, Statistiken je "
+            "Tensor. Eigene Logger: `projekt.add_logger(objekt_oder_logging.Logger)` oder Registry `log_backend`.", "",
+            "## Cluster & verteiltes Training", "",
+            "`training.distributed.strategy`: `ddp` (Daten parallel), `zero1` (Optimierer verteilt), `fsdp` (alles "
+            "verteilt). Start: `python -m ki_baukasten verteilt projekt.json --prozesse 4 --strategie fsdp` (mehrere "
+            "Rechner: `--knoten`, `--knoten-rang`, `--master`). Ausgaben und Speichern nur auf Prozess 0.", "",
+            "## Ablauf: Suche, Schwarm, Evolution", "",
+            "`Project.run()` führt `workflow` aus: Datenprüfung → Suche (`random`, `grid`, `evolution`, `pso`, `pbt`) "
+            "→ Training (normal, föderiert FedAvg/FedProx, Model Soup) → Test → Basis-Vergleich → Kalibrierung → "
+            "Robustheit/Fairness → Kreuzvalidierung → Kompression → Export → Speichern. Einzeln: `tune(...)`, "
+            "`federated_train(...)`, `model_soup(...)`, `cross_validate(k)`, `find_lr()`. Gradientenfrei: Paradigma "
+            "`evolution_strategies`.", ""]
+    out += _quality_sections()
+    return out
+
+
+def _quality_sections() -> list[str]:
+    """Anforderungs-Katalog, Daten, Bewertung, Vertrauen, Einsatz."""
+    from ..requirements import CATALOG, PHASES, coverage
+
+    cov = coverage()
+    out = ["## Anforderungs-Katalog & Perfektions-Check", "",
+           f"{len(CATALOG)} Anforderungen in {len(PHASES)} Phasen ({', '.join(PHASES.values())}), je Anwendung; "
+           f"{cov['vorhanden']} davon sind im Baukasten umsetzbar. `project.perfection_check()` zeigt für das eigene "
+           "Projekt aktiv · eingebaut · aus · offen · fehlt mit Punktzahl, `apply_perfection()` schaltet alles "
+           "Empfohlene ein, CLI `perfektion`, GUI „Qualität“. Vollständig: [ANFORDERUNGEN.md](ANFORDERUNGEN.md).", "",
+           "## Daten, Bewertung, Vertrauen, Einsatz", "",
+           "| Bereich | Möglichkeiten | Wo |", "|---|---|---|",
+           "| Eigene Daten | CSV (Kategorien, fehlende Werte + Indikator, Skalierung, Ziel-Skalierung), Texte mit Labels "
+           "(Tokenizer zeichen/wort/bpe), Bildordner, Segmentierungs-Masken, Audio (WAV → Log-Mel), Anweisungen (SFT) | "
+           "`data = csv`, `text_classification`, `image_folder`, `segmentation`, `audio`, `instructions` |",
+           "| Aufteilung | zufällig, stratifiziert, zeitlich; Testmenge, die beim Neutrainieren fest bleibt | "
+           "`training.validation_strategy`, `training.test_split`, `Project.test()` |",
+           "| Datenprüfung & Drift | Lecks, Duplikate, Überlappung, Klassen, NaN, Skalen, abgeschnittene Texte; PSI/KS "
+           "je Merkmal, Vorhersage-Drift | `data_check()`, `apply_data_fixes()`, `drift_report()` |",
+           "| Metriken | 27 Metriken (Registry `metric`), automatisch je Aufgabe, über alle Beispiele, Richtung für "
+           "Early Stopping/Suche automatisch | `training.metrics`, `training.auto_metrics` |",
+           "| Bewertung | Basis-Vergleich, Fehleranalyse (Konfusionsmatrix, sicherste Fehler), Klassengewichte | "
+           "`baseline()`, `error_analysis()`, `training.class_weights` |",
+           "| Vertrauen | Temperature Scaling, Schwelle, Enthaltung, Conformal Prediction, MC-Dropout, TTA | "
+           "`inference.*`, `calibrate()`, `predict_with_uncertainty()` |",
+           "| Erklärbarkeit & Fairness | Gradient × Eingabe, Integrated Gradients, Occlusion (auch Tokens), "
+           "Permutations-Wichtigkeit; Disparate Impact, Equalized Odds | `explain_prediction()`, "
+           "`feature_importance()`, `fairness_report()` |",
+           "| Robustheit | FGSM/PGD-Training, Robustheitsbericht (Rauschen/Angriffe) | `training.adversarial`, "
+           "`robustness_report()` |",
+           "| Wenige Labels | Active Learning (Unsicherheit, Marge, Entropie, Vielfalt), Pseudo-Labeling | "
+           "`select_for_labeling()`, `pseudo_label()` |",
+           "| Domänen | U-Net-Segmentierung, Audio-Klassifikation, Instruction-Tuning (Verlust nur auf Antworten), "
+           "Beam Search, n-Gramm-Sperre | `model = unet`, `ask()`, `generation.*` |",
+           "| Einsatz | Modellkarte, Umgebung, gespeicherte Vorverarbeitung, Rohdaten-Vorhersage, HTTP-Dienst, "
+           "Fortsetzen vom Checkpoint | `model_card()`, `save/load`, `predict_raw()`, `serve()`, "
+           "`training.resume_from` |", "",
+           "## Leistung, Hardware & schlanker Export", "",
+           "| Bereich | Möglichkeiten | Wo |", "|---|---|---|",
+           "| Ein Aufruf | Datenart erkennen → Vorlage → Empfehlungen → Training → Test → Basis | `Project.auto(datei)`, "
+           "CLI `auto` |",
+           "| Hardware-Automatik | bf16/fp16/aus, TF32, cuDNN-Benchmark, channels_last, gepinnter Speicher je Gerät | "
+           "`memory.* = auto`, `hardware_report()`, CLI `hardware` |",
+           "| Tempo | fusionierter Optimierer, `TensorBatchLoader`, eine Synchronisation je Schritt, GQA ohne KV-Kopien | "
+           "automatisch |",
+           "| Automatisch einstellen | Lernrate (LR-Finder), Batchgröße passend zum GPU-Speicher | `training.auto_lr`, "
+           "`training.auto_batch_size` |",
+           "| Schlanker Export | Hüllen entfernen, EMA, LoRA exakt, BatchNorm falten, Ungenutztes entfernen, Präzision, "
+           "Prüfung, kompakte projekt.json | `deployment.export.*`, `export(...)`, `last_export` |", "",
+           "## Diagnose & automatisch verbessern", "",
+           "| Bereich | Möglichkeiten | Wo |", "|---|---|---|",
+           "| Diagnose | instabil, lernt kaum, zu kurz, Überanpassung, kaum besser als Basis, Klassen-Ungleichgewicht, "
+           "Kalibrierung, keine Testmenge, Validierung zu optimistisch – je mit Maßnahmen | `diagnose()`, "
+           "`apply_diagnosis()`, CLI `diagnose`, GUI „Qualität“ |",
+           "| Verbessern | Diagnose → Maßnahmen → neu trainieren, nur Verbesserungen bleiben | `improve(rounds)`, "
+           "`Project.auto(improve=…)`, CLI `auto --verbessern` |",
+           "| Wirkungsprüfung | geänderte, aber wirkungslose Einstellungen mit Grund und Abhilfe; Technik-Konflikte | "
+           "`inactive_settings()`, Meldung vor `train()` |", ""]
+    return out
 
 
 def export_capabilities(path: str | Path = "docs/MOEGLICHKEITEN.md") -> Path:

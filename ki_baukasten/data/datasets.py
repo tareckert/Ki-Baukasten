@@ -29,6 +29,11 @@ from typing import Any
 import torch
 
 from ..core import BaseConfig, Level, Param, T, create_registry
+from .files import (CSVConfig, ImageFolderConfig, TextClassificationConfig, load_csv, load_image_folder,
+                    load_text_classification)
+from .tokenizers import KINDS as TOKENIZERS, CharTokenizer, make_tokenizer  # noqa: F401 - CharTokenizer: Export
+from .domains import (AudioDataConfig, InstructionDataConfig, SegmentationDataConfig, load_audio,  # noqa: E402
+                      load_instructions, load_segmentation)
 
 DATASETS = create_registry(
     "dataset",
@@ -49,25 +54,7 @@ class DatasetBundle:
     train: Any
     val: Any = None
     info: dict[str, Any] = field(default_factory=dict)
-
-
-class CharTokenizer:
-    """Einfacher Zeichen-Tokenizer (ID 0 = Padding)."""
-
-    def __init__(self, text: str):
-        self.chars = sorted(set(text))
-        self.stoi = {c: i + 1 for i, c in enumerate(self.chars)}
-        self.itos = {i + 1: c for i, c in enumerate(self.chars)}
-
-    @property
-    def vocab_size(self) -> int:
-        return len(self.chars) + 1
-
-    def encode(self, text: str) -> list[int]:
-        return [self.stoi[c] for c in text if c in self.stoi]
-
-    def decode(self, ids: Any) -> str:
-        return "".join(self.itos.get(int(i), "") for i in ids)
+    test: Any = None            # optionale, nie fürs Training benutzte Testmenge (Project.test)
 
 
 BEISPIELTEXT = (
@@ -116,7 +103,7 @@ class RegressionDataConfig(SizeConfig):
 
 class SequenceDataConfig(SizeConfig):
     task = Param("parity", choices={"parity": "Parität der Einsen (Gedächtnis über die ganze Folge)",
-                                    "contains": "enthält die Folge ein bestimmtes Token?",
+                                    "contains": "enthält die Folge ein bestimmtes Token? (Klassen ausgewogen)",
                                     "majority": "häufigstes Token"}, tooltip=T(
         "Sequenzklassifikationsaufgabe.", "Testet Langzeitgedächtnis / globale Aggregation.", "parity ist schwer."))
     seq_len = Param(16, min=2, tooltip=T("Folgenlänge.", "Länger = schwieriger.", "8–64."))
@@ -132,6 +119,12 @@ class TextDataConfig(BaseConfig):
     stride = Param(8, min=1, tooltip=T("Schrittweite der Ausschnitte.", "Kleiner = mehr (überlappende) Beispiele.", "seq_len/4."))
     repeat = Param(4, min=1, tooltip=T("Text so oft wiederholen (für sehr kurze Texte).", "Mehr Trainingsbeispiele.", "1–20."),
                    level=Level.ADVANCED)
+    tokenizer = Param("zeichen", choices=TOKENIZERS, tooltip=T(
+        "Tokenizer für den Text.", "Zeichen: winziges Vokabular; BPE: kürzere Folgen, mehr Inhalt pro Kontext (wie "
+        "GPT/LLaMA).", "Kleine Texte: zeichen; größere Korpora: bpe."))
+    vocab_size = Param(500, min=8, tooltip=T(
+        "Vokabulargröße für wort/bpe.", "Größer = kürzere Folgen, größere Einbettungen.", "500–32.000."),
+        level=Level.ADVANCED)
 
 
 class Seq2SeqDataConfig(SizeConfig):
@@ -181,17 +174,6 @@ class AnomalyDataConfig(SizeConfig):
     n_features = Param(16, min=2, tooltip=T("Merkmale.", "Eingabebreite.", "8–64."))
     anomaly_fraction = Param(0.05, min=0.0, max=0.5, tooltip=T(
         "Anteil Anomalien in der Testmenge.", "Seltenheit der Ausreißer.", "0.01–0.1."))
-
-
-class CSVConfig(BaseConfig):
-    path = Param("daten.csv", tooltip=T("CSV-Datei mit Kopfzeile.", "Eigene Tabellendaten.", "Nur numerische Spalten."))
-    target = Param(None, type=str, tooltip=T(
-        "Zielspalte (None = letzte Spalte).", "Was vorhergesagt werden soll.", "Spaltenname."))
-    task = Param("auto", choices={"auto": "Ganzzahlige Ziele → Klassifikation", "classification": "Klassifikation",
-                                  "regression": "Regression"}, tooltip=T("Aufgabentyp.", "Datentyp des Ziels.", "auto."))
-    delimiter = Param(",", tooltip=T("Trennzeichen.", "CSV-Dialekt.", "',' oder ';'."), level=Level.ADVANCED)
-    standardize = Param(True, tooltip=T(
-        "Merkmale standardisieren (Mittel 0, Std 1).", "Wichtig für neuronale Netze.", "an."), level=Level.ADVANCED)
 
 
 class TensorFileConfig(BaseConfig):
@@ -256,8 +238,13 @@ def _sequence(a: SequenceDataConfig) -> DatasetBundle:
     x = torch.randint(1, a.vocab_size, (a.n_samples, a.seq_len), generator=g)
     if a.task == "parity":
         y = (x == 1).sum(1) % 2
-    elif a.task == "contains":
-        y = (x == a.vocab_size - 1).any(1).long()
+    elif a.task == "contains":                     # ausgewogen: die Hälfte enthält das Token, die andere nicht
+        token = a.vocab_size - 1
+        x = torch.randint(1, max(2, token), (a.n_samples, a.seq_len), generator=g)
+        y = (torch.rand(a.n_samples, generator=g) < 0.5).long()
+        pos = torch.randint(0, a.seq_len, (a.n_samples,), generator=g)
+        rows = y.bool().nonzero().squeeze(1)
+        x[rows, pos[rows]] = token
     else:
         y = torch.stack([torch.bincount(r, minlength=a.vocab_size) for r in x]).argmax(1)
     return DatasetBundle({"inputs": x, "targets": y}, info={"vocab_size": a.vocab_size, "seq_len": a.seq_len,
@@ -267,7 +254,7 @@ def _sequence(a: SequenceDataConfig) -> DatasetBundle:
 def _text(a: TextDataConfig) -> DatasetBundle:
     text = Path(a.path).read_text(encoding="utf-8") if a.path else (a.text or BEISPIELTEXT)
     text = text * a.repeat
-    tok = CharTokenizer(text)
+    tok = make_tokenizer(a.tokenizer, text, a.vocab_size)
     ids = torch.tensor(tok.encode(text))
     L = a.seq_len + 1
     if len(ids) < L:
@@ -321,7 +308,8 @@ def _images(a: ImageDataConfig) -> DatasetBundle:
     imgs = imgs + torch.randn(imgs.shape, generator=g) * a.noise
     return DatasetBundle({"inputs": imgs, "targets": y}, info={"in_channels": a.channels, "input_size": [s, s],
                                                               "output_dim": 3, "task": "classification",
-                                                              "classes": ["Quadrat", "Kreis", "Kreuz"]})
+                                                              "classes": ["Quadrat", "Kreis", "Kreuz"],
+                                                              "label_names": ["Quadrat", "Kreis", "Kreuz"]})
 
 
 class GraphDataset(torch.utils.data.Dataset):
@@ -418,26 +406,6 @@ def _anomaly(a: AnomalyDataConfig) -> DatasetBundle:
                          info={"input_dim": a.n_features, "task": "anomaly"})
 
 
-def _csv(a: CSVConfig) -> DatasetBundle:
-    with open(a.path, newline="", encoding="utf-8") as f:
-        rows = list(csv.reader(f, delimiter=a.delimiter))
-    header, body = rows[0], [r for r in rows[1:] if r]
-    target = a.target or header[-1]
-    if target not in header:
-        raise ValueError(f"Zielspalte '{target}' nicht in {header}.")
-    ti = header.index(target)
-    data = torch.tensor([[float(v) for v in r] for r in body])
-    y = data[:, ti]
-    x = torch.cat([data[:, :ti], data[:, ti + 1:]], 1)
-    if a.standardize:
-        x = (x - x.mean(0)) / (x.std(0) + 1e-8)
-    is_cls = a.task == "classification" or (a.task == "auto" and bool(torch.all(y == y.round())) and y.unique().numel() <= 50)
-    targets = y.long() if is_cls else y.unsqueeze(1)
-    info = {"input_dim": x.shape[1], "output_dim": int(y.max()) + 1 if is_cls else 1,
-            "task": "classification" if is_cls else "regression", "features": [h for h in header if h != target]}
-    return DatasetBundle({"inputs": x, "targets": targets}, info=info)
-
-
 def _tensor_file(a: TensorFileConfig) -> DatasetBundle:
     train = torch.load(a.path, map_location="cpu", weights_only=False)
     val = torch.load(a.val_path, map_location="cpu", weights_only=False) if a.val_path else None
@@ -487,8 +455,27 @@ R("preferences", _preferences, config=PreferenceDataConfig, aliases=("praeferenz
     "Präferenzpaare (bevorzugt/abgelehnt) aus verstecktem Urteil.", "Reward-Modell-Training.", "Präferenz-Presets."))
 R("anomaly", _anomaly, config=AnomalyDataConfig, aliases=("anomalien",), tooltip=T(
     "Normaldaten zum Training + Testmenge mit Anomalien.", "Anomalieerkennung per Autoencoder.", "AE-Presets."))
-R("csv", _csv, config=CSVConfig, tags=("eigene",), tooltip=T(
-    "Eigene CSV-Datei (numerische Spalten).", "Eigene Tabellendaten ohne Code.", "Echte Projekte."))
+R("csv", load_csv, config=CSVConfig, tags=("eigene",), tooltip=T(
+    "Eigene CSV-Tabelle: Zahlen- und Kategorie-Spalten, fehlende Werte, Skalierung ohne Datenleckage.",
+    "Eigene Tabellendaten ohne Code – vorbereitet wie in der Praxis üblich.", "Echte Projekte."))
+R("text_classification", load_text_classification, config=TextClassificationConfig,
+  aliases=("textklassifikation", "texte_mit_labels"), tags=("nlp", "eigene"), tooltip=T(
+      "Texte mit Labels aus CSV/TSV (oder eingebautes Stimmungs-Beispiel) mit Tokenizer zeichen/wort/bpe.",
+      "Spam, Stimmung, Themen, Absichten – mit Attention-Maske für Auffüllung.", "Textklassifikation."))
+R("image_folder", load_image_folder, config=ImageFolderConfig, aliases=("bildordner",), tags=("vision", "eigene"),
+  tooltip=T("Bilder aus ordner/<klasse>/*.png|jpg (Pillow), Größe angepasst und normiert.",
+            "Eigene Bilddaten ohne Code.", "Bildklassifikation mit echten Fotos."))
+R("segmentation", load_segmentation, config=SegmentationDataConfig, aliases=("segmentierung",),
+  tags=("vision", "segmentierung"), tooltip=T(
+      "Bilder mit Masken (eine Klasse je Pixel): synthetische Formen oder eigene Ordner bilder/ + masken/.",
+      "Segmentierung ohne Code – für U-Net/CNN mit task='dense'.", "Medizin, Satellit, Qualitätskontrolle."))
+R("audio", load_audio, config=AudioDataConfig, aliases=("audio_klassifikation", "geraeusche"), tags=("audio",),
+  tooltip=T("Audio-Klassifikation aus WAV-Ordnern (oder synthetischen Tönen) als Log-Mel-Spektrogramm/Wellenform.",
+            "Sprachbefehle, Geräusche, Maschinenüberwachung – ohne Zusatzpakete.", "CNN auf Spektrogrammen."))
+R("instructions", load_instructions, config=InstructionDataConfig, aliases=("anweisungen", "sft", "chat"),
+  tags=("nlp",), tooltip=T(
+      "Frage→Antwort-Paare (JSONL/CSV oder Beispielaufgaben) für Instruction-Tuning; Verlust nur auf Antworten.",
+      "Aus einem Sprachmodell wird ein Assistent, der Anweisungen befolgt (SFT).", "Mit Project.ask(frage)."))
 R("tensor_file", _tensor_file, config=TensorFileConfig, aliases=("pt",), tags=("eigene",), tooltip=T(
     "Eigene torch.save-Datei mit Tensoren.", "Beliebige vorbereitete Daten.", "Echte Projekte."))
 R("none", lambda a: DatasetBundle(None), aliases=("keine",), tooltip=T(

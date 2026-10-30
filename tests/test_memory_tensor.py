@@ -34,9 +34,17 @@ def test_offload_inference_exact(mode, tmp_path):
         assert torch.allclose(mm(x), ref, atol=1e-6)
 
 
-def test_offload_training_is_rejected():
-    with pytest.raises(Exception, match="stream"):
-        Trainer(build_model(SPEC), TrainingConfig(verbose=False), MemoryConfig(offload={"mode": "cpu"}))
+@pytest.mark.parametrize("mode", ["cpu", "disk"])
+def test_offload_training_switches_to_streaming(mode, tmp_path):
+    """Auslagern (cpu/disk) ist für Inferenz – mit trainierbaren Blöcken wird gleichwertig gestreamt."""
+    with pytest.warns(UserWarning, match="Streaming"):
+        tr = Trainer(build_model(SPEC), TrainingConfig(paradigm="causal_lm", verbose=False, max_steps=2,
+                                                       validation_split=0.0),
+                     MemoryConfig(offload={"mode": mode, "directory": str(tmp_path)}))
+    assert tr.mem.streams and tr.mem.offloader is None
+    assert any(getattr(m, "_ki_streamed", False) for m in tr.model.modules())
+    tr.fit({"inputs": torch.randint(0, 40, (16, 12))})
+    assert tr.global_step == 2
 
 
 @pytest.mark.parametrize("spec", [

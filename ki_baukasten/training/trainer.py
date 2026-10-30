@@ -15,6 +15,8 @@ Was der Trainer übernimmt
   Datenaugmentation: Mixup, Eingaberauschen
 * Lernraten-Zeitpläne (pro Schritt), EMA der Gewichte
 * Evaluierung, Logging, Callbacks, Curriculum, Checkpoints (speichern/fortsetzen)
+* Speichermangel (``memory.oom_strategy = "batch_teilen"``): Batch automatisch teilen und
+  per Akkumulation weiterrechnen – das Training bricht nicht ab, das Ergebnis bleibt gleich
 
 Ablauf eines Optimierungsschritts (``optimize``)
 ------------------------------------------------
@@ -41,8 +43,12 @@ from torch import nn
 
 from ..core import ConfigError, TrainingError, format_number
 from ..memory import MemoryConfig, MemoryManager
+from ..memory.execution import batch_len, free_memory, is_oom, split_batch
 from .config import TrainingConfig
-from .data_utils import (CurriculumSampler, as_dataset, difficulty_of, make_loader, split_dataset, to_device)
+from .data_utils import (CurriculumSampler, as_dataset, class_weight_tensor, difficulty_of, make_loader, split_dataset,
+                         to_device)
+from .distributed import DistributedContext
+from .logger import RunLogger, memory_now
 from .losses import build_losses
 
 
@@ -63,17 +69,31 @@ def set_seed(seed: int | None, deterministic: bool = False) -> None:
 
 
 class EMA:
-    """Exponentiell gleitender Mittelwert der Gewichte (fp32-Schattenkopie)."""
+    """Exponentiell gleitender Mittelwert der Gewichte (fp32-Schattenkopie).
 
-    def __init__(self, model: nn.Module, decay: float):
-        self.decay = decay
+    Mit Aufwärmphase: effektive Abklingrate ``min(decay, (1 + n) / (10 + n))`` nach ``n`` Aktualisierungen
+    (wie TensorFlow/timm) – sonst bestünde die EMA nach kurzen Läufen fast nur aus den Startgewichten.
+    Nur trainierbare Parameter werden gemittelt; die Aktualisierung läuft gebündelt (``torch._foreach``).
+    """
+
+    def __init__(self, model: nn.Module, decay: float, warmup: bool = True):
+        self.decay, self.warmup, self.updates = decay, warmup, 0
         self.shadow = {n: p.detach().float().clone() for n, p in model.named_parameters()}
+
+    def current_decay(self) -> float:
+        return min(self.decay, (1 + self.updates) / (10 + self.updates)) if self.warmup else self.decay
 
     @torch.no_grad()
     def update(self, model: nn.Module) -> None:
-        for n, p in model.named_parameters():
-            s = self.shadow[n]
-            s.mul_(self.decay).add_(p.detach().float(), alpha=1 - self.decay)
+        d = self.current_decay()
+        self.updates += 1
+        pairs = [(self.shadow[n], p.detach()) for n, p in model.named_parameters() if p.requires_grad]
+        if not pairs:
+            return
+        shadows = [s for s, _ in pairs]
+        params = [p if p.dtype == torch.float32 and p.device == s.device else p.float().to(s.device)
+                  for s, p in pairs]
+        torch._foreach_lerp_(shadows, params, 1 - d)
 
     @contextlib.contextmanager
     def applied(self, model: nn.Module) -> Iterator[None]:
@@ -95,10 +115,11 @@ class EMA:
                 p.copy_(self.shadow[n].to(p.dtype))
 
     def state_dict(self) -> dict:
-        return {"decay": self.decay, "shadow": self.shadow}
+        return {"decay": self.decay, "shadow": self.shadow, "updates": self.updates}
 
     def load_state_dict(self, state: dict) -> None:
         self.decay, self.shadow = state["decay"], state["shadow"]
+        self.updates = state.get("updates", 10 ** 6)       # alte Checkpoints: Aufwärmen vorbei
 
 
 _LAYER_RX = re.compile(r"(?:^|\.)(?:blocks|layers|encoder_blocks|stages)\.(\d+)\.")
@@ -120,12 +141,20 @@ class Trainer:
     """
 
     def __init__(self, model: nn.Module, config: TrainingConfig | None = None, memory: MemoryConfig | None = None,
-                 surgeon: Any = None, teacher: nn.Module | None = None, callbacks: list | None = None):
+                 surgeon: Any = None, teacher: nn.Module | None = None, callbacks: list | None = None,
+                 log_backends: list | None = None, run_name: str = "training", run_config: dict | None = None):
         self.cfg = (config or TrainingConfig()).validate()
         set_seed(self.cfg.seed, self.cfg.deterministic)
         self.mem = MemoryManager(memory)
+        self.dist = DistributedContext(self.cfg.distributed, self.mem.device)
+        self.logger = RunLogger(self.cfg.logging, self.cfg.verbose, self.dist.main, log_backends,
+                                self.cfg.log_every_steps)
+        self.run_name = run_name
+        self.run_config = run_config
+        self.mem.device = self.dist.device
         self.device = self.mem.device
         self.model = self.mem.prepare_model(model, training=True)
+        self.model = self.dist.wrap(self.model, self.cfg.paradigm.name, self.mem.precision)
         self.raw_model = model
         self.surgeon = surgeon
         if surgeon is not None:
@@ -142,20 +171,67 @@ class Trainer:
         self.group_params: dict[str, list[nn.Parameter]] = {}
         self._build_optimizers()
         self.schedulers: dict[str, Any] = {}
-        self.ema = EMA(self.model, self.cfg.ema.decay) if self.cfg.ema.enabled else None
+        self.ema = EMA(self.model, self.cfg.ema.decay, self.cfg.ema.warmup) if self.cfg.ema.enabled else None
         self.callbacks = [spec.build() for spec in self.cfg.callbacks] + list(callbacks or [])
         self.global_step = 0
         self.epoch = 0
         self.total_steps = 0
         self.history: list[dict[str, Any]] = []
         self.should_stop = False
+        self.skipped_steps = 0          # wegen NaN/Inf übersprungene Schritte (für Project.diagnose)
+        self.loss_spikes = 0            # erkannte Verlust-Spitzen
         self._micro: dict[str, int] = defaultdict(int)
         self._pending: set[str] = set()
+        self._split = 1                          # >1 nach Speichermangel: Batch wird in so viele Stücke geteilt
+        self._seen = [0, 0, time.time()]         # Beispiele, Tokens, Zeitpunkt seit der letzten Ausgabe
+        self._loss_ema: float | None = None      # Spitzen-Schutz: gleitender Mittelwert des Verlusts
+        self._guard_steps = 0
+        self._good_state: tuple | None = None    # Sicherungsstand für spike_action = rollback
+        self._grok: dict[int, torch.Tensor] = {}
+        self._slow: dict[int, torch.Tensor] = {}
+        self._la_count: dict[str, int] = defaultdict(int)
+        self._dp_sum: dict[int, torch.Tensor] = {}
+        self._collector: Any = None              # sammelt Vorhersagen während evaluate() (Metriken)
+        self.class_weight: torch.Tensor | None = None
+        self._warned_metrics: set[str] = set()
+        self.val_data: Any = None
+        self._resumed = False
+        #: optional ``f(pred, target) -> (pred, target)``: Regressionsziele vor den Metriken zurückrechnen
+        #: (z. B. CSV mit ``target_scaling`` → Fehler in echten Einheiten).
+        self.target_inverse: Callable | None = None
+        if self.cfg.privacy.enabled:
+            if any(isinstance(m, nn.modules.batchnorm._BatchNorm) for m in self.model.modules()):
+                raise ConfigError("DP-SGD (training.privacy) braucht Gradienten pro Beispiel – BatchNorm mischt Beispiele "
+                                  "eines Batches. Tipp: GroupNorm/LayerNorm verwenden.", "training.privacy.enabled")
+            if self.scaler is not None:
+                raise ConfigError("DP-SGD (training.privacy) ist nicht mit fp16-Loss-Scaling kombinierbar.")
+            self._split = max(1, self.cfg.batch_size)   # jedes Beispiel einzeln rechnen (Gradient pro Beispiel)
+
+    @property
+    def _pin(self) -> bool:
+        """Gepinnter Speicher: ``training.pin_memory`` (None = automatisch an auf CUDA)."""
+        pin = self.cfg.pin_memory
+        return self.device.type == "cuda" if pin is None else bool(pin)
+
+    @property
+    def accumulation(self) -> int:
+        """Effektive Akkumulationsschritte (Einstellung × automatische Batch-Teilung)."""
+        return self.cfg.gradient_accumulation_steps * self._split
+
+    @property
+    def module(self) -> nn.Module:
+        """Das eigentliche Modell (ohne DDP-Hülle) – für Vorhersage, Speichern, Export."""
+        return self.dist.unwrap(self.model)
 
     # ===================================================================== Aufbau
-    def log(self, text: str) -> None:
-        if self.cfg.verbose:
-            print(text, flush=True)
+    def collect(self, pred: Any, target: Any, kind: str = "auto") -> None:
+        """Von Paradigmen in der Evaluierung aufgerufen: Vorhersagen für die Metriken sammeln."""
+        if self._collector is not None:
+            self._collector.add(pred, target, kind)
+
+    def log(self, text: str, kind: str = "info") -> None:
+        """Meldung an alle Logger-Ziele (``kind``: info, warnung, eval, fortschritt, detail, debug)."""
+        self.logger.message(kind, text)
 
     def _layer_scale(self, name: str, n_layers: int) -> float:
         d = self.cfg.layerwise_lr_decay
@@ -201,7 +277,7 @@ class Trainer:
             groups = self._param_groups(named, spec)
             if not groups:
                 continue
-            self.optimizers[key] = spec.build(groups)
+            self.optimizers[key] = self.dist.wrap_optimizer(spec.build(groups))
             self.group_params[key] = [p for g in groups for p in g["params"]]
         unknown = set(overrides) - set(self.optimizers)
         if unknown:
@@ -224,12 +300,28 @@ class Trainer:
         return target.collect_aux_losses() if hasattr(target, "collect_aux_losses") else None
 
     def augment(self, inputs: Any, targets: Any) -> tuple[Any, Any]:
-        """Eingaberauschen und Mixup (nur für Gleitkomma-Tensoren)."""
+        """Augmentierung (Spiegeln, Ausschnitt, Ausradieren, CutMix, Token-Rauschen), Eingaberauschen, Mixup."""
         r = self.cfg.regularization
+        a = self.cfg.augmentation
+        if isinstance(inputs, torch.Tensor) and not inputs.is_floating_point() and inputs.dim() == 2 and a.token_noise:
+            vocab = self._num_classes_attr("vocab_size")
+            if vocab:
+                swap = torch.rand(inputs.shape, device=inputs.device) < a.token_noise
+                inputs = torch.where(swap, torch.randint_like(inputs, vocab), inputs)
+        # Ziele je Position (Segmentierungsmasken, Token-Labels): kein Mixup/CutMix, Geometrie wird mitgeführt
+        dense = isinstance(targets, torch.Tensor) and targets.dim() >= 2 and not targets.is_floating_point()
+        if isinstance(inputs, torch.Tensor) and inputs.is_floating_point() and inputs.dim() == 4:
+            mask = targets if dense and targets.dim() == 3 and targets.shape[-2:] == inputs.shape[-2:] else None
+            inputs, mask = self._augment_images(inputs, mask)
+            if mask is not None:
+                targets = mask
+            if a.cutmix_alpha > 0 and isinstance(targets, torch.Tensor) and not dense and inputs.shape[0] > 1 and \
+                    (r.mixup_alpha <= 0 or torch.rand(()) < 0.5):
+                return self._cutmix(inputs, targets, a.cutmix_alpha)
         if isinstance(inputs, torch.Tensor) and inputs.is_floating_point():
             if r.input_noise_std > 0:
                 inputs = inputs + torch.randn_like(inputs) * r.input_noise_std
-            if r.mixup_alpha > 0 and isinstance(targets, torch.Tensor) and inputs.shape[0] > 1:
+            if r.mixup_alpha > 0 and isinstance(targets, torch.Tensor) and not dense and inputs.shape[0] > 1:
                 lam = float(torch.distributions.Beta(r.mixup_alpha, r.mixup_alpha).sample())
                 perm = torch.randperm(inputs.shape[0], device=inputs.device)
                 inputs = lam * inputs + (1 - lam) * inputs[perm]
@@ -240,6 +332,68 @@ class Trainer:
                 else:
                     targets = lam * targets + (1 - lam) * targets[perm]
         return inputs, targets
+
+    def _augment_images(self, x: torch.Tensor, mask: torch.Tensor | None = None
+                        ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Bild-Augmentierung; eine Segmentierungsmaske ``[N, H, W]`` wird geometrisch genauso verändert."""
+        a = self.cfg.augmentation
+        n = x.shape[0]
+        if a.hflip:
+            flip = torch.rand(n, device=x.device) < 0.5
+            x = torch.where(flip[:, None, None, None], x.flip(-1), x)
+            if mask is not None:
+                mask = torch.where(flip[:, None, None], mask.flip(-1), mask)
+        if a.vflip:
+            flip = torch.rand(n, device=x.device) < 0.5
+            x = torch.where(flip[:, None, None, None], x.flip(-2), x)
+            if mask is not None:
+                mask = torch.where(flip[:, None, None], mask.flip(-2), mask)
+        if a.crop_padding:              # Ausschnitte sind Sichten, stack ist ein einziger Kopier-Kernel
+            pad = a.crop_padding
+            h, w = x.shape[-2:]
+            mode = "reflect" if pad < min(h, w) else "constant"
+            padded = torch.nn.functional.pad(x, (pad, pad, pad, pad), mode=mode)
+            dy = torch.randint(0, 2 * pad + 1, (n,)).tolist()
+            dx = torch.randint(0, 2 * pad + 1, (n,)).tolist()
+            x = torch.stack([padded[i, :, dy[i]:dy[i] + h, dx[i]:dx[i] + w] for i in range(n)])
+            if mask is not None:
+                pm = torch.nn.functional.pad(mask[:, None].float(), (pad, pad, pad, pad), mode=mode)[:, 0].long()
+                mask = torch.stack([pm[i, dy[i]:dy[i] + h, dx[i]:dx[i] + w] for i in range(n)])
+        if a.random_erasing:            # ganzer Batch auf einmal (vorher ein Kernel je Bild)
+            h, w = x.shape[-2:]
+            dev = x.device
+            hit = torch.rand(n, device=dev) < a.random_erasing
+            eh = (h * torch.empty(n, device=dev).uniform_(0.1, 0.4)).long().clamp_min(1)
+            ew = (w * torch.empty(n, device=dev).uniform_(0.1, 0.4)).long().clamp_min(1)
+            y0 = (torch.rand(n, device=dev) * (h - eh + 1)).long()
+            x0 = (torch.rand(n, device=dev) * (w - ew + 1)).long()
+            ys, xs = torch.arange(h, device=dev), torch.arange(w, device=dev)
+            in_y = (ys >= y0[:, None]) & (ys < (y0 + eh)[:, None])
+            in_x = (xs >= x0[:, None]) & (xs < (x0 + ew)[:, None])
+            erase = in_y[:, :, None] & in_x[:, None, :] & hit[:, None, None]
+            x = x.masked_fill(erase[:, None], 0.0)
+        return x, mask
+
+    def _cutmix(self, x: torch.Tensor, targets: torch.Tensor, alpha: float) -> tuple[torch.Tensor, torch.Tensor]:
+        lam = float(torch.distributions.Beta(alpha, alpha).sample())
+        h, w = x.shape[-2:]
+        ch, cw = int(h * (1 - lam) ** 0.5), int(w * (1 - lam) ** 0.5)
+        cy, cx = int(torch.randint(0, h, ())), int(torch.randint(0, w, ()))
+        y0, y1 = max(0, cy - ch // 2), min(h, cy + ch // 2)
+        x0, x1 = max(0, cx - cw // 2), min(w, cx + cw // 2)
+        perm = torch.randperm(x.shape[0], device=x.device)
+        x = x.clone()
+        x[:, :, y0:y1, x0:x1] = x[perm, :, y0:y1, x0:x1]
+        lam = 1 - (y1 - y0) * (x1 - x0) / (h * w)
+        if not targets.is_floating_point():
+            onehot = torch.nn.functional.one_hot(targets.long(), self._num_classes(targets)).float()
+            return x, lam * onehot + (1 - lam) * onehot[perm]
+        return x, lam * targets + (1 - lam) * targets[perm]
+
+    def _num_classes_attr(self, attr: str) -> int | None:
+        cfg = getattr(getattr(self.model, "_orig_mod", self.model), "config", None)
+        v = getattr(cfg, attr, None) if cfg is not None else None
+        return v if isinstance(v, int) and v > 1 else None
 
     def _num_classes(self, targets: torch.Tensor) -> int:
         cfg = getattr(getattr(self.model, "_orig_mod", self.model), "config", None)
@@ -281,15 +435,95 @@ class Trainer:
         if self.penalties and key == self.paradigm.primary_key:
             for fn in self.penalties:
                 loss = loss + fn()
-        if not torch.isfinite(loss.detach()):
+        if self.cfg.nan_policy == "raise" and not torch.isfinite(loss.detach()):
             return self._handle_nan(key, "Verlust")
-        scaled = loss / self.cfg.gradient_accumulation_steps
-        (self.scaler.scale(scaled) if self.scaler is not None else scaled).backward()
+        if self.cfg.stability.spike_guard and key == self.paradigm.primary_key and self._is_spike(float(loss.detach())):
+            return self._handle_spike(key, float(loss.detach()))
+        if self.cfg.privacy.enabled:
+            return self._dp_backward(loss, key, closure)
+        scaled = loss / self.accumulation
+        last = (self._micro[key] + 1) % self.accumulation == 0
+        with self.dist.no_sync(self.model, skip=not last):
+            (self.scaler.scale(scaled) if self.scaler is not None else scaled).backward()
         self._micro[key] += 1
         self._pending.add(key)
-        if self._micro[key] % self.cfg.gradient_accumulation_steps:
+        if self._micro[key] % self.accumulation:
             return False
         return self._step(key, closure)
+
+    # ------------------------------------------------------------ Stabilität: Verlust-Spitzen
+    def _is_spike(self, value: float) -> bool:
+        sg = self.cfg.stability
+        spike = (self._loss_ema is not None and self._guard_steps >= sg.spike_warmup
+                 and value > sg.spike_factor * max(self._loss_ema, 1e-8))
+        if not spike:
+            self._loss_ema = value if self._loss_ema is None else \
+                sg.spike_window * self._loss_ema + (1 - sg.spike_window) * value
+            self._guard_steps += 1
+        return spike
+
+    def _handle_spike(self, key: str, value: float) -> bool:
+        sg = self.cfg.stability
+        self.zero_grad()
+        self._micro.clear()
+        self._pending.clear()
+        self.loss_spikes += 1
+        if sg.spike_action == "rollback" and self._good_state is not None:
+            model_state, opt_states = self._good_state
+            target = getattr(self.model, "_orig_mod", self.model)
+            target.load_state_dict(model_state)
+            for k, o in self.optimizers.items():
+                o.load_state_dict(opt_states[k])
+            for k, o in self.optimizers.items():
+                for g in o.param_groups:
+                    g["lr"] *= sg.rollback_lr_factor
+                sched = self.schedulers.get(k)
+                if sched is not None and hasattr(sched, "base_lrs"):
+                    sched.base_lrs = [b * sg.rollback_lr_factor for b in sched.base_lrs]
+            self.log(f"⚠ Verlust-Spitze ({value:.4g} > {sg.spike_factor}× Mittel {self._loss_ema:.4g}) – zurück auf "
+                     f"den letzten guten Stand, Lernrate × {sg.rollback_lr_factor}.", "warnung")
+        else:
+            self.log(f"⚠ Verlust-Spitze ({value:.4g} > {sg.spike_factor}× Mittel {self._loss_ema:.4g}) – Schritt "
+                     "übersprungen.", "warnung")
+        return False
+
+    def _save_good_state(self) -> None:
+        import copy as _copy
+
+        target = getattr(self.model, "_orig_mod", self.model)
+        model_state = {k: v.detach().to("cpu", copy=True) for k, v in target.state_dict().items()}
+        self._good_state = (model_state, {k: _copy.deepcopy(o.state_dict()) for k, o in self.optimizers.items()})
+
+    # ------------------------------------------------------------ Datenschutz: DP-SGD
+    def _dp_backward(self, loss: torch.Tensor, key: str, closure: Any) -> bool:
+        """Gradient eines einzelnen Beispiels begrenzen und aufsummieren; beim Schritt Rauschen hinzufügen."""
+        pc = self.cfg.privacy
+        loss.backward()
+        params = [p for p in self.group_params[key] if p.grad is not None]
+        norm = torch.sqrt(sum(p.grad.float().square().sum() for p in params)) if params else torch.zeros(())
+        factor = min(1.0, pc.clip_norm / (float(norm) + 1e-6))
+        for p in params:
+            acc = self._dp_sum.get(id(p))
+            g = p.grad * factor
+            self._dp_sum[id(p)] = g if acc is None else acc + g
+            p.grad = None
+        self._micro[key] += 1
+        self._pending.add(key)
+        if self._micro[key] % self.accumulation:
+            return False
+        n = self.accumulation
+        for p in self.group_params[key]:
+            acc = self._dp_sum.pop(id(p), None)
+            if acc is not None:
+                noise = torch.randn_like(acc) * (pc.noise_multiplier * pc.clip_norm)
+                p.grad = (acc + noise) / n
+        return self._step(key, closure)
+
+    def step_with_grads(self, key: str = "main") -> bool:
+        """Optimierungsschritt mit bereits gesetzten ``p.grad`` (z. B. geschätzte Gradienten bei Evolution
+        Strategies) – inklusive Clipping, Zeitplan, EMA und aller Erweiterungen."""
+        self._pending.add(key)
+        return self._step(key, None)
 
     def _handle_nan(self, key: str, what: str) -> bool:
         policy = self.cfg.nan_policy
@@ -297,11 +531,34 @@ class Trainer:
             raise TrainingError(f"{what} ist NaN/Inf (Schritt {self.global_step}). Tipp: Lernrate senken, "
                                 f"Clipping aktivieren, bf16 statt fp16.")
         if policy == "skip":
+            self.skipped_steps += 1
             self.optimizers[key].zero_grad(set_to_none=True)
             self._micro[key] = 0
             self._pending.discard(key)
-            self.log(f"⚠ {what} NaN/Inf – Schritt übersprungen (Gruppe '{key}').")
+            self.log(f"⚠ {what} NaN/Inf – Schritt übersprungen (Gruppe '{key}').", "warnung")
         return False
+
+    @staticmethod
+    def _grads_finite(params: list[nn.Parameter]) -> bool:
+        """Alle Gradienten endlich? – gebündelt, mit einer einzigen Synchronisation."""
+        grads = [p.grad for p in params if p.grad is not None]
+        if not grads:
+            return True
+        by_device: dict[torch.device, list[torch.Tensor]] = defaultdict(list)
+        for g in grads:
+            by_device[g.device].append(g)
+        flags = [torch.stack(torch._foreach_norm(gs)).sum() for gs in by_device.values()]
+        return bool(torch.isfinite(torch.stack([f.to(flags[0].device) for f in flags])).all())
+
+    def _clip_norm(self, params: list[nn.Parameter]) -> tuple[bool, float | None]:
+        """Gesamtnorm berechnen, auf ``max_norm`` begrenzen und Endlichkeit prüfen (eine Synchronisation)."""
+        c = self.cfg.gradient_clipping
+        grads = [p for p in params if p.grad is not None]
+        if not grads:
+            return True, None
+        total = torch.nn.utils.clip_grad_norm_(grads, c.max_norm, norm_type=c.norm_type, foreach=True)
+        value = float(total)
+        return math.isfinite(value), value
 
     def _clip(self, params: list[nn.Parameter]) -> float | None:
         c = self.cfg.gradient_clipping
@@ -324,9 +581,20 @@ class Trainer:
     def _step(self, key: str, closure: Callable[[], torch.Tensor] | None) -> bool:
         opt = self.optimizers[key]
         params = self.group_params[key]
+        self.dist.allreduce_grads(params)
         if self.scaler is not None:
             self.scaler.unscale_(opt)
-        if any(p.grad is not None and not torch.isfinite(p.grad).all() for p in params):
+        r = self.cfg.regularization
+        ox = self.cfg.optimizer_extras
+        gc = self.cfg.gradient_clipping
+        modifies = ox.gradient_centralization or ox.grokfast_alpha is not None or r.gradient_noise_std > 0
+        grad_norm: float | None = None
+        if gc.mode == "norm" and not modifies:
+            # häufigster Fall: Norm berechnen, prüfen und begrenzen in einem Durchgang – eine Synchronisation
+            finite, grad_norm = self._clip_norm(params)
+        else:
+            finite = self.cfg.nan_policy == "ignore" and self.scaler is None or self._grads_finite(params)
+        if not finite:
             if self.scaler is not None and self.cfg.nan_policy != "raise":
                 # fp16-Überlauf: GradScaler überspringt den Schritt selbst und senkt die Skala.
                 self.scaler.step(opt)
@@ -334,18 +602,30 @@ class Trainer:
                 opt.zero_grad(set_to_none=True)
                 self._pending.discard(key)
                 return False
-            return self._handle_nan(key, "Gradient")
-        r = self.cfg.regularization
-        if r.gradient_noise_std > 0:
-            std = r.gradient_noise_std / (1 + self.global_step) ** r.gradient_noise_decay
-            for p in params:
-                if p.grad is not None:
-                    p.grad.add_(torch.randn_like(p.grad) * std)
-        grad_norm = self._clip(params)
+            if self.cfg.nan_policy != "ignore":
+                return self._handle_nan(key, "Gradient")
+        if gc.mode != "norm" or modifies:
+            self._modify_gradients(params)
+            if r.gradient_noise_std > 0:
+                std = r.gradient_noise_std / (1 + self.global_step) ** r.gradient_noise_decay
+                for p in params:
+                    if p.grad is not None:
+                        p.grad.add_(torch.randn_like(p.grad) * std)
+            grad_norm = self._clip(params)
+        lc = self.cfg.logging
+        primary = key == self.paradigm.primary_key or len(self.optimizers) == 1
+        if primary and lc.gradients_every_n_steps and (self.global_step + 1) % lc.gradients_every_n_steps == 0:
+            self.logger.metrics(self.global_step + 1, {f"{n}": float(p.grad.norm()) for n, p in
+                                                       self.model.named_parameters() if p.grad is not None},
+                                "gradientennorm", kind="info")
         for cb in self.callbacks:
             cb.on_before_step(self, key)
         if r.sam_rho > 0 and closure is not None:
             self._sam(params, closure, r.sam_rho)
+        if ox.lookahead_k:
+            for p in params:
+                if id(p) not in self._slow:
+                    self._slow[id(p)] = p.detach().clone()
         if self.scaler is not None:
             self.scaler.step(opt)
             self.scaler.update()
@@ -353,6 +633,14 @@ class Trainer:
             opt.step()
         opt.zero_grad(set_to_none=True)
         self._pending.discard(key)
+        if ox.lookahead_k:
+            self._la_count[key] += 1
+            if self._la_count[key] % ox.lookahead_k == 0:
+                with torch.no_grad():
+                    for p in params:
+                        slow = self._slow[id(p)]
+                        slow.add_(p.detach() - slow, alpha=ox.lookahead_alpha)
+                        p.copy_(slow)
         if key in self.schedulers:
             self.schedulers[key].step()
         if self.surgeon is not None:
@@ -360,11 +648,49 @@ class Trainer:
         if key == self.paradigm.primary_key or len(self.optimizers) == 1:
             self.global_step += 1
             self._last_grad_norm = grad_norm
+            if lc.weights_every_n_steps and self.global_step % lc.weights_every_n_steps == 0:
+                self._log_weights()
             e = self.cfg.ema
             if self.ema is not None and self.global_step >= e.start_step and self.global_step % e.update_every == 0:
                 self.ema.update(self.model)
+            sg = self.cfg.stability
+            if sg.spike_guard and sg.spike_action == "rollback" and (
+                    self._good_state is None or self.global_step % sg.rollback_every == 0):
+                self._save_good_state()
             self.mem.after_step(self.global_step)
         return True
+
+    @torch.no_grad()
+    def _modify_gradients(self, params: list[nn.Parameter]) -> None:
+        """Gradient Centralization und Grokfast (training.optimizer_extras)."""
+        ox = self.cfg.optimizer_extras
+        if ox.gradient_centralization:
+            for p in params:
+                g = p.grad
+                if g is not None and g.dim() > 1:
+                    g.sub_(g.mean(dim=tuple(range(1, g.dim())), keepdim=True))
+        if ox.grokfast_alpha is not None:
+            a, lam = ox.grokfast_alpha, ox.grokfast_lambda
+            for p in params:
+                g = p.grad
+                if g is None:
+                    continue
+                ema = self._grok.get(id(p))
+                ema = g.detach().clone() if ema is None else ema.mul_(a).add_(g, alpha=1 - a)
+                self._grok[id(p)] = ema
+                g.add_(ema, alpha=lam)
+
+    @torch.no_grad()
+    def _log_weights(self) -> None:
+        stats: dict[str, float] = {}
+        for n, p in self.model.named_parameters():
+            if p.numel() == 0:
+                continue
+            w = p.detach().float()
+            stats[f"{n}/norm"] = float(w.norm())
+            stats[f"{n}/std"] = float(w.std()) if w.numel() > 1 else 0.0
+            self.logger.histogram(self.global_step, f"gewichte/{n}", w)
+        self.logger.metrics(self.global_step, stats, "gewichte", kind="info")
 
     def _sam(self, params: list[nn.Parameter], closure: Callable[[], torch.Tensor], rho: float) -> None:
         """Sharpness-Aware Minimization: Gradient an der 'schlechtesten' Nachbarstelle bestimmen."""
@@ -390,7 +716,7 @@ class Trainer:
     def flush(self) -> None:
         """Führt angefangene Akkumulationszyklen aus (z. B. am Epochenende)."""
         for key in list(self._pending):
-            if self._micro[key] % self.cfg.gradient_accumulation_steps:
+            if self._micro[key] % self.accumulation:
                 self._micro[key] = 0
                 self._step(key, None)
 
@@ -405,18 +731,31 @@ class Trainer:
         if not isinstance(train, torch.utils.data.DataLoader):
             ds = as_dataset(train)
             if val is None and c.validation_split > 0:
-                ds, val = split_dataset(ds, c.validation_split, c.seed)
-            sampler = None
-            if c.curriculum.strategy != "none":
+                ds, val = split_dataset(ds, c.validation_split, c.seed, c.validation_strategy)
+            sampler = self.dist.sampler(ds, c.shuffle, c.seed or 0)
+            if sampler is not None and c.curriculum.strategy != "none":
+                self.log("⚠ Curriculum wird im verteilten Training ignoriert (DistributedSampler).")
+            elif c.curriculum.strategy != "none":
                 diffs = [difficulty_of(ds[i], c.curriculum.strategy) for i in range(len(ds))]
                 sampler = CurriculumSampler(diffs, c.curriculum.start_fraction, c.curriculum.full_after_fraction,
                                             lambda: self.global_step / max(1, self.total_steps), c.shuffle, c.seed or 0)
-            train_loader = make_loader(ds, c.batch_size, c.shuffle, c.drop_last, c.num_workers, c.pin_memory, sampler)
+            if c.class_weights != "keine":
+                self.class_weight = class_weight_tensor(ds, c.class_weights)
+                if self.class_weight is None:
+                    self.log("⚠ class_weights: keine ganzzahligen Klassen-Ziele gefunden – ignoriert.", "warnung")
+                else:
+                    self.log("  Klassengewichte: " + ", ".join(f"{w:.3g}" for w in self.class_weight.tolist()), "detail")
+            if c.balance_classes and sampler is None:
+                sampler = _balanced_sampler(ds, c.seed or 0)
+                if sampler is None:
+                    self.log("⚠ balance_classes: keine ganzzahligen Klassen-Ziele gefunden – ignoriert.", "warnung")
+            train_loader = make_loader(ds, c.batch_size, c.shuffle, c.drop_last, c.num_workers, self._pin, sampler)
         else:
             train_loader = train
+        self.val_data = val                      # für Kalibrierung/Erklärungen nach dem Training
         val_loader = None
         if val is not None:
-            val_loader = make_loader(val, c.eval_batch_size or c.batch_size, False, False, c.num_workers, c.pin_memory)
+            val_loader = make_loader(val, c.eval_batch_size or c.batch_size, False, False, c.num_workers, self._pin)
         return train_loader, val_loader
 
     # ===================================================================== Training
@@ -426,7 +765,12 @@ class Trainer:
         Paradigmen mit eigener Schleife (z. B. ``reinforcement``) brauchen keine Daten.
         """
         if hasattr(self.paradigm, "run"):
-            return self.paradigm.run(self)
+            self.logger.start(self.run_name, self.run_config if self.run_config is not None else
+                              {"training": self.cfg.to_dict(), "memory": self.mem.cfg.to_dict()})
+            try:
+                return self.paradigm.run(self)
+            finally:
+                self.logger.close()
         if train_data is None:
             raise TrainingError(f"Paradigma '{self.cfg.paradigm.name}' braucht Trainingsdaten.")
         c = self.cfg
@@ -435,9 +779,23 @@ class Trainer:
         self.total_steps = c.max_steps or c.epochs * steps_per_epoch
         if not self.schedulers:
             self._build_schedulers(self.total_steps)
+        if c.resume_from and not self._resumed:
+            self._resumed = True
+            path = self._resume_path(c.resume_from)
+            if path is None:
+                self.log("ℹ resume_from: kein Checkpoint gefunden – Training startet neu.", "warnung")
+            else:
+                self.load_checkpoint(path)
+                self.log(f"↻ Fortgesetzt aus {path} (Schritt {self.global_step}, Epoche {self.epoch}).")
         n_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        self.logger.start(self.run_name, self.run_config if self.run_config is not None else
+                          {"training": c.to_dict(), "memory": self.mem.cfg.to_dict()})
         self.log(f"▶ Training: Paradigma '{c.paradigm.name}', {format_number(n_params)} trainierbare Parameter, "
-                 f"{self.total_steps} Schritte, Gerät {self.device}")
+                 f"{self.total_steps} Schritte, Gerät {self.device}"
+                 + (f", {self.dist.info.world_size} Prozesse ({c.distributed.strategy})" if self.dist.active else ""))
+        if self.logger.run is not None and any(not type(b).__name__.startswith("Console")
+                                               for b in self.logger.backends):
+            self.log(f"  Protokolle: {self.logger.run.directory}", "detail")
         for cb in self.callbacks:
             cb.on_train_start(self)
         start = time.time()
@@ -445,12 +803,17 @@ class Trainer:
         epoch = self.epoch
         while not self.should_stop and self.global_step < self.total_steps:
             self.model.train()
+            if hasattr(getattr(train_loader, "sampler", None), "set_epoch"):
+                train_loader.sampler.set_epoch(epoch)
             for batch in train_loader:
-                batch = to_device(batch, self.device, non_blocking=c.pin_memory)
+                batch = self._cast(to_device(batch, self.device, non_blocking=self._pin))
+                self._count(batch)
                 before = self.global_step
-                metrics = self.paradigm.training_step(self, batch)
+                metrics = self._train_step(batch)
                 for k, v in metrics.items():
-                    if isinstance(v, (int, float)) and math.isfinite(v):
+                    if isinstance(v, torch.Tensor):
+                        running[k].append(v.detach())          # bleibt auf dem Gerät – keine Synchronisation
+                    elif isinstance(v, (int, float)) and math.isfinite(v):
                         running[k].append(float(v))
                 if self.global_step == before:
                     continue
@@ -467,26 +830,94 @@ class Trainer:
                 cb.on_epoch_end(self, epoch - 1, epoch_metrics)
             if c.max_steps is None and epoch >= c.epochs:
                 break
+        if self.ema is not None and c.ema.apply_at_end and self.ema.updates:
+            self.ema.copy_to(self.model)          # das Modell ist danach genau das bewertete (EMA-)Modell
+            self.log("  EMA-Gewichte übernommen (training.ema.apply_at_end).", "detail")
         for cb in self.callbacks:
             cb.on_train_end(self)
         self.log(f"■ Training beendet nach {self.global_step} Schritten ({time.time() - start:.1f} s).")
+        self.logger.close()
         return self.history
+
+    def _train_step(self, batch: Any) -> dict[str, Any]:
+        """Ein Trainingsschritt – bei Speichermangel automatisch in kleinere Stücke geteilt."""
+        mc = self.mem.cfg
+        while True:
+            try:
+                if self._split == 1:
+                    return self.paradigm.training_step(self, batch)
+                collected: dict[str, list[Any]] = defaultdict(list)
+                for part in split_batch(batch, self._split):
+                    for k, v in self.paradigm.training_step(self, part).items():
+                        if isinstance(v, (int, float, torch.Tensor)):
+                            collected[k].append(v.detach() if isinstance(v, torch.Tensor) else float(v))
+                return mean_metrics(collected, as_tensor=True)
+            except Exception as exc:  # noqa: BLE001 - nur Speicherfehler werden behandelt
+                n = batch_len(batch)
+                if mc.oom_strategy != "batch_teilen" or not is_oom(exc) or self._split >= min(mc.oom_max_splits, n):
+                    raise
+                self.zero_grad()
+                self._micro.clear()
+                self._pending.clear()
+                free_memory()
+                self._split *= 2
+                self.log(f"⚠ Speichermangel – Batch wird ab jetzt in {self._split} Stücke geteilt "
+                         f"(effektive Batchgröße bleibt gleich, Akkumulation {self.accumulation}).", "warnung")
+
+    def _cast(self, batch: Any) -> Any:
+        """Gleitkomma-Eingaben in den Datentyp der Gewichte bringen (memory.param_dtype ≠ float32)."""
+        dtype = self.mem.cfg.param_dtype
+        if dtype == "float32":
+            return batch
+        from ..memory.manager import DTYPES
+
+        target = DTYPES[dtype]
+        from torch.utils._pytree import tree_map
+
+        return tree_map(lambda t: t.to(target) if isinstance(t, torch.Tensor) and t.is_floating_point() else t, batch)
+
+    def _count(self, batch: Any) -> None:
+        inputs = batch.get("inputs") if isinstance(batch, dict) else None
+        self._seen[0] += _batch_size(batch)
+        if isinstance(inputs, torch.Tensor) and not inputs.is_floating_point() and inputs.dim() == 2:
+            self._seen[1] += inputs.numel()
 
     def _after_step(self, running: dict[str, list[float]], start: float, val_loader: Any) -> None:
         c = self.cfg
+        lc = c.logging
         lr = next(iter(self.optimizers.values())).param_groups[0]["lr"]
-        last = {k: v[-1] for k, v in running.items() if v}
+        last = LazyMetrics({k: v[-1] for k, v in running.items() if v})   # Umwandlung erst, wenn jemand liest
         last["lr"] = lr
         for cb in self.callbacks:
             cb.on_step_end(self, last)
-        if self.global_step % c.log_every_steps == 0 or self.global_step == 1:
-            avg = {k: sum(v) / len(v) for k, v in running.items() if v}
+        if self.logger.wants("debug"):
+            self.logger.metrics(self.global_step, dict(last), "train_schritt", kind="debug")
+        if self.global_step % self.logger.every == 0 or self.global_step == 1:
+            avg = mean_metrics(running)                                  # eine Synchronisation für alle Werte
             gn = getattr(self, "_last_grad_norm", None)
+            extra: dict[str, float] = {}
+            if lc.log_lr:
+                extra["lr"] = lr
+            if gn is not None and lc.log_grad_norm:
+                extra["grad_norm"] = gn
+            elapsed = max(1e-9, time.time() - self._seen[2])
+            if lc.log_throughput:
+                extra["beispiele_pro_s"] = self._seen[0] / elapsed
+                if self._seen[1]:
+                    extra["tokens_pro_s"] = self._seen[1] / elapsed
+            if lc.log_memory:
+                extra.update(memory_now())
+            self._seen = [0, 0, time.time()]
             parts = [f"{k}={v:.4g}" for k, v in avg.items()]
             if gn is not None:
                 parts.append(f"grad_norm={gn:.3g}")
-            self.log(f"  Schritt {self.global_step:>6}/{self.total_steps}  " + "  ".join(parts) +
-                     f"  lr={lr:.3g}  ({time.time() - start:.0f} s)")
+            line = f"  Schritt {self.global_step:>6}/{self.total_steps}  " + "  ".join(parts) + \
+                f"  lr={lr:.3g}  ({time.time() - start:.0f} s)"
+            if self.logger.wants("detail"):
+                line += "  " + "  ".join(f"{k}={v:.4g}" for k, v in extra.items()
+                                          if k not in ("lr", "grad_norm"))
+            self.log(line, "fortschritt")
+            self.logger.metrics(self.global_step, {**avg, **extra}, "train")
             self.history.append({"step": self.global_step, "epoch": self.epoch, "lr": lr, **avg})
             running.clear()
         if val_loader is not None and c.eval_every_steps and self.global_step % c.eval_every_steps == 0:
@@ -494,48 +925,84 @@ class Trainer:
 
     def _run_eval(self, loader: Any) -> dict[str, Any]:
         metrics = self.evaluate(loader)
-        self.log("  Validierung: " + "  ".join(f"{k}={v:.4g}" for k, v in metrics.items()))
+        self.log("  Validierung: " + "  ".join(f"{k}={v:.4g}" for k, v in metrics.items()), "eval")
+        self.logger.metrics(self.global_step, metrics, "eval", kind="eval")
         self.history.append({"step": self.global_step, "epoch": self.epoch, **metrics})
         for sched in self.schedulers.values():
-            if hasattr(sched, "step_metric") and "val_loss" in metrics:
-                sched.step_metric(metrics["val_loss"])
+            if hasattr(sched, "observe"):
+                sched.observe(metrics)
         for cb in self.callbacks:
             cb.on_eval_end(self, metrics)
         return metrics
 
     @torch.no_grad()
-    def evaluate(self, data: Any) -> dict[str, float]:
-        """Evaluierung (EMA-Gewichte, falls aktiviert). Metriken mit Präfix ``val_``."""
+    def evaluate(self, data: Any, prefix: str = "val_") -> dict[str, float]:
+        """Evaluierung (EMA-Gewichte, falls aktiviert). Werte mit Präfix ``val_`` (``Project.test``: ``test_``).
+
+        Neben den Werten des Paradigmas (Verlust …) werden die Metriken aus ``training.metrics`` (leer +
+        ``auto_metrics`` = passende Auswahl je Aufgabe) über **alle** Beispiele berechnet.
+        """
+        from .metrics import Collector
+
         c = self.cfg
         loader = data if isinstance(data, torch.utils.data.DataLoader) else make_loader(
             data, c.eval_batch_size or c.batch_size, False)
         was = self.model.training
         self.model.eval()
         ctx = self.ema.applied(self.model) if (self.ema is not None and c.ema.use_for_eval) else contextlib.nullcontext()
-        sums: dict[str, float] = defaultdict(float)
+        sums: dict[str, Any] = defaultdict(float)
+        weights: dict[str, Any] = defaultdict(float)
         count = 0
+        wants = bool(c.metrics) or c.auto_metrics
+        self._collector = Collector(c.metric_max_samples) if wants else None
         with ctx:
             for i, batch in enumerate(loader):
                 if c.eval_max_batches and i >= c.eval_max_batches:
                     break
-                batch = to_device(batch, self.device)
+                batch = self._cast(to_device(batch, self.device))
                 n = _batch_size(batch)
                 with self.autocast():
                     m = self.paradigm.validation_step(self, batch)
                 for k, v in m.items():
-                    if isinstance(v, (int, float)) and math.isfinite(v):
-                        sums[k] += float(v) * n
+                    if isinstance(v, torch.Tensor):
+                        v = v.detach().float()
+                        weights[k] = weights[k] + torch.isfinite(v).float() * n
+                        sums[k] = sums[k] + torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0) * n
+                    elif isinstance(v, (int, float)) and math.isfinite(v):
+                        sums[k] = sums[k] + float(v) * n
+                        weights[k] = weights[k] + n
                 count += n
         self.model.train(was)
-        return {f"val_{k}": v / max(1, count) for k, v in sums.items()}
+        out = {}
+        for k, total in sums.items():                       # wenige Synchronisationen am Ende statt je Batch
+            w = float(weights[k])
+            if w > 0:
+                out[f"{prefix}{k}"] = float(total) / w
+        collector, self._collector = self._collector, None
+        if collector is not None:
+            if self.target_inverse is not None and collector.task == "regression" and collector.preds:
+                pairs = [self.target_inverse(p, t) for p, t in zip(collector.preds, collector.targets)]
+                collector.preds, collector.targets = [p for p, _ in pairs], [t for _, t in pairs]
+            skipped: list[str] = []
+            out.update(collector.metrics(list(c.metrics), c.auto_metrics, prefix, skipped))
+            for name in skipped:
+                if name not in self._warned_metrics:
+                    self._warned_metrics.add(name)
+                    self.log(f"⚠ Metrik '{name}' passt nicht zur Aufgabe ({collector.task}) – weggelassen.", "warnung")
+        return out
 
     # ===================================================================== Checkpoints
     def save_checkpoint(self, path: str | Path) -> Path:
+        """Speichert Modell, Optimierer, Zeitpläne usw. – im verteilten Training schreibt nur Prozess 0."""
         path = Path(path)
+        for opt in self.optimizers.values():
+            self.dist.consolidate(opt)          # ZeRO-1: Optimierer-Teile einsammeln (alle Prozesse)
+        model_state = self.dist.model_state(getattr(self.model, "_orig_mod", self.model))
+        if not self.dist.main:
+            return path
         path.parent.mkdir(parents=True, exist_ok=True)
-        target = getattr(self.model, "_orig_mod", self.model)
         state = {
-            "model": target.state_dict(),
+            "model": model_state,
             "optimizers": {k: o.state_dict() for k, o in self.optimizers.items()},
             "schedulers": {k: s.state_dict() for k, s in self.schedulers.items()},
             "scaler": self.scaler.state_dict() if self.scaler is not None else None,
@@ -548,9 +1015,21 @@ class Trainer:
         torch.save(state, path)
         return path
 
+    def _resume_path(self, value: str) -> Path | None:
+        """``auto`` = neuester Checkpoint in den Ordnern der Checkpoint-Callbacks (sonst ``checkpoints``)."""
+        if value != "auto":
+            path = Path(value)
+            if not path.exists():
+                raise TrainingError(f"resume_from: Datei '{value}' nicht gefunden.")
+            return path
+        dirs = {Path(getattr(getattr(cb, "a", None), "directory", "")) for cb in self.callbacks
+                if hasattr(getattr(cb, "a", None), "directory")} or {Path("checkpoints")}
+        found = [f for d in dirs if d.is_dir() for f in d.glob("*.pt")]
+        return max(found, key=lambda f: f.stat().st_mtime) if found else None
+
     def load_checkpoint(self, path: str | Path, model_only: bool = False) -> dict:
         state = torch.load(path, map_location=self.device, weights_only=False)
-        target = getattr(self.model, "_orig_mod", self.model)
+        target = self.dist.unwrap(getattr(self.model, "_orig_mod", self.model))
         target.load_state_dict(state["model"])
         if not model_only:
             for k, o in self.optimizers.items():
@@ -572,6 +1051,21 @@ class Trainer:
         return state
 
 
+def _balanced_sampler(ds: Any, seed: int) -> Any:
+    """``WeightedRandomSampler`` mit Gewicht 1/Häufigkeit der Klasse (oder ``None`` ohne Klassen-Ziele)."""
+    from torch.utils.data import WeightedRandomSampler
+
+    from .data_utils import class_labels
+
+    targets = class_labels(ds)
+    if targets is None:
+        return None
+    counts = torch.bincount(targets.long().clamp_min(0))
+    weights = 1.0 / counts.clamp_min(1).float()[targets.long().clamp_min(0)]
+    return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True,
+                                 generator=torch.Generator().manual_seed(seed))
+
+
 def _batch_size(batch: Any) -> int:
     if isinstance(batch, torch.Tensor):
         return batch.shape[0] if batch.dim() else 1
@@ -583,3 +1077,59 @@ def _batch_size(batch: Any) -> int:
     if isinstance(batch, (list, tuple)) and batch:
         return _batch_size(batch[0])
     return 1
+
+
+class LazyMetrics(dict):
+    """dict, dessen Tensor-Werte erst beim Lesen zu Zahlen werden (spart eine GPU-Synchronisation je Schritt,
+    solange niemand die Werte braucht – z. B. ein CSV-Logger liest nur alle n Schritte)."""
+
+    def __getitem__(self, key: str) -> Any:
+        v = super().__getitem__(key)
+        if isinstance(v, torch.Tensor):
+            v = float(v)
+            super().__setitem__(key, v)
+        return v
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self[key] if key in self else default
+
+    def items(self):  # type: ignore[override]
+        return [(k, self[k]) for k in self.keys()]
+
+    def values(self):  # type: ignore[override]
+        return [self[k] for k in self.keys()]
+
+    def __iter__(self):
+        return iter(list(self.keys()))
+
+    def copy(self) -> dict:
+        return dict(self.items())
+
+
+def mean_metrics(running: dict[str, list[Any]], as_tensor: bool = False) -> dict[str, Any]:
+    """Mittelwerte gesammelter Kennzahlen (nur endliche Werte). Tensor-Werte werden auf dem Gerät gemittelt und
+    mit **einer** Synchronisation umgewandelt (``as_tensor=True``: ohne Umwandlung)."""
+    out: dict[str, Any] = {}
+    keys, means = [], []
+    for k, vals in running.items():
+        tensors = [v for v in vals if isinstance(v, torch.Tensor)]
+        floats = [float(v) for v in vals if not isinstance(v, torch.Tensor) and math.isfinite(float(v))]
+        if tensors:
+            dev = tensors[0].device
+            t = torch.stack([x.detach().float().reshape(()).to(dev) for x in tensors])
+            ok = torch.isfinite(t)
+            total = torch.where(ok, t, torch.zeros_like(t)).sum() + sum(floats)
+            n = ok.sum() + len(floats)
+            mean = torch.where(n > 0, total / n.clamp_min(1), torch.full_like(total, float("nan")))
+            keys.append(k)
+            means.append(mean)
+        elif floats:
+            out[k] = sum(floats) / len(floats)
+    if means:
+        if as_tensor:
+            out.update(zip(keys, means))
+        else:
+            dev = means[0].device
+            values = torch.stack([m.to(dev) for m in means]).tolist()
+            out.update({k: v for k, v in zip(keys, values) if math.isfinite(v)})
+    return out

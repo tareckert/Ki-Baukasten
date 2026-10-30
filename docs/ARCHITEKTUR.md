@@ -10,16 +10,25 @@ vollständige Aufbau-Darstellung eines Beispielmodells (so sieht die Ausgabe von
 
 ```mermaid
 flowchart LR
+  Z["Ziele<br/>goals · from_goals"] -->|empfiehlt Vorlage + Techniken| A
+  T["Techniken-Katalog<br/>enable / disable"] -->|setzt Einstellungen| A
+  P["Anforderungs-Katalog<br/>perfection_check · apply_perfection"] -->|prüft + schaltet Techniken| T
+  DQ["Daten<br/>CSV · Texte · Bilder · Masken · WAV · Anweisungen<br/>data_check · Aufteilung · Testmenge"] --> B
   A["ProjectConfig<br/>(JSON/YAML/Python)"] --> B["Validierung<br/>+ auto_fit_dims"]
   B --> C["Registry 'model'<br/>baut das Modell"]
   C --> D["Modul-Chirurgie<br/>module_rules"]
   D --> E["Tensor-Chirurgie<br/>tensor_rules"]
   E --> F["MemoryManager<br/>Präzision · Quantisierung · LoRA ·<br/>Checkpointing · Streaming/Offload"]
-  F --> G["Trainer<br/>Paradigma · Optimierer · Zeitplan ·<br/>Verluste · Callbacks"]
-  G --> R["Zielsystem-Übersicht<br/>recommend_for · reduce_for"]
+  F --> G["Trainer<br/>Paradigma · Optimierer · Zeitplan ·<br/>Verluste · Callbacks · Logger · Cluster"]
+  W["Ablauf (workflow)<br/>Suche · föderiert · Model Soup"] -->|run| G
+  G --> M["Bewertung<br/>Metriken · test · baseline · error_analysis"]
+  M --> V["Vertrauen<br/>calibrate · Conformal · MC-Dropout · TTA ·<br/>explain · fairness · robustness"]
+  V --> R["Zielsystem-Übersicht<br/>recommend_for · reduce_for"]
   R --> K["Kompression<br/>Pruning · Low-Rank · Quantisierung ·<br/>Heilen / Lehrer-Schüler"]
-  K --> H["Projekt speichern<br/>projekt.json · modell.pt (+ Struktur-Regeln)"]
-  H --> I["Inferenz / Generierung (Cache)<br/>Export (torch.export, ONNX …)"]
+  K --> EX["Export-Vorbereitung (Kopie)<br/>Hüllen weg · EMA · LoRA · BatchNorm falten ·<br/>Ungenutztes entfernen · geprüft"]
+  EX --> H["Projekt speichern<br/>projekt.json (kompakt) · modell.pt · vorverarbeitung.json ·<br/>MODELLKARTE.md · umgebung.json"]
+  H --> I["Inferenz / Generierung (Cache, Beam Search)<br/>predict_raw · HTTP-Dienst · Export (torch.export, ONNX …)"]
+  I --> DR["Betrieb<br/>drift_report · continue_training"]
   X["Fremdes Modell<br/>.pt2 · TorchScript · state_dict · HF"] -->|import_model| D
 ```
 
@@ -36,10 +45,33 @@ flowchart LR
 | Kompression | `compress/*` | `compress()`, `compression.steps`, `distill()` |
 | Zielsysteme | `analysis/targets.py` | `deployment.*`, `recommend_for()`, `reduce_for()` |
 | Import | `models/external.py` | `Project.import_model()`, Modell `extern` |
+| Ziele | `analysis/goals.py` | `goals.*`, `Project.from_goals()`, `set_goals()`, `goal_check()` |
+| Techniken | `techniques.py` | `Project.enable()/disable()/techniques()` |
+| Schalter | `core/switches.py` | `Project.switch()`, `set(pfad, "aus")`, `switches()` |
+| Notfall-Ausführung | `analysis/fallback.py`, `memory/streaming.py`, `memory/offload.py`, `memory/execution.py` | `fallback_options()`, `apply_fallback()`, `memory.offload.*`, `memory.oom_strategy` |
+| Cluster | `training/distributed.py` | `training.distributed.*`, CLI `verteilt` |
+| Logger | `training/logger.py` | `training.logging.*`, `Project.add_logger()` |
+| Ablauf | `workflow/*` | `workflow.*`, `Project.run()`, `tune()`, `federated_train()`, `model_soup()` |
+| Anforderungen | `requirements.py` | `Project.perfection_check()`, `apply_perfection()`, CLI `perfektion` |
+| Daten | `data/files.py`, `data/tokenizers.py`, `data/domains.py`, `training/data_utils.py` | `data.*`, `training.validation_strategy`, `training.test_split` |
+| Datenprüfung & Drift | `analysis/datacheck.py`, `analysis/drift.py` | `data_check()`, `apply_data_fixes()`, `drift_report()`, `workflow.check_data` |
+| Metriken | `training/metrics.py` | `training.metrics`, `training.auto_metrics`, `evaluate()`, `test()`, `baseline()`, `error_analysis()` |
+| Vertrauen | `analysis/inference.py`, `analysis/explain.py`, `analysis/fairness.py`, `analysis/robustness.py` | `inference.*`, `calibrate()`, `predict_with_uncertainty()`, `explain_prediction()`, `feature_importance()`, `fairness_report()`, `training.adversarial`, `robustness_report()` |
+| Wenige Labels | `workflow/active.py` | `select_for_labeling()`, `pseudo_label()` |
+| Hardware-Automatik | `memory/hardware.py`, `training/optimizers.py` (`_fast`) | `memory.mixed_precision/matmul_precision = 'auto'`, `cudnn_benchmark`/`channels_last`/`training.pin_memory` = None, `hardware_report()` |
+| Schlanker Export | `analysis/export.py` | `deployment.export.*`, `export(...)`, `last_export` |
+| Ein-Aufruf-Einstieg | `project.py` (`Project.auto`, `detect_data`) | CLI `auto`, GUI „Datei → Automatisch aus Daten…“ |
+| Diagnose & Verbessern | `analysis/diagnosis.py` | `diagnose()`, `apply_diagnosis()`, `improve()`, `Project.auto(improve=…)`, CLI `diagnose` |
+| Wirkungsprüfung | `analysis/effects.py`, `core/config.py` (`__omit__`) | `inactive_settings()`, Meldung vor `train()` |
+| Einsatz | `analysis/modelcard.py`, `data/artifacts.py`, `ui/serve.py` | `model_card()`, `save()/load()`, `predict_raw()`, `serve()`, `deployment.server.*`, `generation.*` |
 
 ---
 
 ## 2. Ebenen der Anpassung
+
+Ganz oben stehen drei Bedien-Ebenen: **Ziele** (der Assistent wählt Vorlage und Techniken), **Techniken** (benannte
+Bündel von Einstellungen mit Status an/aus/teilweise) und **Schalter** je Einstellung (an = empfohlener Wert, aus =
+wirkungslos, eigen = eigener Wert). Darunter liegen die Werkzeuge für feinste Eingriffe.
 
 Von grob nach fein – jede Ebene kann **für alle**, **nur bestimmte** oder **genau ein** Element gelten:
 
@@ -134,9 +166,55 @@ sequenceDiagram
 Beim Laden baut der Baukasten das Original, wendet diese Regeln an (gleiche Formen) und lädt dann die gespeicherten
 Gewichte – so bleibt jede Kombination aus Umbau, Kompression und Training reproduzierbar.
 
+## 5b. Bewertung und Vertrauen – wie die Teile zusammenspielen
+
+1. **Sammeln statt mitteln**: Paradigmen melden in der Evaluierung ihre Vorhersagen über `trainer.collect(pred, ziel,
+   art)`; ein `Collector` sammelt sie kompakt (Sprachmodelle nur Token-IDs + Verlust je Token, Segmentierung nur die
+   Klassenkarte) und berechnet danach alle Metriken über **alle** Beispiele. Skalierte Regressionsziele werden vorher
+   zurückgerechnet (`trainer.target_inverse`) – Fehler erscheinen in echten Einheiten.
+2. **Aufteilen ohne Leck**: `split_indices` (zufall/stratifiziert/zeitlich) teilt Validierung und Testmenge ab; die
+   CSV-Vorverarbeitung und Tokenizer lernen nur auf Trainingszeilen. Die Testmenge bleibt beim Neutrainieren dieselbe.
+3. **Nach dem Training**: `calibrate()` stellt `inference.temperature`, `threshold` und `conformal_q` auf der
+   Validierung ein; `predict_proba/predict_with_uncertainty` wenden sie an (plus MC-Dropout/TTA). Einstellungen unter
+   `inference`, `generation`, `deployment`, `goals`, `workflow` verwerfen ein trainiertes Modell nicht.
+4. **Speichern für den Einsatz**: `data/artifacts.py` schreibt Tokenizer, Tabellen-Vorverarbeitung, Klassen und
+   Normierung als JSON; `predict_raw` und der HTTP-Dienst verarbeiten Rohdaten damit genau wie im Training.
+5. **Perfektions-Check**: `requirements.py` ordnet jeder Anforderung Techniken (Status aus dem Katalog), eigene
+   Prüfungen (z. B. „wurde `test()` ausgeführt?“) oder einen Hinweis auf eine Lücke zu.
+
+## 5c. Tempo und schlanker Export – wie es funktioniert
+
+1. **Ein Trainingsschritt ohne versteckte Wartezeiten**: Paradigmen geben Kennzahlen als Tensoren zurück; der
+   Trainer sammelt sie auf dem Gerät und wandelt sie erst beim Protokollieren um (`mean_metrics`, eine
+   Synchronisation). NaN-Prüfung und Gradient-Clipping laufen gebündelt (`clip_grad_norm_(foreach=True)` liefert die
+   Norm, eine Prüfung). Der Optimierer wird fusioniert gebaut, wenn das Gerät es kann (`optimizers._fast`).
+2. **Daten**: `make_loader` erkennt Tensor-Daten im Speicher (`DictDataset` und verschachtelte `Subset`s) und baut
+   einen `TensorBatchLoader` – Unterklasse von `DataLoader` mit gleichem Sampler, gleicher Länge und gleicher
+   Zufallsfolge, aber einem Index-Zugriff je Tensor statt Einzelzugriffen und `collate`.
+3. **Export-taugliche Modelle**: Modelle fragen `core.runtime.is_exporting()` ab (MoE rechnet dann dicht, GNN-Pooling
+   nutzt eine symbolische Graphanzahl, Scans den reinen PyTorch-Pfad); Längenprüfungen laufen in Python.
+4. **`prepare_for_export`** arbeitet auf einer Kopie: Hüllen entfernen → EMA → LoRA → BatchNorm falten → ungenutzte
+   Tensoren entfernen (Platzhalter ohne Verwendung im `torch.export`-Graphen, sonst Parameter ohne Gradient) →
+   Präzision. Jeder riskante Schritt wird mit dem Original verglichen und bei Abweichung zurückgenommen.
+
+## 5d. Nichts geht stillschweigend verloren – Diagnose und Verbessern
+
+1. **Wirkungsprüfung** (`analysis/effects.py`): eine Regeltabelle *Muster → Schalter* (z. B. `memory.lora.*` braucht
+   `memory.lora.enabled`). Gemeldet werden nur Einstellungen, die der Nutzer gegenüber der Vorlage geändert hat.
+2. **Aufbau-Signatur**: `build()` merkt sich Modell, Regeln und strukturbestimmende Speicher-Einstellungen; weicht die
+   Konfiguration vor `train()` davon ab (direkte Zuweisung statt `set`), wird neu gebaut.
+3. **`__omit__`** in einer Konfigurationsklasse entfernt geerbte Einstellungen, die dort nichts bewirken; `update`
+   überspringt sie beim Laden alter Dateien mit Warnung, `set` meldet einen Fehler.
+4. **Techniken**: `Project.technique` vergleicht den Status aller Techniken vor/nach dem Einschalten und meldet, was
+   dadurch ausgeschaltet wurde. Techniken mit eigenem `off` (MC-Dropout/TTA) schalten nur ihren Anteil aus.
+5. **Diagnose** (`analysis/diagnosis.py`) liest `history` (Trainings- und Validierungseinträge), die Zähler
+   `trainer.skipped_steps`/`loss_spikes` und `last_baseline`/`last_test`; Maßnahmen sind Techniken (nur, wenn
+   anwendbar und aus) oder Einstellungen. `improve()` sichert vor jeder Runde Konfiguration, Modell, Trainer und
+   Verlauf und stellt sie wieder her, wenn die Validierung nicht besser wird.
+
 ## 6. Eigene Bausteine integrieren
 
-1. **Komponente registrieren** (Aktivierung, Mixer, FFN, Verlust, Belohnung, Modul-Operation …):
+1. **Komponente registrieren** (Aktivierung, Mixer, FFN, Verlust, Metrik, Belohnung, Modul-Operation …):
    ```python
    from ki_baukasten import register, BaseConfig, Param, T
    class MeinMixerConfig(BaseConfig):

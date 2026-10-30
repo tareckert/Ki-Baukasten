@@ -17,11 +17,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any
 
 from torch import nn
 
-from ..core import BaseConfig, Level, Param, T, format_number
+from ..core import BaseConfig, Level, NestedParam, Param, T, format_number
+from .export import ExportConfig
 
 
 @dataclass(frozen=True)
@@ -66,6 +66,26 @@ TARGETS: dict[str, TargetProfile] = {p.key: p for p in [
                   "Download-Größe zählt: < 100 MB anstreben."),
 ]}
 
+class ServeConfig(BaseConfig):
+    __title__ = "HTTP-Server (Bereitstellung)"
+    __tooltip__ = T(
+        "Kleiner eingebauter Web-Server: Vorhersagen per HTTP/JSON (nur Standardbibliothek).",
+        "Die KI ohne weiteren Code in Apps, Webseiten oder andere Programme einbinden.",
+        "python -m ki_baukasten bereitstellen <projektordner>; für große Lasten: Export + eigener Server.",
+    )
+    host = Param("127.0.0.1", tooltip=T(
+        "Adresse ('127.0.0.1' = nur dieser Rechner, '0.0.0.0' = im Netzwerk erreichbar).",
+        "Sicherheit: standardmäßig nicht von außen erreichbar.", "127.0.0.1; im Netz nur mit api_key."))
+    port = Param(8000, min=1, max=65535, tooltip=T("Port.", "Adresse http://host:port.", "8000."))
+    api_key = Param(None, type=str, nullable=True, tooltip=T(
+        "Schlüssel, der im Kopf 'X-API-Key' mitgeschickt werden muss (None = keiner).",
+        "Schützt den Server vor fremden Anfragen.", "Pflicht, wenn host = 0.0.0.0."))
+    max_batch = Param(256, min=1, tooltip=T(
+        "Höchstens so viele Beispiele je Anfrage.", "Schützt Speicher und Antwortzeit.", "64–1024."))
+    max_body_mb = Param(16.0, min=0.1, tooltip=T(
+        "Maximale Größe einer Anfrage in MB.", "Schutz vor zu großen Anfragen.", "16."), level=Level.ADVANCED)
+
+
 class DeploymentConfig(BaseConfig):
     __title__ = "Zielsysteme (Deployment)"
     __tooltip__ = T(
@@ -87,6 +107,12 @@ class DeploymentConfig(BaseConfig):
     heal_steps = Param(300, min=0, tooltip=T(
         "Heil-Schritte (Distillation vom Original) in reduce_for.", "Mehr = bessere Qualität nach dem Verkleinern.",
         "100–1000."), level=Level.ADVANCED)
+    model_card = Param(True, tooltip=T(
+        "Beim Speichern eine Modellkarte (MODELLKARTE.md) und Umgebungsdaten (umgebung.json) ablegen.",
+        "Dokumentation von Zweck, Daten, Ergebnissen, Grenzen und Versionen – für Nachvollziehbarkeit und Vorgaben.",
+        "an."))
+    server = NestedParam(ServeConfig, level=Level.ADVANCED)
+    export = NestedParam(ExportConfig)
     student_steps = Param(None, type=int, min=1, nullable=True, tooltip=T(
         "Trainingsschritte eines empfohlenen Schüler-Modells (None = wie training).", "Distillation.", "None."),
         level=Level.ADVANCED)
@@ -113,13 +139,21 @@ class Recommendation:
     latency_after_ms: float | None = None
     fits_after: bool = True
     notes: list[str] = field(default_factory=list)
+    fallbacks: list = field(default_factory=list)   # Notfall-Ausführung, falls es trotz Verkleinern nicht passt
 
     def short(self) -> str:
         parts = [s["name"] + (f"({next(iter(s.get('args', {}).values()))})" if s.get("args") else "")
                  for s in self.steps]
         if self.student:
             parts.insert(0, f"Schüler(Breite {self.student['width']:.2f}, Tiefe {self.student['depth']:.2f})")
-        return " → ".join(parts) or "nichts nötig"
+        text = " → ".join(parts) or "nichts nötig"
+        if not self.fits_after and self.fallbacks:
+            from .fallback import best_option
+
+            best = best_option(self.fallbacks)
+            if best is not None:
+                text += f" + Notfall: {best.key}"
+        return text
 
     def __str__(self) -> str:
         t = self.target
@@ -135,6 +169,14 @@ class Recommendation:
         for n in self.notes + ([t.notes] if t.notes else []):
             lines.append(f"  Hinweis:    {n}")
         lines.append(f"  Anwenden:   projekt.reduce_for(\"{t.key}\")")
+        if not self.fits_after and self.fallbacks:
+            fitting = [o for o in self.fallbacks if o.fits and o.key != "normal"][:3]
+            lines.append("  Passt trotz Verkleinern nicht? Dann stückweise ausführen (Notfall-Optionen):")
+            for o in fitting or self.fallbacks[:2]:
+                lines.append(f"    {'✓' if o.fits else '✗'} {o.key:<18} {o.title} – Gerät ≈ "
+                             f"{format_number(o.peak_mb, 1)} MB, ≈ {o.slowdown:.1f}× langsamer")
+            lines.append(f"  Notfall anwenden: projekt.reduce_for(\"{t.key}\", fallback=\"auto\") oder "
+                         f"projekt.apply_fallback(\"<kennung>\", target=\"{t.key}\")")
         return "\n".join(lines)
 
 
@@ -143,7 +185,7 @@ def _has(model: nn.Module, cls_name: str) -> bool:
 
 
 def recommend(model: nn.Module, target: str | TargetProfile, macs: int | None = None, can_heal: bool = True,
-              size_bytes: int | None = None) -> Recommendation:
+              size_bytes: int | None = None, activations_mb: float = 0.0) -> Recommendation:
     """Reduktions-Empfehlung für ``model`` auf ``target`` (Profil-Schlüssel oder ``TargetProfile``)."""
     from .benchmark import model_size_bytes
 
@@ -216,6 +258,12 @@ def recommend(model: nn.Module, target: str | TargetProfile, macs: int | None = 
                                                            or rec.latency_after_ms <= t.latency_ms * 1.1)
     if _has(model, "AttentionMixer") and t.key not in ("rechenzentrum_gpu",):
         rec.notes.append("Bei der Generierung KV-Cache in int8: generate(..., cache={'dtype': 'int8'}).")
+    if rec.size_after_mb > t.memory_mb:
+        from .fallback import execution_options
+
+        rec.fallbacks = execution_options(model, t.memory_mb, training=False, activations_mb=activations_mb,
+                                          scale=rec.size_after_mb / max(size_mb, 1e-9),
+                                          gpu_target="gpu" in t.key or t.key == "apple_silicon")
     return rec
 
 

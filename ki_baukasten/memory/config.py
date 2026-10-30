@@ -51,6 +51,8 @@ class OffloadConfig(BaseConfig):
         "disk": "Blöcke liegen auf der Festplatte (Memory-Map), werden pro Forward geladen (Inferenz/eingefroren)",
         "stream": "TRAINIERBAR: Gewichte, Gradienten und Optimierer-Zustände im RAM, Blöcke werden in "
                   "Forward und Backward gestreamt",
+        "split": "Blöcke aufteilen: die gewählten Blöcke (layers) rechnen auf split_device (z. B. CPU), der Rest "
+                 "auf dem Hauptgerät – trainierbar, wie 'device_map' bei großen Modellen",
     }, tooltip=T(
         "Auslagerungsmodus.",
         "Tauscht Geschwindigkeit gegen Speicher: disk spart am meisten, ist aber am langsamsten; stream erlaubt "
@@ -68,6 +70,21 @@ class OffloadConfig(BaseConfig):
         "Welche der automatisch gefundenen Blöcke ausgelagert werden (Selektor wie bei layer_overrides).",
         "Feiner Kompromiss: nur so viele Blöcke auslagern, wie nötig – der Rest rechnet ohne Übertragung.",
         "'*' = alle, '0:12' = die ersten 12, '::2' = jeder zweite. Nur mit targets='auto'.",
+    ), level=Level.ADVANCED)
+    storage = Param("ram", choices={
+        "ram": "eingefrorene Gewichte der gestreamten Blöcke im CPU-RAM",
+        "disk": "eingefrorene Gewichte/Puffer auf der Festplatte (Memory-Map) – für Modelle größer als der RAM",
+    }, tooltip=T(
+        "Ablageort der eingefrorenen Gewichte im Modus 'stream'.",
+        "Mit 'disk' passt auch ein Modell, das größer als der RAM ist: z. B. QLoRA/LoRA-Feintuning, bei dem nur "
+        "die kleinen Adapter im RAM liegen und die Basis Block für Block von der SSD gelesen wird.",
+        "Sehr große Modelle auf kleinen Rechnern. Schnelle SSD empfohlen (directory).",
+        "Trainierbare Gewichte, Gradienten und Optimierer-Zustände bleiben immer im RAM.",
+    ), level=Level.ADVANCED)
+    split_device = Param("cpu", tooltip=T(
+        "Zweites Rechengerät für den Modus 'split' (z. B. 'cpu', 'cuda:1').",
+        "Blöcke, die nicht auf das Hauptgerät passen, rechnen dort – langsamer, aber es läuft.",
+        "GPU zu klein: hintere Blöcke auf der CPU; zwei GPUs: Modell aufteilen.",
     ), level=Level.ADVANCED)
     prefetch = Param(False, tooltip=T(
         "Nächsten Block auf einem eigenen CUDA-Stream vorladen, während der aktuelle rechnet (nur stream + CUDA).",
@@ -100,15 +117,16 @@ class MemoryConfig(BaseConfig):
         "16 Bit halbiert den Speicher für Gewichte und Gradienten.",
         "Reines bf16-Training großer Modelle; sonst float32 + mixed_precision.",
     ))
-    mixed_precision = Param("none", choices={
+    mixed_precision = Param("auto", choices={
+        "auto": "automatisch je Gerät: bf16 ab NVIDIA Ampere, fp16 auf Volta/Turing, sonst aus",
         "none": "alles in param_dtype",
         "bf16": "Rechnen in bfloat16, Gewichte in param_dtype (robust, kein Loss-Scaling nötig)",
         "fp16": "Rechnen in float16 (mit automatischem Loss-Scaling)",
     }, group="Präzision", tooltip=T(
         "Gemischte Präzision (autocast).",
         "Halbiert Aktivierungsspeicher und beschleunigt auf Tensor-Core-GPUs deutlich.",
-        "GPU-Training: bf16 (Ampere+), fp16 (ältere GPUs).",
-    ))
+        "auto (wählt pro Gerät das Schnellste); fest: bf16 (Ampere+), fp16 (ältere GPUs), none (volle Präzision).",
+    ), off="none", on="auto")
     grad_scaler = Param("auto", choices={"auto": "an bei fp16", "on": "immer", "off": "nie"}, group="Präzision",
                         level=Level.EXPERT, tooltip=T(
         "Dynamisches Loss-Scaling.", "Verhindert Unterlauf kleiner fp16-Gradienten.", "auto."))
@@ -162,14 +180,22 @@ class MemoryConfig(BaseConfig):
                           group="Quantisierung", level=Level.EXPERT, tooltip=T(
         "Welche Schichten fake_quant betrifft.", "Faltungen sind empfindlicher.", "linear."))
     lora = NestedParam(LoRAConfig, group="Quantisierung", level=Level.ADVANCED)
-    channels_last = Param(False, group="Geschwindigkeit", level=Level.EXPERT, tooltip=T(
-        "Speicherlayout NHWC für Faltungsnetze.", "Schneller auf Tensor-Core-GPUs.", "CNN-Training auf GPU."))
+    channels_last = Param(None, type=bool, nullable=True, group="Geschwindigkeit", level=Level.EXPERT, tooltip=T(
+        "Speicherlayout NHWC für Faltungsnetze (None = automatisch: an bei Faltungsnetz + NVIDIA + 16 Bit).",
+        "Schneller auf Tensor-Core-GPUs.", "None lassen."), off=False, on=True)
     compile = Param(False, group="Geschwindigkeit", level=Level.ADVANCED, tooltip=T(
         "Modell mit torch.compile übersetzen.", "Oft 1.3–2× schneller nach Aufwärmzeit.", "Lange Trainings auf GPU."))
     compile_mode = Param("default", choices=["default", "reduce-overhead", "max-autotune"], group="Geschwindigkeit",
                          level=Level.EXPERT, tooltip=T("Modus von torch.compile.", "Mehr Optimierung = längeres Kompilieren.",
                                                        "default."))
-    matmul_precision = Param("highest", choices={
+    cudnn_benchmark = Param(None, type=bool, nullable=True, group="Geschwindigkeit", level=Level.ADVANCED,
+                            off=False, on=True, tooltip=T(
+        "cuDNN probiert für jede Eingabeform den schnellsten Faltungs-Algorithmus aus (None = automatisch: an bei "
+        "Faltungsnetzen auf NVIDIA).",
+        "Spürbar schnellere CNNs bei gleichbleibenden Bildgrößen.", "CNN-Training auf NVIDIA-GPUs.",
+        "Bei ständig wechselnden Formen eher langsamer."))
+    matmul_precision = Param("auto", choices={
+        "auto": "automatisch: TF32 ab NVIDIA Ampere, sonst volle Genauigkeit",
         "highest": "volle fp32-Genauigkeit", "high": "TF32 erlaubt (schneller auf Ampere+)",
         "medium": "bf16-Zwischenergebnisse erlaubt (am schnellsten)",
     }, group="Geschwindigkeit", level=Level.EXPERT, tooltip=T(
@@ -180,6 +206,19 @@ class MemoryConfig(BaseConfig):
         "Maximaler Anteil des GPU-Speichers für diesen Prozess.", "Mehrere Prozesse auf einer GPU.", "0.5."))
     empty_cache_every_n_steps = Param(None, type=int, min=1, group="Gerät", level=Level.EXPERT, tooltip=T(
         "GPU-Cache alle n Schritte leeren.", "Gegen Fragmentierung bei variablen Formen.", "Selten nötig."))
+    oom_strategy = Param("batch_teilen", choices={
+        "fehler": "bei Speichermangel abbrechen (klassisch)",
+        "batch_teilen": "Batch automatisch halbieren und mit Gradientenakkumulation weiterrechnen (gleiches Ergebnis)",
+    }, group="Planung", tooltip=T(
+        "Was bei Speichermangel (Out-of-Memory) während Training/Vorhersage passiert.",
+        "'batch_teilen' teilt den Batch so oft wie nötig in kleinere Stücke; durch Akkumulation bleibt die "
+        "effektive Batchgröße – und damit das Training – gleich. Das Training bricht nicht mehr mitten ab.",
+        "Unbekannte Hardware, schwankende Sequenzlängen, Notfall-Ausführung.",
+        "Erkennt CUDA-/MPS-/CPU-Speicherfehler. Mehr Teilstücke = langsamer.",
+    ))
+    oom_max_splits = Param(64, min=1, group="Planung", level=Level.ADVANCED, tooltip=T(
+        "Höchstens so viele Teilstücke pro Batch.", "Begrenzt die Verlangsamung; danach wird der Fehler gemeldet.",
+        "16–64."))
     memory_budget_gb = Param(None, type=float, min=0.0, group="Planung", tooltip=T(
         "Verfügbarer Speicher in GB für die Speicherschätzung (None = automatisch erkennen).",
         "Die Schätzung prüft, ob das Training hineinpasst, und schlägt Einstellungen vor.",

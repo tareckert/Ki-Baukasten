@@ -35,6 +35,7 @@ import torch
 from torch import nn
 
 from ..core import BaseConfig, ComponentParam, Level, Param, T, create_registry
+from ..core.runtime import is_exporting
 
 FEEDFORWARDS = create_registry(
     "feedforward",
@@ -144,7 +145,8 @@ class MoEConfig(BaseConfig):
         "Bias im Router.", "Erlaubt globale Vorlieben für Experten.", "Selten."), level=Level.EXPERT)
     capacity_factor = Param(None, type=float, min=0.1, tooltip=T(
         "Maximale Tokens pro Experte = factor · (Tokens·top_k / Experten). None = unbegrenzt.",
-        "Begrenzt Lastspitzen (überzählige Tokens werden für diesen Experten verworfen).",
+        "Begrenzt Lastspitzen (überzählige Tokens werden für diesen Experten verworfen) – nur im Training; im "
+        "Einsatz hängt eine Vorhersage nie vom restlichen Batch ab.",
         "Verteiltes Training mit festen Puffergrößen.",
     ), level=Level.EXPERT)
     aux_loss_coef = Param(0.01, min=0.0, tooltip=T(
@@ -227,25 +229,17 @@ class MixtureOfExperts(nn.Module):
         if self.training and c.expert_dropout > 0:
             top_w = top_w * (torch.rand_like(top_w) > c.expert_dropout)
 
-        out = torch.zeros_like(flat)
-        capacity = None
-        if c.capacity_factor is not None:
-            capacity = max(1, int(math.ceil(c.capacity_factor * n_tokens * c.top_k / c.num_experts)))
-        for e, expert in enumerate(self.experts):
-            token_idx, slot = (top_i == e).nonzero(as_tuple=True)
-            if capacity is not None and token_idx.numel() > capacity:
-                token_idx, slot = token_idx[:capacity], slot[:capacity]
-            if token_idx.numel() == 0:
-                continue
-            y = expert(flat[token_idx])
-            out.index_add_(0, token_idx, (y * top_w[token_idx, slot].unsqueeze(-1).to(y.dtype)).to(out.dtype))
+        flat_i = top_i.reshape(-1)
+        counts = torch.bincount(flat_i, minlength=c.num_experts)
+        if is_exporting():
+            out = self._dense(flat, top_w, top_i)
+        else:
+            out = self._dispatch(flat, top_w, flat_i, counts, n_tokens)
         for expert in self.shared:
             out = out + expert(flat)
 
         # --- Hilfsverluste ---------------------------------------------------
-        counts = torch.zeros(c.num_experts, device=x.device).index_add_(
-            0, top_i.reshape(-1), torch.ones(top_i.numel(), device=x.device))
-        load = counts / max(1, top_i.numel())  # Anteil der Zuweisungen pro Experte
+        load = counts.float() / max(1, flat_i.numel())  # Anteil der Zuweisungen pro Experte
         self.last_load = load.detach()
         aux = torch.zeros((), device=x.device)
         if c.aux_loss_coef > 0:
@@ -254,6 +248,40 @@ class MixtureOfExperts(nn.Module):
             aux = aux + c.z_loss_coef * torch.logsumexp(logits, dim=-1).square().mean()
         self.aux_loss = aux
         return out.reshape(shape)
+
+    def _dispatch(self, flat: torch.Tensor, top_w: torch.Tensor, flat_i: torch.Tensor, counts: torch.Tensor,
+                  n_tokens: int) -> torch.Tensor:
+        """Tokens nach Experte sortieren und je Experte am Stück rechnen (eine Synchronisation statt einer je
+        Experte). Die Kapazitätsgrenze gilt nur im Training – im Einsatz hängt eine Vorhersage nie davon ab,
+        welche anderen Beispiele zufällig im selben Batch sind."""
+        c = self.cfg
+        k = top_w.shape[-1]
+        order = flat_i.argsort(stable=True)
+        token_of, slot_of = order // k, order % k
+        capacity = None
+        if c.capacity_factor is not None and self.training:
+            capacity = max(1, int(math.ceil(c.capacity_factor * n_tokens * c.top_k / c.num_experts)))
+        out = torch.zeros_like(flat)
+        start = 0
+        for expert, cnt in zip(self.experts, counts.tolist()):
+            if cnt:
+                idx, slot = token_of[start:start + cnt], slot_of[start:start + cnt]
+                if capacity is not None and cnt > capacity:
+                    idx, slot = idx[:capacity], slot[:capacity]
+                y = expert(flat[idx])
+                out.index_add_(0, idx, (y * top_w[idx, slot].unsqueeze(-1).to(y.dtype)).to(out.dtype))
+            start += cnt
+        return out
+
+    def _dense(self, flat: torch.Tensor, top_w: torch.Tensor, top_i: torch.Tensor) -> torch.Tensor:
+        """Export-taugliche Rechenweise ohne datenabhängige Formen: alle Experten, Gewicht 0 für nicht gewählte
+        (gleiches Ergebnis wie das Routing ohne Kapazitätsgrenze)."""
+        weights = torch.zeros(flat.shape[0], len(self.experts), dtype=top_w.dtype, device=flat.device)
+        weights = weights.scatter(1, top_i, top_w)
+        out = torch.zeros_like(flat)
+        for e, expert in enumerate(self.experts):
+            out = out + (expert(flat) * weights[:, e:e + 1].to(flat.dtype)).to(out.dtype)
+        return out
 
 
 class KANConfig(BaseConfig):

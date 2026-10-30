@@ -8,7 +8,8 @@ Aufbau des Fensters
 -------------------
 ::
 
-    ┌ Werkzeugleiste: Vorlage ▾ | Öffnen | Speichern | Stufe ▾ | Suchen | Prüfen | Bauen | Speicher | Trainieren ┐
+    ┌ Menü: Datei · Assistent · Einstellungen · Techniken · Ausführen · Analyse · Einsatz · Hilfe              ┐
+    ├ Werkzeugleiste: Neue KI nach Zielen | Vorlage ▾ | Stufe ▾ | Ansicht ▾ | Suchen | Trainieren | Techniken … ┤
     ├──────────────────────────────┬───────────────────────────────────────────────────────────────────────┤
     │ Baum der Konfiguration       │ Formular des gewählten Knotens                                        │
     │  ▸ model ⟨transformer⟩       │   Name          [ Wert       ]  ?    ← Maus über den Namen = Tooltip  │
@@ -22,6 +23,10 @@ Aufbau des Fensters
 * **Tooltips**: Maus über einen Einstellungsnamen halten.
 * **?**: ausführliche Erklärung inkl. aller Optionen im Erklärungsbereich.
 * **Stufe**: blendet Einstellungen nach Erfahrungsstufe ein/aus (nichts wird gesperrt).
+* **An / Aus / Eigen**: jede Einstellung hat drei Schalter – empfohlener Wert, abgeschaltet
+  (z. B. Dropout 0) oder eigener Wert. Pflicht-Einstellungen kennen nur An/Eigen.
+* **Ansicht**: nur eingeschaltete, nur ausgeschaltete oder nur eigene Werte zeigen – so bleibt
+  auch bei über tausend Einstellungen alles übersichtlich.
 * Komponenten (Aktivierung, Optimierer, Mixer, Belohnungen …) per Auswahlliste
   wechseln; kompatible Argumente bleiben erhalten.
 * Training läuft in einem Hintergrund-Thread; die Oberfläche bleibt bedienbar.
@@ -55,6 +60,8 @@ from ..core.config import _is_spec
 _DONE = object()
 _LEVELS = [("Basis", "basic"), ("Fortgeschritten", "advanced"), ("Experte", "expert"), ("Experimentell", "experimental")]
 _NONE = "(keine)"
+_VIEWS = {"Alle": None, "Nur eingeschaltete": ("an", "eigen"), "Nur ausgeschaltete": ("aus",),
+          "Nur eigene Werte": ("eigen",), "Nur schaltbare": "schaltbar"}
 
 
 class HoverTip:
@@ -121,6 +128,7 @@ class BaukastenGUI(tk.Tk):
         else:
             self.project = Project.from_preset(source or "tabellen_klassifikation")
         self.level = tk.StringVar(value="Fortgeschritten")
+        self.view = tk.StringVar(value="Alle")
         self.current_path = ""
         self.log_queue: "queue.Queue[str]" = queue.Queue()
         self.busy = False
@@ -134,8 +142,13 @@ class BaukastenGUI(tk.Tk):
     def _build_ui(self) -> None:
         from ..core import registry
 
+        self._build_menu()
         bar = ttk.Frame(self, padding=4)
         bar.pack(fill="x")
+        b = ttk.Button(bar, text="✚ Neue KI nach Zielen…", command=self.goal_wizard)
+        b.pack(side="left", padx=(0, 8))
+        HoverTip(b, lambda: "Assistent: Zweck, wichtige Punkte und Ziele angeben → passende Modelle werden empfohlen, "
+                            "unpassende abgeraten, Techniken vorgeschlagen.")
         ttk.Label(bar, text="Vorlage:").pack(side="left")
         self.preset_var = tk.StringVar(value=self.project.config.name)
         presets = registry("preset").names()
@@ -154,6 +167,12 @@ class BaukastenGUI(tk.Tk):
         lv.bind("<<ComboboxSelected>>", lambda e: (self.refresh_tree(), self.select_path(self.current_path)))
         HoverTip(lv, lambda: "Erfahrungsstufe: blendet Einstellungen ein/aus.\nNichts ist gesperrt – "
                               "'Experimentell' zeigt wirklich alles.")
+        ttk.Label(bar, text="Ansicht:").pack(side="left", padx=(8, 0))
+        vw = ttk.Combobox(bar, textvariable=self.view, values=list(_VIEWS), width=18, state="readonly")
+        vw.pack(side="left", padx=4)
+        vw.bind("<<ComboboxSelected>>", lambda e: self.show_form(self.current_path))
+        HoverTip(vw, lambda: "Filtert das Formular nach Schalterzustand:\n● an  ○ aus  ◆ eigener Wert.\n"
+                              "Gruppen (öffnen →) bleiben immer sichtbar.")
         self.search_var = tk.StringVar()
         se = ttk.Entry(bar, textvariable=self.search_var, width=22)
         se.pack(side="left", padx=(12, 2))
@@ -165,16 +184,20 @@ class BaukastenGUI(tk.Tk):
         for text, cmd, tip in (
             ("Prüfen", self.validate, "Alle Einstellungen und Abhängigkeiten prüfen."),
             ("Bauen", self.build_model, "Modell bauen und Aufbau anzeigen."),
-            ("Speicher", self.memory, "Speicherbedarf schätzen und Empfehlungen anzeigen."),
-            ("Trainieren", self.train, "Training im Hintergrund starten (Fortschritt im Protokoll)."),
-            ("Aufbau", self.architecture, "Komplette Auflistung des Modells: Module, Formen, Schichten, Anpassungspfade."),
-            ("Optimieren", self.advise, "Ratgeber: Vorschläge für Speicher, Tempo und Stabilität (mit Übernahme)."),
+            ("▶ Trainieren", self.train, "Training im Hintergrund starten (Fortschritt im Protokoll)."),
+            ("▶▶ Ablauf", self.run_workflow, "Ganzer Ablauf (workflow): Suche → Training (normal/föderiert/Model Soup) "
+                                             "→ Kreuzvalidierung → Kompression → Export."),
             ("Probelauf & Gewichte", self.inspector,
              "Testlauf im Fenster: alle Wege durchs Netz, Aktivierungen, Gradienten, Gewichte, Attention, Metriken."),
+            ("Techniken", self.techniques_window,
+             "Katalog: Stabilität, gegen Auswendiglernen, Performance, große Modelle, Cluster, Schwarm, Evolution … "
+             "– jede Technik an/abwählbar."),
+            ("Optimieren", self.advise, "Ratgeber: Vorschläge für Speicher, Tempo und Stabilität (mit Übernahme)."),
             ("Reduzieren / Export", self.reduce_dialog,
-             "Zielsystem wählen (Smartphone, Raspberry Pi, CPU, GPU …): Empfehlung, Verkleinern, Exportieren."),
-            ("↶ Rückgängig", self.undo, "Letzte Änderung zurücknehmen."),
-            ("↷ Wiederholen", self.redo, "Zurückgenommene Änderung wiederherstellen."),
+             "Zielsystem wählen (Smartphone, Raspberry Pi, CPU, GPU …): Empfehlung, Verkleinern, Notfall-Ausführung, "
+             "Exportieren."),
+            ("↶", self.undo, "Rückgängig: letzte Änderung zurücknehmen."),
+            ("↷", self.redo, "Wiederholen: zurückgenommene Änderung wiederherstellen."),
         ):
             b = ttk.Button(bar, text=text, command=cmd)
             b.pack(side="left", padx=2)
@@ -268,7 +291,8 @@ class BaukastenGUI(tk.Tk):
             value = target._values[name]
             path = f"{prefix}{name}"
             if isinstance(value, BaseConfig):
-                self.tree.insert(parent_iid, "end", iid=path, text=f"{name}  [{value.title()}]")
+                mark = ("● " if value._values.get("enabled") else "○ ") if "enabled" in type(value)._params else ""
+                self.tree.insert(parent_iid, "end", iid=path, text=f"{mark}{name}  [{value.title()}]")
                 self._add_children(path, path + ".", value, eff)
             elif _is_spec(value):
                 comp_level = value.component.level
@@ -317,23 +341,46 @@ class BaukastenGUI(tk.Tk):
         else:
             target = obj
         limit = Level.parse(self.max_level())
+        view = _VIEWS.get(self.view.get())
+        hidden = 0
         for name, param in target._iter_params():
             if not param.level.visible_at(limit):
                 continue
+            if view is not None and not self._view_match(param, target._values[name], view):
+                hidden += 1
+                continue
             self._param_row(f"{prefix}{name}", name, param, target._values[name], row)
             row += 1
+        if hidden:
+            ttk.Label(self.form, text=f"({hidden} Einstellungen durch die Ansicht '{self.view.get()}' ausgeblendet)",
+                      foreground="#888").grid(row=row, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
-    def _label(self, parent: tk.Widget, text: str, path: str, param: Any, row: int) -> None:
+    @staticmethod
+    def _view_match(param: Any, value: Any, view: Any) -> bool:
+        from ..core import UNSET, off_value, state_of
+
+        if getattr(param, "kind", "value") in ("nested", "config_list"):
+            return True
+        if view == "schaltbar":
+            return off_value(param) is not UNSET
+        return state_of(param, value) in view
+
+    def _label(self, parent: tk.Widget, text: str, path: str, param: Any, row: int, off: bool = False) -> None:
         badge = "" if param.level is Level.BASIC else f"  ·{param.level.label}"
-        lbl = ttk.Label(parent, text=text + badge, cursor="question_arrow")
+        lbl = ttk.Label(parent, text=text + badge, cursor="question_arrow", foreground="#999" if off else "")
         lbl.grid(row=row, column=0, sticky="w", padx=(0, 10), pady=2)
         HoverTip(lbl, lambda: f"{path}\n\n" + param.tooltip.format(width=80) +
                  (f"\n\nTyp: {param.type_label()}" + (f"   {param.constraint_label()}" if param.constraint_label() else "")))
         ttk.Button(parent, text="?", width=2, command=lambda: self.explain(path)).grid(row=row, column=2, padx=4)
 
     def _param_row(self, path: str, name: str, param: Any, value: Any, row: int) -> None:
+        from ..core import state_of
+
         kind = getattr(param, "kind", "value")
-        self._label(self.form, name, path, param, row)
+        leaf = kind not in ("nested", "config_list")
+        self._label(self.form, name, path, param, row, off=leaf and state_of(param, value) == "aus")
+        if leaf:
+            self._switch_buttons(path, param, value, row)
         if kind in ("nested", "config_list", "component_list"):
             text = f"{value.title()} öffnen →" if isinstance(value, BaseConfig) else \
                 f"{len(value or [])} Elemente öffnen →" if isinstance(value, list) else "öffnen →"
@@ -346,7 +393,7 @@ class BaukastenGUI(tk.Tk):
             cb.grid(row=row, column=1, sticky="w")
             cb.bind("<<ComboboxSelected>>", lambda e: self._set_component(path, var.get()))
             if value is not None and type(value.args)._params:
-                ttk.Button(self.form, text="Argumente →", command=lambda: self.select_path(path)).grid(row=row, column=3)
+                ttk.Button(self.form, text="Argumente →", command=lambda: self.select_path(path)).grid(row=row, column=4)
             self._row_widgets[path] = cb
             return
         is_bool = bool in param.types and not param.nullable
@@ -369,6 +416,49 @@ class BaukastenGUI(tk.Tk):
         w.grid(row=row, column=1, sticky="w")
         w.bind("<FocusIn>", lambda e: self.explain(path), add="+")
         self._row_widgets[path] = w
+
+    def _switch_buttons(self, path: str, param: Any, value: Any, row: int) -> None:
+        """Drei Schalter je Einstellung: An (empfohlen) · Aus · Eigen (benutzerdefiniert)."""
+        from ..core import UNSET, off_value, on_value, state_of
+        from ..core.switches import _show, off_label
+
+        off, on = off_value(param), on_value(param, self.project._switch_memory.get(path, UNSET))
+        frame = ttk.Frame(self.form)
+        frame.grid(row=row, column=3, sticky="w", padx=(6, 0))
+        var = tk.StringVar(value=state_of(param, value))
+        tips = {
+            "an": f"An: empfohlener Wert {_show(on)}" if on is not UNSET else
+                  "An: kein empfohlener Wert hinterlegt – bitte links einen eigenen Wert eingeben.",
+            "aus": f"Aus: {off_label(param)}" if off is not UNSET else
+                   "Pflicht-Einstellung: kann nicht ausgeschaltet werden (nur An oder Eigen).",
+            "eigen": "Eigen: benutzerdefinierter Wert – im Feld links eingeben (der zuletzt eigene Wert wird "
+                     "beim Aus-Schalten gemerkt und hier wiederhergestellt).",
+        }
+        for key, text in (("an", "An"), ("aus", "Aus"), ("eigen", "Eigen")):
+            rb = ttk.Radiobutton(frame, text=text, value=key, variable=var, style="Toolbutton",
+                                 command=lambda k=key: self._switch(path, k))
+            if key == "aus" and off is UNSET:
+                rb.state(["disabled"])
+            rb.pack(side="left")
+            HoverTip(rb, lambda k=key: tips[k])
+
+    def _switch(self, path: str, state: str) -> None:
+        try:
+            changed = self.project.switch(path, state)
+        except ConfigError as exc:
+            if state == "an":
+                messagebox.showinfo("Kein empfohlener Wert", f"{exc}\n\nBitte im Feld einen eigenen Wert eingeben.")
+            else:
+                messagebox.showerror("Schalter", str(exc))
+            changed = []
+        for c in changed:
+            self.log_write(f"✓ {c} → {state}: {self.project.config.get(c)!r}\n")
+        current = self.current_path
+        self.refresh_tree()
+        self.select_path(current if self._exists(current) else "")
+        w = self._row_widgets.get(path)
+        if state == "eigen" and w is not None:
+            w.focus_set()
 
     def _component_chooser(self, path: str, spec: Any, row: int) -> int:
         from ..core import registry
@@ -476,6 +566,240 @@ class BaukastenGUI(tk.Tk):
             messagebox.showerror("Liste", str(exc))
         self.refresh_tree()
         self.select_path(path)
+
+    # ================================================================ Menü
+    def _build_menu(self) -> None:
+        m = tk.Menu(self)
+        self.config(menu=m)
+
+        def menu(title: str, items: list) -> None:
+            sub = tk.Menu(m, tearoff=False)
+            for item in items:
+                if item is None:
+                    sub.add_separator()
+                else:
+                    sub.add_command(label=item[0], command=item[1])
+            m.add_cascade(label=title, menu=sub)
+
+        menu("Datei", [("Automatisch aus Daten…", self.auto_from_data), ("Öffnen…", self.open_file),
+                       ("Speichern…", self.save_file),
+                       ("Modell importieren…", self.import_model), None, ("Beenden", self.destroy)])
+        menu("Assistent", [("Neue KI nach Zielen…", self.goal_wizard),
+                           ("Ziele prüfen / ändern…", lambda: self.goal_wizard(check_current=True)),
+                           ("Optimieren (Ratgeber)", self.advise)])
+        menu("Einstellungen", [("Schalter-Übersicht (an/aus/eigen)", self.switch_overview),
+                               ("Ansicht: nur eingeschaltete", lambda: self._set_view("Nur eingeschaltete")),
+                               ("Ansicht: nur eigene Werte", lambda: self._set_view("Nur eigene Werte")),
+                               ("Ansicht: alle", lambda: self._set_view("Alle")), None,
+                               ("Prüfen", self.validate), ("Rückgängig", self.undo), ("Wiederholen", self.redo)])
+        menu("Techniken", [("Katalog öffnen…", self.techniques_window),
+                           ("Nur eingeschaltete Techniken anzeigen",
+                            lambda: self.log_write(self.project.technique_overview(only_active=True) + "\n"))])
+        menu("Ausführen", [("Bauen", self.build_model), ("Trainieren", self.train),
+                           ("Ablauf starten (workflow)", self.run_workflow), None,
+                           ("Automatische Suche (AutoML)", self.automl),
+                           ("Föderiert trainieren", lambda: self._run_bg("Föderiertes Lernen",
+                                                                        self.project.federated_train)),
+                           ("Model Soup", lambda: self._run_bg("Model Soup", self.project.model_soup)),
+                           ("Kreuzvalidierung (5-fach)", lambda: self._run_bg("Kreuzvalidierung",
+                                                                             lambda: self.project.cross_validate(5))),
+                           ("Lernraten-Finder", lambda: self._run_bg("LR-Finder", lambda: self.project.find_lr())),
+                           None, ("Probelauf & Gewichte…", self.inspector)])
+        menu("Analyse", [("Aufbau", self.architecture), ("Speicherschätzung", self.memory),
+                         ("Hardware & automatische Einstellungen",
+                          lambda: self.log_write("\n" + self.project.hardware_report() + "\n")),
+                         ("Notfall-Optionen (Training)…", lambda: self.fallback_dialog(None))])
+        menu("Qualität", [("Diagnose nach dem Training", self.diagnose),
+                          ("Automatisch verbessern (2 Runden)", self.improve),
+                          ("Wirkungslose Einstellungen", self.inactive_settings), None,
+                          ("Perfektions-Check (Anforderungen)", self.perfection_check),
+                          ("Alles Empfohlene einschalten", self.apply_perfection), None,
+                          ("Datenprüfung", lambda: self._run_bg("Datenprüfung", lambda: str(self.project.data_check()))),
+                          ("Daten-Vorschläge übernehmen", self.apply_data_fixes), None,
+                          ("Testmenge auswerten", lambda: self._run_bg("Test", self.project.test)),
+                          ("Vergleich mit Basis", lambda: self._run_bg("Basis", self.project.baseline)),
+                          ("Fehleranalyse", lambda: self._run_bg("Fehleranalyse", self._error_text)),
+                          ("Kalibrieren", lambda: self._run_bg("Kalibrierung", self.project.calibrate)),
+                          ("Robustheit prüfen", lambda: self._run_bg("Robustheit",
+                                                                    lambda: str(self.project.robustness_report()))),
+                          ("Merkmals-Wichtigkeit", lambda: self._run_bg("Merkmals-Wichtigkeit",
+                                                                       lambda: str(self.project.feature_importance()))),
+                          None, ("Modellkarte anzeigen", self.model_card)])
+        menu("Einsatz", [("Reduzieren / Export…", self.reduce_dialog),
+                         ("Notfall-Ausführung…", lambda: self.fallback_dialog(None)),
+                         ("HTTP-Dienst starten (lokal)", self.start_server),
+                         ("Verteilt trainieren (Startbefehl)…", self.distributed_info)])
+        menu("Hilfe", [("Möglichkeiten-Katalog", self.possibilities),
+                       ("Anforderungs-Katalog", self.requirements_catalog)])
+
+    def _set_view(self, name: str) -> None:
+        self.view.set(name)
+        self.show_form(self.current_path)
+
+    def set_project(self, project: Any, message: str = "") -> None:
+        self.project = project
+        self.preset_var.set(project.config.name)
+        self.refresh_tree()
+        self.select_path("")
+        if message:
+            self.log_write(message + "\n")
+
+    def goal_wizard(self, check_current: bool = False) -> None:
+        from .assistant import GoalWizard
+
+        GoalWizard(self, check_current)
+
+    def techniques_window(self) -> None:
+        from .assistant import TechniqueWindow
+
+        TechniqueWindow(self)
+
+    def switch_overview(self) -> None:
+        self.log_write(self.project.switch_overview() + "\n")
+
+    def auto_from_data(self) -> None:
+        """Datei oder Ordner wählen → Project.auto (Vorlage erkennen, Empfehlungen, Training, Test) im Hintergrund."""
+        from tkinter import filedialog
+
+        from ..project import Project
+
+        path = filedialog.askopenfilename(title="Daten wählen (CSV, JSONL, TXT, PT) – Abbrechen für einen Ordner",
+                                          filetypes=[("Daten", "*.csv *.tsv *.jsonl *.json *.txt *.pt"),
+                                                     ("Alle", "*")])
+        if not path:
+            path = filedialog.askdirectory(title="Bild-/Audio-Ordner wählen (ordner/<klasse>/…)")
+        if not path:
+            return
+
+        def job():
+            p = Project.auto(path, train=True)
+            self.after(0, lambda: self.set_project(p, f"✓ Project.auto: {p.config.name} · Test "
+                                                      f"{ {k: round(v, 3) for k, v in p.last_test.items()} }"))
+            return str(p.perfection_check())
+
+        self._run_bg("Automatisch aus Daten", job)
+
+    # ------------------------------------------------------------ Qualität
+    def diagnose(self) -> None:
+        if not self.project.history:
+            self.log_write("Erst trainieren – die Diagnose liest die Lernkurven.\n")
+            return
+        self.log_write("\n" + str(self.project.diagnose()) + "\n")
+
+    def improve(self) -> None:
+        def job():
+            r = self.project.improve(2)
+            self.after(0, self.refresh_tree)
+            lines = [f"Runde {x['runde']}: {r['metrik']} {x['vorher']:.4g} → {x['nachher']:.4g} "
+                     f"({'behalten' if x['behalten'] else 'verworfen'}) – " + "; ".join(x["massnahmen"])
+                     for x in r["runden"]]
+            return "\n".join(lines + [f"{r['metrik']}: {r['start']:.4g} → {r['ende']:.4g}"])
+
+        self._run_bg("Automatisch verbessern", job)
+
+    def inactive_settings(self) -> None:
+        items = self.project.inactive_settings()
+        self.log_write("\n" + ("\n".join(f"⚠ {i}" for i in items) if items else
+                               "✓ Alle geänderten Einstellungen wirken.") + "\n")
+
+    def perfection_check(self) -> None:
+        self.log_write("\n" + str(self.project.perfection_check()) + "\n")
+
+    def apply_perfection(self) -> None:
+        done = self.project.apply_perfection()
+        self.refresh_tree()
+        self.log_write(f"✓ eingeschaltet: {', '.join(done) or 'nichts (alles Schaltbare ist an)'} · Punktzahl jetzt "
+                       f"{self.project.perfection_check().score:.0f}/100 · rückgängig mit ↶\n")
+
+    def apply_data_fixes(self) -> None:
+        changed = self.project.apply_data_fixes()
+        self.refresh_tree()
+        self.log_write(f"✓ übernommen: {', '.join(changed) or 'nichts'}\n")
+
+    def _error_text(self) -> str:
+        ea = self.project.error_analysis()
+        if "konfusionsmatrix" not in ea:
+            return f"Mittlerer Fehler {ea['mittlerer_fehler']:.4g}; größte: " + ", ".join(
+                f"#{e['index']} ({e['fehler']:.3g})" for e in ea["groesste_fehler"])
+        rows = "\n".join("  " + " ".join(f"{v:>5}" for v in r) for r in ea["konfusionsmatrix"])
+        worst = "\n".join(f"  #{w['index']}: richtig {w['richtig']}, vorhergesagt {w['vorhergesagt']} "
+                          f"({w['sicherheit']:.0%})" for w in ea["sicherste_fehler"])
+        return f"Fehlerquote {ea['fehlerquote']:.3f}\nKonfusionsmatrix (Zeile = richtig):\n{rows}\nSicherste Fehler:\n{worst}"
+
+    def _text_window(self, title: str, text: str) -> None:
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.geometry("1000x700")
+        txt = tk.Text(win, wrap="word", font=("TkFixedFont", 9))
+        txt.pack(fill="both", expand=True)
+        txt.insert("1.0", text)
+
+    def model_card(self) -> None:
+        self._text_window("Modellkarte", self.project.model_card())
+
+    def requirements_catalog(self) -> None:
+        from ..requirements import requirements_markdown
+
+        self._text_window("Anforderungs-Katalog", requirements_markdown())
+
+    def start_server(self) -> None:
+        import threading
+
+        from .serve import create_server
+
+        if getattr(self, "_server", None) is not None:
+            host, port = self._server.server_address[:2]
+            self.log_write(f"HTTP-Dienst läuft bereits: http://{host}:{port}/\n")
+            return
+        if self.project.model is None:
+            messagebox.showinfo("HTTP-Dienst", "Erst trainieren oder ein gespeichertes Projekt laden.")
+            return
+        try:
+            self._server = create_server(self.project)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("HTTP-Dienst", str(exc))
+            return
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        host, port = self._server.server_address[:2]
+        self.log_write(f"✓ HTTP-Dienst: http://{host}:{port}/  (POST /vorhersage, /frage, /generieren; endet mit "
+                       "dem Programm)\n")
+
+    def possibilities(self) -> None:
+        from .docs import capabilities_markdown
+
+        win = tk.Toplevel(self)
+        win.title("Möglichkeiten-Katalog")
+        win.geometry("1000x700")
+        txt = tk.Text(win, wrap="word", font=("TkFixedFont", 9))
+        txt.pack(fill="both", expand=True)
+        txt.insert("1.0", capabilities_markdown())
+
+    def run_workflow(self) -> None:
+        def job():
+            report = self.project.run()
+            return "Ablauf fertig: " + ", ".join(report)
+
+        self._run_bg("Ablauf", job)
+
+    def automl(self) -> None:
+        def job():
+            method = self.project.config.workflow.search.method
+            return str(self.project.tune(method if method != "none" else "random"))
+
+        self._run_bg("Automatische Suche", job)
+
+    def distributed_info(self) -> None:
+        import shlex
+
+        from ..training.distributed import launch_command
+
+        cmd = launch_command("projekt.json", 2, self.project.config.training.distributed.strategy
+                             if self.project.config.training.distributed.strategy != "none" else "ddp")
+        text = ("Verteiltes Training startet mehrere Prozesse (je GPU einer). Projekt speichern (Datei → Speichern) "
+                "und im Terminal starten:\n\n  " + " ".join(shlex.quote(c) for c in cmd) +
+                "\n\nKurzform: python -m ki_baukasten verteilt projekt.json --prozesse 2 --strategie ddp"
+                "\nMehrere Rechner: --knoten 2 --knoten-rang <i> --master <adresse:port>")
+        messagebox.showinfo("Verteilt trainieren", text)
 
     # ================================================================ Aktionen
     def load_preset(self, name: str) -> None:
@@ -696,8 +1020,87 @@ class BaukastenGUI(tk.Tk):
         btns = ttk.Frame(win, padding=6)
         btns.pack(fill="x")
         ttk.Button(btns, text="Empfehlung anwenden (verkleinern)", command=apply).pack(side="left", padx=4)
+        b = ttk.Button(btns, text="Notfall-Ausführung…", command=lambda: self.fallback_dialog(names[var.get()]))
+        b.pack(side="left", padx=4)
+        HoverTip(b, lambda: "Passt das Modell trotz Verkleinern nicht? Dann stückweise ausführen: Schicht für Schicht "
+                            "von der SSD, Blöcke im RAM, Teile auf der CPU, LISA, QLoRA …")
         ttk.Button(btns, text="Exportieren…", command=export).pack(side="left", padx=4)
         show()
+
+    def fallback_dialog(self, target: str | None = None) -> None:
+        """Notfall-Optionen (stückweise Ausführung) für ein Zielsystem bzw. Budget wählen und einschalten."""
+        from ..analysis.targets import TARGETS
+
+        win = tk.Toplevel(self)
+        win.title("Notfall-Ausführung – wenn das Modell nicht passt")
+        win.geometry("980x560")
+        top = ttk.Frame(win, padding=6)
+        top.pack(fill="x")
+        ttk.Label(top, text="Zielsystem:").pack(side="left")
+        tvar = tk.StringVar(value=target or "laptop_gpu")
+        ttk.Combobox(top, textvariable=tvar, values=list(TARGETS), width=20, state="readonly").pack(side="left", padx=4)
+        ttk.Label(top, text="oder Budget (MB):").pack(side="left", padx=(8, 0))
+        bvar = tk.StringVar(value="")
+        ttk.Entry(top, textvariable=bvar, width=8).pack(side="left", padx=4)
+        mvar = tk.StringVar(value="Inferenz")
+        ttk.Combobox(top, textvariable=mvar, values=["Inferenz", "Training"], width=10, state="readonly").pack(
+            side="left", padx=4)
+        cols = ("passt", "geraet", "tempo", "titel")
+        tree = ttk.Treeview(win, columns=cols, show="headings", height=12)
+        for c, w, t in zip(cols, (50, 110, 90, 640), ("passt", "Gerät (MB)", "langsamer", "Option")):
+            tree.heading(c, text=t)
+            tree.column(c, width=w, anchor="w")
+        tree.pack(fill="both", expand=True, padx=6)
+        detail = tk.Text(win, height=8, wrap="word", font=("TkFixedFont", 9))
+        detail.pack(fill="x", padx=6, pady=4)
+        options: dict[str, Any] = {}
+
+        def params() -> tuple[str | None, float | None, bool]:
+            budget = float(bvar.get().replace(",", ".")) if bvar.get().strip() else None
+            return (None if budget is not None else tvar.get()), budget, mvar.get() == "Training"
+
+        def refresh(_e=None):
+            tree.delete(*tree.get_children())
+            options.clear()
+            try:
+                tgt, budget, training = params()
+                for o in self.project.fallback_options(tgt, budget, training):
+                    options[o.key] = o
+                    tree.insert("", "end", iid=o.key, values=("✓" if o.fits else "✗", f"{o.peak_mb:.1f}",
+                                                             f"{o.slowdown:.1f}×", o.title))
+            except Exception as exc:  # noqa: BLE001
+                detail.delete("1.0", "end")
+                detail.insert("1.0", f"Nicht möglich: {exc}")
+
+        def select(_e=None):
+            sel = tree.selection()
+            if sel:
+                detail.delete("1.0", "end")
+                detail.insert("1.0", str(options[sel[0]]))
+
+        def apply():
+            sel = tree.selection()
+            if not sel:
+                return
+            tgt, budget, training = params()
+            try:
+                chosen = self.project.apply_fallback(sel[0], tgt, budget, training)
+            except ConfigError as exc:
+                messagebox.showerror("Notfall-Ausführung", str(exc), parent=win)
+                return
+            self.log_write(f"✓ Notfall-Ausführung '{chosen.key}' eingeschaltet: {chosen.title}\n"
+                           + (f"  Nutzung: {chosen.usage}\n" if chosen.usage else ""))
+            self.refresh_tree()
+            self.select_path(self.current_path if self._exists(self.current_path) else "")
+
+        tree.bind("<<TreeviewSelect>>", select)
+        bar = ttk.Frame(win, padding=6)
+        bar.pack(fill="x")
+        ttk.Button(bar, text="Neu berechnen", command=refresh).pack(side="left", padx=4)
+        ttk.Button(bar, text="Gewählte Option einschalten", command=apply).pack(side="left", padx=4)
+        ttk.Label(bar, text="Zahlen sind grobe Schätzungen · Rückgängig mit ↶", foreground="#666").pack(side="left",
+                                                                                                    padx=12)
+        refresh()
 
     def undo(self) -> None:
         if self.project.undo():

@@ -565,6 +565,7 @@ class _AddPositional(nn.Module):
         self.enc = enc
 
     def forward(self, x):
+        self.enc.check_length(x.shape[1])
         return self.enc.embed(x, torch.arange(x.shape[1], device=x.device))
 
 

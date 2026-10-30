@@ -9,6 +9,10 @@ Befehle
 ==============  =================================================================
 Befehl          Zweck
 ==============  =================================================================
+auto            von den Daten zur fertigen KI in einem Schritt (Datenart erkennen, Vorlage, Empfehlungen, Training,
+                Test, Basis-Vergleich, Speichern)
+ziele           Ziel-Assistent: Zweck & Prioritäten → empfohlene/abgeratene Modelle, Techniken; neues Projekt
+hardware        erkanntes Rechengerät und automatisch gewählte Einstellungen
 presets         Vorlagen nach Anwendungsgebiet auflisten
 modelle         alle Modelle mit Kurzbeschreibung
 komponenten     alle Registries bzw. Einträge einer Registry (``komponenten activation``)
@@ -22,18 +26,30 @@ tensoren        Parameternamen/-formen (für Tensor-Regeln) + Regel-Vorschau
 aufbau          komplette Aufbau-Darstellung (Text, Markdown, Mermaid, JSON)
 optimieren      Ratgeber: Speicher-/Tempo-/Stabilitätsvorschläge (optional übernehmen)
 suche           Einstellungen per Volltext (Pfade + Tooltips) finden
+schalter        jede Einstellung An / Aus / Eigen: Übersicht, umschalten, speichern
+techniken       Katalog aller Techniken (Stabilität … Schwarm, Evolution) mit Status, an/aus
 vergleiche      zwei Vorlagen/Dateien vergleichen
 exportieren     Modell exportieren (torch.export, TorchScript, ONNX, state_dict)
 importieren     fremdes Modell laden (pt2, TorchScript, state_dict, safetensors, HF) → Projekt
 komprimieren    Modell eindampfen (Pruning, Low-Rank, Quantisierung, Heilen) mit Bericht
 zielsysteme     Geräteprofile + Übersicht, ob/wie das Modell darauf passt
 reduzieren      Empfehlung für ein Zielsystem anzeigen und anwenden (+ Export)
+notfall         passt trotzdem nicht? stückweise ausführen (SSD/RAM-Auslagerung, Aufteilen, LISA …)
 schueler        Lehrer-Schüler: kleineres Modell per Distillation trainieren
 probelauf       Forward/Backward mit allen Wegen, Statistiken, Warnungen (+ Testlauf)
 moeglichkeiten  Katalog aller Möglichkeiten (Speicher, Tempo, Kompression, Training …)
 trainieren      trainieren (und speichern)
-generieren      gespeichertes Projekt laden und Text/Samples erzeugen
-doku            vollständige Parameter-Referenz als Markdown exportieren
+ablauf          ganzer Ablauf: Suche → Training (normal/föderiert/Model Soup) → Prüfung → Kompression → Export
+automl          automatische Suche: Zufall, Gitter, Evolution, Partikelschwarm, PBT
+verteilt        verteilt trainieren: mehrere GPUs/Rechner/Prozesse (DDP, ZeRO-1, FSDP über torchrun)
+generieren      gespeichertes Projekt laden und Text/Samples erzeugen (Instruction-Modelle: Frage → Antwort)
+perfektion      Anforderungs-Katalog: was braucht diese KI, was ist an/aus/offen/fehlt (+ alles Empfohlene an)
+datenpruefung   Daten prüfen (Lecks, Duplikate, Klassen, NaN, Skalen …) mit Abhilfen
+bewerten        gespeichertes Projekt bewerten: Validierung, Test, Basis, Fehleranalyse, Kalibrierung
+modellkarte     Modellkarte (Markdown) eines gespeicherten Projekts anzeigen/schreiben
+drift           neue Daten (CSV/Tensor-Datei) mit den Trainingsdaten vergleichen (PSI, KS, Vorhersage-Drift)
+bereitstellen   gespeichertes Projekt als HTTP-Dienst starten (JSON: /vorhersage, /frage, /generieren)
+doku            vollständige Parameter-Referenz + Anforderungs-Katalog als Markdown exportieren
 gui             grafische Oberfläche starten
 ==============  =================================================================
 
@@ -91,6 +107,43 @@ def _project(source: str, sets: list[str] | None = None):
                 raise
             p.set(path, raw)  # z. B. 'none' als Auswahlwert statt None
     return p
+
+
+def cmd_ziele(a: argparse.Namespace) -> None:
+    from ..analysis.goals import PRIORITIES, TASKS, evaluate_goals
+
+    if a.liste:
+        print("Aufgaben:\n" + "\n".join(f"  {k:<24} {v}" for k, v in TASKS.items()))
+        print("Prioritäten:\n" + "\n".join(f"  {k:<24} {v}" for k, v in PRIORITIES.items()))
+        return
+    goals: dict[str, Any] = {}
+    if a.quelle:
+        p = _project(a.quelle, a.setze)
+        goals = p.config.goals.to_dict()
+    for key, value in (("task", a.aufgabe), ("description", a.text), ("data_size", a.daten), ("labels", a.labels),
+                       ("sequence_length", a.sequenzen), ("target", a.ziel), ("training_hardware", a.hardware)):
+        if value is not None:
+            goals[key] = value
+    if a.prioritaeten:
+        goals["priorities"] = [x.strip() for x in a.prioritaeten.split(",") if x.strip()]
+    if a.vortrainiert:
+        goals["pretrained"] = True
+    if a.quelle:
+        p.config.goals.update(goals)
+        print(p.goal_check())
+        target_project = p
+    else:
+        print(evaluate_goals(goals))
+        target_project = None
+    if a.erstellen:
+        from ..project import Project
+
+        q = Project.from_goals(goals, choice=a.wahl)
+        q.config.save(a.erstellen, only_changed=True)
+        print(f"\nNeues Projekt aus Vorlage '{q.config.name}' gespeichert: {a.erstellen}")
+    elif target_project is not None and a.speichern:
+        target_project.config.save(a.speichern, only_changed=True)
+        print(f"Ziele gespeichert: {a.speichern}")
 
 
 def cmd_presets(a: argparse.Namespace) -> None:
@@ -239,6 +292,54 @@ def cmd_suche(a: argparse.Namespace) -> None:
         print(f"{path:<58} {what}")
 
 
+def cmd_schalter(a: argparse.Namespace) -> None:
+    p = _project(a.quelle, a.setze)
+    for state, patterns in (("aus", a.aus), ("an", a.an), ("standard", a.standard)):
+        for pattern in patterns:
+            if "." not in pattern and "*" not in pattern:
+                try:
+                    p.config.get(pattern)
+                except Exception:
+                    pattern = "**." + pattern
+            changed = p.switch(pattern, state)
+            print(f"{state:>8}: {pattern} → {len(changed)} geändert" + (f" ({', '.join(changed[:6])}"
+                                                                      f"{' …' if len(changed) > 6 else ''})" if changed else ""))
+    if a.uebersicht or not (a.muster or a.zustand):
+        print(p.switch_overview(a.stufe))
+    if a.muster or a.zustand:
+        pattern = a.muster
+        if pattern and "." not in pattern and "*" not in pattern:
+            pattern = "**." + pattern
+        infos = p.switches(pattern, a.zustand, a.stufe, a.nur_schaltbar)
+        for info in infos:
+            print(f"  {info}")
+        print(f"{len(infos)} Einstellungen.  Umschalten: --an/--aus/--standard MUSTER  oder  --setze pfad=aus")
+    if a.speichern:
+        p.config.save(a.speichern, only_changed=True)
+        print(f"Gespeichert: {a.speichern}")
+
+
+def cmd_techniken(a: argparse.Namespace) -> None:
+    p = _project(a.quelle, a.setze)
+    for key in a.an:
+        print(f"an:  {key} → {', '.join(p.enable(key)) or 'war schon an'}")
+    for key in a.aus:
+        print(f"aus: {key} → {', '.join(p.disable(key)) or 'war schon aus'}")
+    if a.kategorie:
+        from ..techniques import CATEGORIES
+
+        if a.kategorie not in CATEGORIES:
+            raise SystemExit(f"Unbekannte Kategorie '{a.kategorie}'. Verfügbar: {', '.join(CATEGORIES)}")
+        for row in p.techniques(a.kategorie, max_level=a.stufe):
+            t = row.technique
+            print(f"  {row}\n      {t.tooltip.what} {t.tooltip.why}" + (f"  [{t.hint}]" if t.hint else ""))
+    else:
+        print(p.technique_overview(a.nur_aktive, a.stufe))
+    if a.speichern:
+        p.config.save(a.speichern, only_changed=True)
+        print(f"Gespeichert: {a.speichern}")
+
+
 def cmd_vergleiche(a: argparse.Namespace) -> None:
     p = _project(a.quelle, a.setze)
     diff = p.diff(a.andere)
@@ -322,6 +423,21 @@ def cmd_reduzieren(a: argparse.Namespace) -> None:
             print(f"Exportiert nach: {a.export}.*")
 
 
+def cmd_notfall(a: argparse.Namespace) -> None:
+    from ..analysis.fallback import options_text
+
+    p = _project(a.quelle, a.setze)
+    opts = p.fallback_options(a.ziel, a.budget_mb, a.training)
+    budget = p._budget_mb(a.ziel, a.budget_mb)
+    print(options_text(opts, budget, limit=None if a.alle else 8))
+    if a.anwenden:
+        chosen = p.apply_fallback(a.anwenden, a.ziel, a.budget_mb, a.training)
+        print(f"\nEingeschaltet: {chosen.title}" + (f"\nNutzung: {chosen.usage}" if chosen.usage else ""))
+        if a.speichern:
+            p.config.save(a.speichern, only_changed=True)
+            print(f"Konfiguration gespeichert: {a.speichern}")
+
+
 def cmd_schueler(a: argparse.Namespace) -> None:
     p = _load_or_build(a.quelle, a.setze, train=a.trainieren)
     student = p.distill(width=a.breite, depth=a.tiefe, steps=a.schritte, feature_weight=a.features)
@@ -368,9 +484,46 @@ def cmd_trainieren(a: argparse.Namespace) -> None:
     p.train()
     if p.config.data.name == "anomaly":
         print("Anomalie-Erkennung:", p.anomaly_report())
+    from ..training.distributed import is_main_process
+
     target = p.save(a.speichern) if a.speichern != "-" else None
-    if target:
+    if target and is_main_process():
         print(f"Gespeichert in: {target}")
+
+
+def cmd_ablauf(a: argparse.Namespace) -> None:
+    p = _project(a.quelle, a.setze)
+    report = p.run()
+    print("Ablauf fertig: " + ", ".join(report))
+    if a.speichern:
+        print(f"Gespeichert in: {p.save(a.speichern)}")
+
+
+def cmd_automl(a: argparse.Namespace) -> None:
+    p = _project(a.quelle, a.setze)
+    space = json.loads(a.raum) if a.raum else None
+    result = p.tune(a.methode, space=space, trials=a.versuche, steps_per_trial=a.schritte,
+                    population=a.population, generations=a.generationen, metric=a.metrik, mode=a.richtung)
+    print(result)
+    if a.speichern:
+        p.config.save(a.speichern, only_changed=True)
+        print(f"Konfiguration mit den besten Einstellungen: {a.speichern}")
+
+
+def cmd_verteilt(a: argparse.Namespace) -> None:
+    import shlex
+    import subprocess
+
+    from ..training.distributed import launch_command
+
+    extra = [x for item in a.setze for x in ("--setze", item)]
+    if a.speichern:
+        extra += ["--speichern", a.speichern]
+    cmd = launch_command(a.quelle, a.prozesse, a.strategie, a.knoten, a.knoten_rang, a.master, extra)
+    print("Start:", " ".join(shlex.quote(c) for c in cmd))
+    if a.nur_anzeigen:
+        return
+    sys.exit(subprocess.call(cmd))
 
 
 def cmd_generieren(a: argparse.Namespace) -> None:
@@ -378,7 +531,9 @@ def cmd_generieren(a: argparse.Namespace) -> None:
 
     p = Project.load(a.ordner)
     model = p.model
-    if hasattr(model, "generate") and hasattr(model, "lm_head"):
+    if p._info().get("prompt_template"):
+        print(p.ask(a.prompt, max_new_tokens=a.laenge))
+    elif hasattr(model, "generate") and hasattr(model, "lm_head"):
         print(p.generate(a.prompt, max_new_tokens=a.laenge, temperature=a.temperatur, top_k=a.top_k))
     else:
         samples = p.sample(a.anzahl)
@@ -386,10 +541,151 @@ def cmd_generieren(a: argparse.Namespace) -> None:
 
 
 def cmd_doku(a: argparse.Namespace) -> None:
+    from ..requirements import requirements_markdown
     from .docs import export_markdown
 
     path = export_markdown(a.ausgabe)
     print(f"Parameter-Referenz geschrieben: {path}")
+    req = Path(path).parent / "ANFORDERUNGEN.md"
+    req.write_text(requirements_markdown(), encoding="utf-8")
+    print(f"Anforderungs-Katalog geschrieben: {req}")
+
+
+def _open(source: str, sets: list[str] | None = None):
+    """Gespeicherter Projektordner (mit Gewichten) oder Preset/Datei – ohne zu bauen."""
+    from ..project import Project
+
+    if Path(source).is_dir():
+        return Project.load(source)
+    return _project(source, sets)
+
+
+def cmd_auto(a: argparse.Namespace) -> None:
+    from ..project import Project
+
+    over = {}
+    for item in a.setze:
+        path, value = item.split("=", 1)
+        over[path.strip()] = _parse_value(value.strip())
+    p = Project.auto(a.daten, target=a.ziel, description=a.beschreibung or "", steps=a.schritte,
+                     improve=a.verbessern, **over)
+    if p.last_test:
+        print("Test: " + "  ".join(f"{k}={v:.4g}" for k, v in p.last_test.items()))
+    if p.last_baseline:
+        print("Basis vs. Modell: " + "  ".join(f"{k}={v:.4g}" for k, v in p.last_baseline.items()))
+    print(f"Perfektions-Check: {p.perfection_check().score:.0f}/100")
+    target = p.save(a.speichern)
+    print(f"Gespeichert in: {target}  (bereitstellen: python -m ki_baukasten bereitstellen {target})")
+
+
+def cmd_hardware(a: argparse.Namespace) -> None:
+    print(_open(a.quelle).hardware_report())
+
+
+def cmd_diagnose(a: argparse.Namespace) -> None:
+    p = _open(a.quelle, a.setze)
+    if not p.history:
+        p.train()
+    print(p.diagnose())
+    if a.verbessern:
+        result = p.improve(a.verbessern)
+        for r in result["runden"]:
+            print(f"Runde {r['runde']}: {result['metrik']} {r['vorher']:.4g} → {r['nachher']:.4g} "
+                  f"({'behalten' if r['behalten'] else 'verworfen'}) – " + "; ".join(r["massnahmen"]))
+        print(f"{result['metrik']}: {result['start']:.4g} → {result['ende']:.4g}")
+        if a.speichern:
+            print(f"Gespeichert in: {p.save(a.speichern)}")
+
+
+def cmd_perfektion(a: argparse.Namespace) -> None:
+    if a.katalog:
+        from ..requirements import requirements_markdown
+
+        text = requirements_markdown()
+        if a.ausgabe:
+            Path(a.ausgabe).write_text(text, encoding="utf-8")
+            print(f"Katalog geschrieben: {a.ausgabe}")
+        else:
+            print(text)
+        return
+    p = _open(a.quelle, a.setze)
+    print(p.perfection_check(a.stufe))
+    if a.anwenden:
+        done = p.apply_perfection(a.stufe, include_heavy=a.aufwendig)
+        print(f"\nEingeschaltet: {', '.join(done) or 'nichts (alles Schaltbare ist schon an)'}")
+        print(f"Neue Punktzahl: {p.perfection_check(a.stufe).score:.0f} / 100")
+    if a.speichern:
+        p.config.save(a.speichern, only_changed=True)
+        print(f"Gespeichert: {a.speichern}")
+
+
+def cmd_datenpruefung(a: argparse.Namespace) -> None:
+    p = _open(a.quelle, a.setze)
+    report = p.data_check()
+    print(report)
+    if a.anwenden:
+        print("\nÜbernommen: " + (", ".join(p.apply_data_fixes(report)) or "nichts"))
+    if a.speichern:
+        p.config.save(a.speichern, only_changed=True)
+        print(f"Gespeichert: {a.speichern}")
+
+
+def cmd_bewerten(a: argparse.Namespace) -> None:
+    p = _open(a.quelle, a.setze)
+    if p.trainer is None and not Path(a.quelle).is_dir():
+        p.train()
+    data = None
+    if Path(a.quelle).is_dir():                     # geladenes Projekt: auf seinen Daten bewerten
+        bundle = p.data()
+        data = bundle.val if bundle.val is not None else bundle.train
+    fmt = (lambda d: "  ".join(f"{k}={v:.4g}" for k, v in d.items() if isinstance(v, (int, float))))
+    print("Validierung: " + fmt(p.evaluate(data)))
+    if p.test_data is not None:
+        print("Test:        " + fmt(p.test()))
+    if p.config.training.paradigm.name == "supervised":
+        print("Basis:       " + fmt(p.baseline(data)))
+        ea = p.error_analysis(data, top=a.top)
+        if "konfusionsmatrix" in ea:
+            print(f"Fehlerquote: {ea['fehlerquote']:.3f}")
+            print("Konfusionsmatrix (Zeile = richtig, Spalte = vorhergesagt):")
+            for row in ea["konfusionsmatrix"]:
+                print("  " + " ".join(f"{v:>5}" for v in row))
+            for w in ea["sicherste_fehler"]:
+                print(f"  #{w['index']}: richtig {w['richtig']}, vorhergesagt {w['vorhergesagt']} "
+                      f"({w['sicherheit']:.0%} sicher)")
+        else:
+            print(f"Mittlerer Fehler: {ea['mittlerer_fehler']:.4g}; größte: "
+                  + ", ".join(f"#{e['index']} ({e['fehler']:.3g})" for e in ea["groesste_fehler"]))
+        if a.kalibrieren:
+            print("Kalibrierung: " + fmt(p.calibrate(data)))
+
+
+def cmd_modellkarte(a: argparse.Namespace) -> None:
+    p = _open(a.quelle)
+    text = p.model_card(a.ausgabe)
+    print(text if not a.ausgabe else f"Modellkarte geschrieben: {a.ausgabe}")
+
+
+def cmd_drift(a: argparse.Namespace) -> None:
+    import csv as _csv
+
+    import torch
+
+    from ..data.artifacts import prepare_raw
+
+    p = _open(a.quelle)
+    if a.neu.endswith(".pt"):
+        new = torch.load(a.neu, weights_only=True)
+    else:
+        with open(a.neu, newline="", encoding="utf-8") as f:
+            rows = list(_csv.DictReader(f, delimiter=a.trenner))
+        new = {"inputs": prepare_raw(p._info(), rows)}
+    print(p.drift_report(new, with_model=not a.ohne_modell))
+
+
+def cmd_bereitstellen(a: argparse.Namespace) -> None:
+    p = _open(a.quelle)
+    p.serve(host=a.host, port=a.port, api_key=a.schluessel)
 
 
 def cmd_gui(a: argparse.Namespace) -> None:
@@ -408,6 +704,25 @@ def build_parser() -> argparse.ArgumentParser:
         else:
             sp.add_argument("quelle", help="Preset-Name oder Konfigurationsdatei (.json/.yaml)")
         sp.add_argument("--setze", action="append", default=[], metavar="PFAD=WERT", help="Einstellung überschreiben")
+
+    sp = sub.add_parser("ziele", help="Ziel-Assistent: Modelle nach Zweck und Prioritäten")
+    sp.add_argument("quelle", nargs="?", help="vorhandenes Projekt prüfen (Preset oder Datei, optional)")
+    sp.add_argument("--setze", action="append", default=[])
+    sp.add_argument("--aufgabe", help="z. B. text_erzeugen, bild_klassifizieren, zeitreihe_prognose (--liste)")
+    sp.add_argument("--text", help="freie Beschreibung (Stichwörter wie Handy, Echtzeit, Datenschutz werden erkannt)")
+    sp.add_argument("--prioritaeten", help="Komma-Liste, z. B. genauigkeit,wenig_speicher,datenschutz")
+    sp.add_argument("--daten", choices=["winzig", "klein", "mittel", "gross"])
+    sp.add_argument("--labels", choices=["vorhanden", "wenige", "keine"])
+    sp.add_argument("--sequenzen", choices=["keine", "kurz", "mittel", "lang", "sehr_lang"])
+    sp.add_argument("--ziel", help="Zielgerät (smartphone, raspberry_pi, laptop_cpu, gaming_gpu …)")
+    sp.add_argument("--hardware", choices=["cpu", "laptop_gpu", "gaming_gpu", "apple_silicon", "rechenzentrum_gpu",
+                                           "cluster"])
+    sp.add_argument("--vortrainiert", action="store_true", help="vortrainiertes Modell anpassen (Feintuning)")
+    sp.add_argument("--erstellen", metavar="DATEI", help="neues Projekt aus der besten Empfehlung speichern")
+    sp.add_argument("--wahl", type=int, default=0, help="Index der Empfehlung für --erstellen (0 = beste)")
+    sp.add_argument("--speichern", help="geprüftes Projekt mit neuen Zielen speichern")
+    sp.add_argument("--liste", action="store_true", help="alle Aufgaben und Prioritäten zeigen")
+    sp.set_defaults(fn=cmd_ziele)
 
     sp = sub.add_parser("presets", help="Vorlagen auflisten")
     sp.add_argument("--gebiet", help="nur dieses Anwendungsgebiet")
@@ -484,6 +799,32 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--anzahl", type=int, default=40)
     sp.set_defaults(fn=cmd_suche)
 
+    sp = sub.add_parser("schalter", help="Einstellungen An/Aus/Eigen anzeigen und umschalten")
+    with_source(sp)
+    sp.add_argument("muster", nargs="?", help="nur passende Einstellungen (z. B. dropout, 'training.**')")
+    sp.add_argument("--zustand", choices=["an", "aus", "eigen"], help="nur Einstellungen in diesem Zustand")
+    sp.add_argument("--stufe", default="fortgeschritten", help="basis | fortgeschritten | experte | experimentell")
+    sp.add_argument("--nur-schaltbar", action="store_true", help="Pflicht-Einstellungen ausblenden")
+    sp.add_argument("--an", action="append", default=[], metavar="MUSTER", help="einschalten (mehrfach möglich)")
+    sp.add_argument("--aus", action="append", default=[], metavar="MUSTER", help="ausschalten (mehrfach möglich)")
+    sp.add_argument("--standard", action="append", default=[], metavar="MUSTER", help="auf Standard zurücksetzen")
+    sp.add_argument("--uebersicht", action="store_true", help="kompakte Übersicht zeigen")
+    sp.add_argument("--speichern", help="Ergebnis als Konfigurationsdatei speichern")
+    sp.set_defaults(fn=cmd_schalter)
+
+    sp = sub.add_parser("techniken", help="Techniken-Katalog mit Status, an/aus")
+    sp.add_argument("quelle", nargs="?", default="tabellen_klassifikation")
+    sp.add_argument("--setze", action="append", default=[])
+    sp.add_argument("--kategorie", help="nur diese Kategorie (stabilitaet, generalisierung, tempo, grosse_modelle, "
+                                        "cluster, automl, schwarm, evolution, daten, datenschutz, ueberwachung, "
+                                        "kompression, experimentell)")
+    sp.add_argument("--nur-aktive", action="store_true")
+    sp.add_argument("--stufe", default=None)
+    sp.add_argument("--an", action="append", default=[], metavar="KENNUNG")
+    sp.add_argument("--aus", action="append", default=[], metavar="KENNUNG")
+    sp.add_argument("--speichern", help="Konfiguration speichern")
+    sp.set_defaults(fn=cmd_techniken)
+
     sp = sub.add_parser("vergleiche", help="zwei Vorlagen/Dateien vergleichen")
     with_source(sp)
     sp.add_argument("andere", help="zweite Vorlage oder Datei")
@@ -534,6 +875,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--speichern", help="reduziertes Projekt speichern")
     sp.set_defaults(fn=cmd_reduzieren)
 
+    sp = sub.add_parser("notfall", help="Notfall-Ausführung, wenn das Modell nicht passt")
+    with_source(sp)
+    sp.add_argument("--ziel", help="Zielsystem (Budget aus dem Profil), z. B. laptop_gpu")
+    sp.add_argument("--budget-mb", type=float, help="verfügbarer Gerätespeicher in MB")
+    sp.add_argument("--training", action="store_true", help="Optionen fürs Training statt für die Inferenz")
+    sp.add_argument("--anwenden", metavar="KENNUNG", help="Option einschalten ('auto' = schnellste passende)")
+    sp.add_argument("--alle", action="store_true", help="alle Optionen zeigen")
+    sp.add_argument("--speichern", help="Konfiguration nach dem Anwenden speichern")
+    sp.set_defaults(fn=cmd_notfall)
+
     sp = sub.add_parser("schueler", help="kleineres Schüler-Modell per Distillation")
     sp.add_argument("quelle")
     sp.add_argument("--setze", action="append", default=[])
@@ -565,6 +916,36 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--speichern", default=None, help="Zielordner (Standard: ausgaben/<name>; '-' = nicht speichern)")
     sp.set_defaults(fn=cmd_trainieren)
 
+    sp = sub.add_parser("ablauf", help="ganzen Ablauf ausführen (workflow)")
+    with_source(sp)
+    sp.add_argument("--speichern", help="Zielordner für das fertige Projekt")
+    sp.set_defaults(fn=cmd_ablauf)
+
+    sp = sub.add_parser("automl", help="automatische Hyperparameter-Suche")
+    with_source(sp)
+    sp.add_argument("--methode", default="random", choices=["random", "grid", "evolution", "pso", "pbt"])
+    sp.add_argument("--raum", help="Suchraum als JSON, z. B. '{\"training.optimizer.lr\": {\"min\": 1e-4, "
+                                   "\"max\": 1e-2, \"log\": true}}' (leer = automatisch)")
+    sp.add_argument("--versuche", type=int, default=12)
+    sp.add_argument("--schritte", type=int, default=60, help="Trainingsschritte pro Versuch")
+    sp.add_argument("--population", type=int, default=6)
+    sp.add_argument("--generationen", type=int, default=3)
+    sp.add_argument("--metrik", default="val_loss")
+    sp.add_argument("--richtung", default="auto", choices=["auto", "min", "max"])
+    sp.add_argument("--speichern", help="Konfiguration mit den besten Einstellungen speichern")
+    sp.set_defaults(fn=cmd_automl)
+
+    sp = sub.add_parser("verteilt", help="verteilt trainieren (mehrere GPUs/Rechner)")
+    with_source(sp)
+    sp.add_argument("--prozesse", type=int, default=2, help="Prozesse pro Rechner (meist = Anzahl GPUs)")
+    sp.add_argument("--strategie", default="ddp", choices=["ddp", "zero1", "fsdp"])
+    sp.add_argument("--knoten", type=int, default=1, help="Anzahl Rechner")
+    sp.add_argument("--knoten-rang", type=int, default=0, help="Nummer dieses Rechners (0 … knoten-1)")
+    sp.add_argument("--master", help="Adresse:Port von Rechner 0 (bei mehreren Rechnern)")
+    sp.add_argument("--speichern", help="Zielordner für das trainierte Projekt")
+    sp.add_argument("--nur-anzeigen", action="store_true", help="Befehl nur anzeigen, nicht starten")
+    sp.set_defaults(fn=cmd_verteilt)
+
     sp = sub.add_parser("generieren", help="aus gespeichertem Projekt generieren")
     sp.add_argument("ordner")
     sp.add_argument("--prompt", default="Der ")
@@ -573,6 +954,73 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--top-k", type=int, default=None)
     sp.add_argument("--anzahl", type=int, default=16)
     sp.set_defaults(fn=cmd_generieren)
+
+    sp = sub.add_parser("auto", help="von den Daten zur fertigen KI in einem Schritt")
+    sp.add_argument("daten", help="CSV/TSV, Bild-/Audio-Ordner, JSONL (Frage/Antwort), TXT oder PT")
+    sp.add_argument("--ziel", help="Zielspalte (Tabellen; Standard: letzte Spalte)")
+    sp.add_argument("--beschreibung", help="wofür die KI gedacht ist (z. B. 'Kreditentscheidungen für Kunden')")
+    sp.add_argument("--schritte", type=int, help="Trainingsschritte (Standard: Vorlage)")
+    sp.add_argument("--setze", action="append", default=[], metavar="PFAD=WERT")
+    sp.add_argument("--verbessern", type=int, default=0, metavar="RUNDEN",
+                    help="danach automatisch verbessern (Diagnose → Maßnahmen → neu trainieren, nur Besseres bleibt)")
+    sp.add_argument("--speichern", default=None, help="Zielordner (Standard: ausgaben/<vorlage>)")
+    sp.set_defaults(fn=cmd_auto)
+
+    sp = sub.add_parser("diagnose", help="Diagnose nach dem Training mit konkreten Maßnahmen (optional anwenden)")
+    sp.add_argument("quelle", nargs="?", default="tabellen_klassifikation",
+                    help="gespeicherter Projektordner, Preset oder Konfigurationsdatei (wird dann trainiert)")
+    sp.add_argument("--setze", action="append", default=[], metavar="PFAD=WERT")
+    sp.add_argument("--verbessern", type=int, default=0, metavar="RUNDEN", help="Maßnahmen anwenden und neu trainieren")
+    sp.add_argument("--speichern", help="verbessertes Projekt speichern")
+    sp.set_defaults(fn=cmd_diagnose)
+
+    sp = sub.add_parser("hardware", help="Rechengerät und automatisch gewählte Einstellungen")
+    sp.add_argument("quelle", nargs="?", default="tabellen_klassifikation")
+    sp.set_defaults(fn=cmd_hardware)
+
+    sp = sub.add_parser("perfektion", help="Anforderungs-Katalog: Perfektions-Check eines Projekts")
+    sp.add_argument("quelle", nargs="?", default="tabellen_klassifikation",
+                    help="Preset, Konfigurationsdatei oder gespeicherter Projektordner")
+    sp.add_argument("--setze", action="append", default=[], metavar="PFAD=WERT")
+    sp.add_argument("--stufe", default="optional", choices=["pflicht", "empfohlen", "optional"],
+                    help="ab welcher Wichtigkeit anzeigen/einschalten")
+    sp.add_argument("--anwenden", action="store_true", help="alle schaltbaren offenen Anforderungen einschalten")
+    sp.add_argument("--aufwendig", action="store_true", help="auch aufwendige Techniken (DP-SGD, föderiert …)")
+    sp.add_argument("--katalog", action="store_true", help="ganzen Katalog als Markdown ausgeben")
+    sp.add_argument("-o", "--ausgabe", help="Katalog in diese Datei schreiben")
+    sp.add_argument("--speichern", help="geänderte Konfiguration speichern")
+    sp.set_defaults(fn=cmd_perfektion)
+
+    sp = sub.add_parser("datenpruefung", help="Daten prüfen (Lecks, Duplikate, Klassen …)")
+    with_source(sp)
+    sp.add_argument("--anwenden", action="store_true", help="Vorschläge übernehmen")
+    sp.add_argument("--speichern", help="geänderte Konfiguration speichern")
+    sp.set_defaults(fn=cmd_datenpruefung)
+
+    sp = sub.add_parser("bewerten", help="Validierung, Test, Basis, Fehleranalyse, Kalibrierung")
+    with_source(sp)
+    sp.add_argument("--top", type=int, default=5, help="so viele sicherste Fehler zeigen")
+    sp.add_argument("--kalibrieren", action="store_true", help="zusätzlich Temperature Scaling bestimmen")
+    sp.set_defaults(fn=cmd_bewerten)
+
+    sp = sub.add_parser("modellkarte", help="Modellkarte anzeigen/schreiben")
+    sp.add_argument("quelle", help="gespeicherter Projektordner (oder Preset)")
+    sp.add_argument("-o", "--ausgabe", help="als Datei schreiben")
+    sp.set_defaults(fn=cmd_modellkarte)
+
+    sp = sub.add_parser("drift", help="neue Daten mit den Trainingsdaten vergleichen")
+    sp.add_argument("quelle", help="gespeicherter Projektordner (oder Preset)")
+    sp.add_argument("neu", help="neue Daten: CSV (gleiche Spalten wie im Training) oder .pt-Datei mit Tensoren")
+    sp.add_argument("--trenner", default=",", help="CSV-Trennzeichen")
+    sp.add_argument("--ohne-modell", action="store_true", help="keine Vorhersage-Drift berechnen")
+    sp.set_defaults(fn=cmd_drift)
+
+    sp = sub.add_parser("bereitstellen", help="als HTTP-Dienst starten")
+    sp.add_argument("quelle", help="gespeicherter Projektordner (oder Preset)")
+    sp.add_argument("--host", default=None, help="Adresse (Standard 127.0.0.1 = nur lokal)")
+    sp.add_argument("--port", type=int, default=None)
+    sp.add_argument("--schluessel", default=None, help="API-Schlüssel (Kopfzeile X-API-Key)")
+    sp.set_defaults(fn=cmd_bereitstellen)
 
     sp = sub.add_parser("doku", help="Parameter-Referenz exportieren")
     sp.add_argument("-o", "--ausgabe", default="docs/PARAMETER_REFERENZ.md")

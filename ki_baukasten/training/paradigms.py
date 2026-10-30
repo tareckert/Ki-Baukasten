@@ -115,18 +115,54 @@ def _select(obj: Any, key: str | None) -> Any:
     return obj[key]
 
 
-def auto_loss(pred: torch.Tensor, target: torch.Tensor, task: str = "auto") -> torch.Tensor:
-    """Wählt einen sinnvollen Standardverlust anhand von Aufgabe und Datentypen."""
+def is_segmentation(pred: Any, target: Any) -> bool:
+    """Logits ``[N, C, H, W]`` gegen Klassenmasken ``[N, H, W]`` (Kanäle vorne, wie bei Bildern)."""
+    return (isinstance(pred, torch.Tensor) and isinstance(target, torch.Tensor) and pred.dim() == 4
+            and target.dim() == 3 and not target.is_floating_point() and pred.shape[2:] == target.shape[1:])
+
+
+def auto_loss(pred: torch.Tensor, target: torch.Tensor, task: str = "auto", label_smoothing: float = 0.0,
+              soft: bool = False, weight: torch.Tensor | None = None) -> torch.Tensor:
+    """Wählt einen sinnvollen Standardverlust anhand von Aufgabe und Datentypen.
+
+    ``soft=True``: Ziele sind Wahrscheinlichkeiten (z. B. nach Mixup/CutMix) → Kreuzentropie mit weichen Zielen.
+    ``weight``: Klassengewichte für die Kreuzentropie (``training.class_weights``).
+    """
+    if weight is not None:
+        weight = weight.to(pred.device, torch.float32)
+        if weight.numel() != pred.shape[1 if is_segmentation(pred, target) else -1]:
+            weight = None
+    if soft and target.shape == pred.shape:
+        return F.cross_entropy(pred.float().reshape(-1, pred.shape[-1]), target.float().reshape(-1, pred.shape[-1]),
+                               weight=weight, label_smoothing=label_smoothing)
+    if is_segmentation(pred, target) and task in ("auto", "classification"):
+        return F.cross_entropy(pred.float(), target.long(), weight=weight, ignore_index=-100,
+                               label_smoothing=label_smoothing)
     if task == "classification" or (task == "auto" and not target.is_floating_point()
                                     and pred.dim() == target.dim() + 1):
         logits = pred.reshape(-1, pred.shape[-1])
-        return F.cross_entropy(logits.float(), target.reshape(-1).long(), ignore_index=-100)
+        return F.cross_entropy(logits.float(), target.reshape(-1).long(), weight=weight, ignore_index=-100,
+                               label_smoothing=label_smoothing)
     if task == "multilabel":
         return F.binary_cross_entropy_with_logits(pred.float(), target.float().reshape(pred.shape))
     t = target.float()
     if t.shape != pred.shape and t.numel() == pred.numel():
         t = t.reshape(pred.shape)
     return F.mse_loss(pred.float(), t)
+
+
+def accuracy_tensor(pred: Any, target: Any, ignore_index: int = -100) -> torch.Tensor | None:
+    """Genauigkeit als 0-dim-Tensor **ohne Synchronisation** (``None``, wenn nicht anwendbar; NaN, wenn kein
+    Ziel gültig ist – wird beim Mitteln übersprungen)."""
+    if not isinstance(pred, torch.Tensor) or not isinstance(target, torch.Tensor):
+        return None
+    if target.is_floating_point() or pred.dim() != target.dim() + 1:
+        return None
+    valid = target != ignore_index
+    guess = pred.argmax(1) if is_segmentation(pred, target) else pred.argmax(-1)
+    n = valid.sum()
+    hits = ((guess == target) & valid).sum()
+    return torch.where(n > 0, hits.float() / n.clamp_min(1), torch.full((), float("nan"), device=pred.device))
 
 
 def accuracy(pred: torch.Tensor, target: torch.Tensor, ignore_index: int = -100) -> float | None:
@@ -138,7 +174,8 @@ def accuracy(pred: torch.Tensor, target: torch.Tensor, ignore_index: int = -100)
     valid = target != ignore_index
     if valid.sum() == 0:
         return None
-    return float((pred.argmax(-1)[valid] == target[valid]).float().mean())
+    guess = pred.argmax(1) if is_segmentation(pred, target) else pred.argmax(-1)
+    return float((guess[valid] == target[valid]).float().mean())
 
 
 class Paradigm:
@@ -184,6 +221,13 @@ class SupervisedConfig(BaseConfig):
     }, tooltip=T(
         "Art der überwachten Aufgabe (nur relevant, wenn keine eigenen Verluste gesetzt sind).",
         "Bestimmt Standardverlust und Metriken.", "Meist 'auto'."))
+    label_smoothing = Param(0.0, min=0.0, max=0.5, tooltip=T(
+        "Label Smoothing für den Standard-Klassifikationsverlust (Anteil der Zielwahrscheinlichkeit, der gleichmäßig "
+        "auf alle Klassen verteilt wird).", "Verhindert übermäßig selbstsichere Vorhersagen, bessere Kalibrierung.",
+        "Klassifikation: 0.05–0.1."))
+
+
+_TASK_KIND = {"classification": "klassifikation", "regression": "regression", "multilabel": "multilabel"}
 
 
 class Supervised(Paradigm):
@@ -199,16 +243,33 @@ class Supervised(Paradigm):
             keys = [k for k in out if k in targets]
             if not keys:
                 raise TrainingError("Ausgabe und Ziele haben keine gemeinsamen Schlüssel.")
-            return sum(auto_loss(out[k], targets[k], self.cfg.task) for k in keys)
+            return sum(auto_loss(out[k], targets[k], self.cfg.task, self.cfg.label_smoothing) for k in keys)
         return auto_loss(main_output(out), targets if not isinstance(targets, dict) else main_output(targets),
-                         self.cfg.task)
+                         self.cfg.task, self.cfg.label_smoothing, getattr(self, "_soft", False),
+                         getattr(trainer, "class_weight", None))
+
+    def _adversarial_loss(self, trainer: Any, batch: dict, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Verlust auf FGSM/PGD-gestörten Eingaben (``training.adversarial``)."""
+        from ..analysis.robustness import attack
+
+        a = trainer.cfg.adversarial
+
+        def forward(x):
+            return call_model(trainer.model, x, attention_mask=batch.get("attention_mask"), lengths=batch.get("lengths"))
+
+        x_adv = attack(forward, lambda out, y: self.loss(trainer, out, y), inputs, targets, a.method, a.epsilon,
+                       a.steps, a.step_size, seed=trainer.global_step)
+        return self.loss(trainer, forward(x_adv), targets)
 
     def compute(self, trainer, batch, train):
         inputs, targets = batch["inputs"], batch.get("targets")
         if targets is None:
             raise TrainingError("Paradigma 'supervised' braucht 'targets' im Batch.")
+        self._soft = False
         if train:
+            was_int = isinstance(targets, torch.Tensor) and not targets.is_floating_point()
             inputs, targets = trainer.augment(inputs, targets)
+            self._soft = was_int and isinstance(targets, torch.Tensor) and targets.is_floating_point()
         with trainer.autocast():
             out = call_model(trainer.model, inputs, attention_mask=batch.get("attention_mask"),
                              lengths=batch.get("lengths"))
@@ -216,11 +277,18 @@ class Supervised(Paradigm):
             aux = trainer.model_aux_loss()
             if aux is not None:
                 loss = loss + aux
-        metrics = {"loss": float(loss.detach())}
+            adv = trainer.cfg.adversarial
+            if train and adv.method != "keine" and isinstance(inputs, torch.Tensor) and inputs.is_floating_point() \
+                    and isinstance(targets, torch.Tensor):
+                loss = (1 - adv.ratio) * loss + adv.ratio * self._adversarial_loss(trainer, batch, inputs, targets)
+        metrics = {"loss": loss.detach()}
         if not isinstance(targets, dict):
-            acc = accuracy(main_output(out).detach(), targets if not targets.is_floating_point() else targets)
+            pred = main_output(out).detach()
+            acc = accuracy_tensor(pred, targets)
             if acc is not None:
                 metrics["accuracy"] = acc
+            if not train:
+                trainer.collect(pred, targets, _TASK_KIND.get(self.cfg.task, "auto"))
         return loss, metrics
 
 
@@ -250,6 +318,8 @@ class CausalLM(Paradigm):
         if mask is not None:
             tgt[~mask[:, 1:].bool()] = -100
             mask = mask[:, :-1]
+        if batch.get("loss_mask") is not None:          # SFT: Verlust nur auf den Antworten
+            tgt[~batch["loss_mask"][:, 1:].bool()] = -100
         with trainer.autocast():
             logits = main_output(call_model(trainer.model, inp, attention_mask=mask))
             if trainer.losses:
@@ -262,8 +332,11 @@ class CausalLM(Paradigm):
             aux = trainer.model_aux_loss()
             if aux is not None:
                 loss = loss + aux
-        lv = float(loss.detach())
-        return loss, {"loss": lv, "perplexity": math.exp(min(lv, 30)), "accuracy": accuracy(logits.detach(), tgt) or 0.0}
+        lv = loss.detach()
+        if not train:
+            trainer.collect(logits.detach(), tgt, "sprache")
+        return loss, {"loss": lv, "perplexity": torch.exp(lv.float().clamp(max=30)),
+                      "accuracy": accuracy_tensor(logits.detach(), tgt)}
 
 
 class MaskedLMConfig(BaseConfig):
@@ -314,7 +387,9 @@ class MaskedLM(Paradigm):
             aux = trainer.model_aux_loss()
             if aux is not None:
                 loss = loss + aux
-        return loss, {"loss": float(loss.detach()), "accuracy": accuracy(logits.detach(), tgt) or 0.0}
+        if not train:
+            trainer.collect(logits.detach(), tgt, "sprache")
+        return loss, {"loss": loss.detach(), "accuracy": accuracy_tensor(logits.detach(), tgt)}
 
 
 class Seq2SeqConfig(BaseConfig):
@@ -349,13 +424,18 @@ class Seq2Seq(Paradigm):
                     labels[labels == self.cfg.pad_token_id] = -100
                 loss = F.cross_entropy(out.reshape(-1, out.shape[-1]).float(), labels.reshape(-1), ignore_index=-100,
                                        label_smoothing=self.cfg.label_smoothing)
-                acc = accuracy(out.detach(), labels)
+                acc = accuracy_tensor(out.detach(), labels)
             aux = trainer.model_aux_loss()
             if aux is not None:
                 loss = loss + aux
-        m = {"loss": float(loss.detach())}
+        m = {"loss": loss.detach()}
         if acc is not None:
             m["accuracy"] = acc
+        if not train:
+            if tgt.is_floating_point():
+                trainer.collect(out.detach(), tgt, "regression")
+            else:
+                trainer.collect(out.detach(), labels, "seq2seq")
         return loss, m
 
 
@@ -407,15 +487,15 @@ class AutoencoderParadigm(Paradigm):
                 red = "sum" if "kl" in out else "mean"
             r = per.flatten(1).sum(1).mean() if red == "sum" else per.mean()
             loss = r
-            metrics = {"reconstruction": float(r.detach())}
+            metrics = {"reconstruction": r.detach()}
             if "kl" in out:
                 beta = getattr(trainer.model.config, "beta", 1.0) * self._kl_factor(trainer.global_step)
                 loss = loss + beta * out["kl"]
-                metrics["kl"] = float(out["kl"].detach())
+                metrics["kl"] = out["kl"].detach()
             aux = trainer.model_aux_loss()
             if aux is not None:
                 loss = loss + aux
-        metrics["loss"] = float(loss.detach())
+        metrics["loss"] = loss.detach()
         return loss, metrics
 
     def _kl_factor(self, step: int) -> float:
@@ -467,8 +547,8 @@ class Contrastive(Paradigm):
             logits = za @ zb.T / self.cfg.temperature
             labels = torch.arange(za.shape[0], device=za.device)
             loss = 0.5 * (F.cross_entropy(logits, labels) + F.cross_entropy(logits.T, labels))
-        acc = float((logits.argmax(-1) == labels).float().mean())
-        return loss, {"loss": float(loss.detach()), "accuracy": acc}
+        acc = (logits.detach().argmax(-1) == labels).float().mean()
+        return loss, {"loss": loss.detach(), "accuracy": acc}
 
 
 # ===========================================================================
@@ -650,12 +730,12 @@ class Distillation(Paradigm):
                                     "Ausgabegrößen.")
             kd = _kd_divergence(s, t, c.kd_loss, c.temperature, mask if s.dim() == 3 else None)
             loss = c.alpha * kd
-            m = {"distill": float(kd.detach())}
+            m = {"distill": kd.detach()}
             if c.feature_weight > 0 and self._feats["s"]:
                 feat = sum(_feature_distance(a, b.detach(), c.feature_loss)
                            for a, b in zip(self._feats["s"], self._feats["t"])) / len(self._feats["s"])
                 loss = loss + c.feature_weight * feat
-                m["features"] = float(feat.detach())
+                m["features"] = feat.detach()
             if c.alpha < 1 and task != "none":
                 if task == "causal_lm":
                     hard = F.cross_entropy(s[:, :-1].reshape(-1, s.shape[-1]).float(), inputs[:, 1:].reshape(-1),
@@ -667,16 +747,18 @@ class Distillation(Paradigm):
                     hard = None
                 if hard is not None:
                     loss = loss + (1 - c.alpha) * hard
-                    m["hard"] = float(hard.detach())
+                    m["hard"] = hard.detach()
             if targets is not None:
-                acc = accuracy(s.detach(), targets)
+                acc = accuracy_tensor(s.detach(), targets)
                 if acc is not None:
                     m["accuracy"] = acc
+                if not train and isinstance(targets, torch.Tensor):
+                    trainer.collect(s.detach(), targets)
             elif task == "causal_lm":
-                m["accuracy"] = float((s[:, :-1].argmax(-1) == inputs[:, 1:]).float().mean())
-            m["agreement"] = float((s.detach().argmax(-1) == t.argmax(-1)).float().mean()) \
-                if s.shape[-1] == t.shape[-1] else float("nan")
-        m["loss"] = float(loss.detach())
+                m["accuracy"] = (s.detach()[:, :-1].argmax(-1) == inputs[:, 1:]).float().mean()
+            if s.shape[-1] == t.shape[-1]:
+                m["agreement"] = (s.detach().argmax(-1) == t.argmax(-1)).float().mean()
+        m["loss"] = loss.detach()
         return loss, m
 
 
@@ -770,7 +852,7 @@ class GANParadigm(Paradigm):
                 g = torch.autograd.grad(d_real.sum(), real_in, create_graph=True)[0]
                 loss_d = loss_d + 0.5 * c.r1_penalty * g.flatten(1).square().sum(1).mean()
             trainer.optimize(loss_d, key="discriminator")
-        m.update(loss_d=float(loss_d.detach()), d_real=float(d_real.detach().mean()), d_fake=float(d_fake.detach().mean()))
+        m.update(loss_d=loss_d.detach(), d_real=d_real.detach().mean(), d_fake=d_fake.detach().mean())
 
         d_params = self._d_params(model)
         for p in d_params:  # Diskriminator einfrieren → keine Gradienten beim Generator-Schritt
@@ -781,7 +863,7 @@ class GANParadigm(Paradigm):
         trainer.optimize(loss_g, key="generator")
         for p in d_params:
             p.requires_grad_(True)
-        m["loss_g"] = float(loss_g.detach())
+        m["loss_g"] = loss_g.detach()
         m["loss"] = m["loss_g"]
         return m
 
@@ -844,7 +926,7 @@ class DiffusionParadigm(Paradigm):
                     w = clipped / snr if p == "eps" else (clipped / (snr + 1) if p == "v" else clipped)
                 per = per * w
             loss = per.mean()
-        return loss, {"loss": float(loss.detach())}
+        return loss, {"loss": loss.detach()}
 
 
 # ===========================================================================
@@ -875,8 +957,7 @@ class Preference(Paradigm):
             if self.cfg.center_coef:
                 loss = loss + self.cfg.center_coef * (rc + rr).square().mean()
         rc, rr = rc.detach(), rr.detach()
-        return loss, {"loss": float(loss.detach()), "accuracy": float((rc > rr).float().mean()),
-                      "reward_margin": float((rc - rr).mean())}
+        return loss, {"loss": loss.detach(), "accuracy": (rc > rr).float().mean(), "reward_margin": (rc - rr).mean()}
 
 
 class DPOConfig(BaseConfig):
@@ -929,13 +1010,90 @@ class DPO(Paradigm):
                 loss = (-(1 - c.label_smoothing) * F.logsigmoid(c.beta * delta)
                         - c.label_smoothing * F.logsigmoid(-c.beta * delta)).mean()
         delta = delta.detach()
-        return loss, {"loss": float(loss.detach()), "accuracy": float((delta > 0).float().mean()),
-                      "reward_margin": float((c.beta * delta).mean())}
+        return loss, {"loss": loss.detach(), "accuracy": (delta > 0).float().mean(),
+                      "reward_margin": (c.beta * delta).mean()}
 
 
 # ===========================================================================
 # Registrierung
 # ===========================================================================
+
+class EvolutionStrategiesConfig(BaseConfig):
+    __title__ = "Evolution Strategies (gradientenfrei)"
+    base = Param("auto", choices={
+        "auto": "aus dem Batch ableiten (targets vorhanden → supervised, sonst causal_lm)",
+        "supervised": "Verlust wie beim überwachten Lernen", "causal_lm": "Verlust wie beim Sprachmodell"},
+        tooltip=T("Woraus die Fitness (−Verlust) berechnet wird.", "ES optimiert jede berechenbare Zielgröße.", "auto."))
+    pairs = Param(8, min=1, tooltip=T(
+        "Anzahl Störungspaare (±ε) pro Schritt – Population = 2 × pairs.",
+        "Mehr Paare = genauere Schätzung der Richtung, mehr Forward-Durchläufe.", "4–64."))
+    sigma = Param(0.02, min=0.0, tooltip=T(
+        "Stärke der zufälligen Störung der Gewichte.", "Zu klein: verrauscht; zu groß: ungenau.", "0.01–0.05."))
+    rank_shaping = Param(True, tooltip=T(
+        "Fitness-Formung über Ränge statt Rohwerte (OpenAI-ES).", "Robust gegen Ausreißer und Skalen.", "an."),
+        level=Level.ADVANCED)
+
+
+class EvolutionStrategies(Paradigm):
+    """OpenAI-ES (Salimans et al. 2017): Gradient aus antithetischen Zufallsstörungen schätzen – kein Backward.
+
+    Funktioniert auch mit nicht differenzierbaren Zielen und ist trivial parallelisierbar. Der geschätzte
+    Gradient läuft durch den normalen Optimierer (Adam & Co.), Zeitplan, Clipping usw.
+    """
+
+    def _loss(self, trainer, batch) -> torch.Tensor:
+        base = self.cfg.base
+        if base == "auto":
+            base = "supervised" if isinstance(batch, dict) and batch.get("targets") is not None else "causal_lm"
+        if not hasattr(self, "_inner") or self._inner_name != base:
+            self._inner = PARADIGMS.build(base)
+            self._inner_name = base
+        loss, _ = self._inner.compute(trainer, batch, False)
+        return loss.detach().float()
+
+    @torch.no_grad()
+    def training_step(self, trainer, batch):
+        params = [p for p in trainer.group_params[self.primary_key] if p.requires_grad]
+        sigma, pairs = self.cfg.sigma, self.cfg.pairs
+        base_loss = float(self._loss(trainer, batch))
+        seeds = torch.randint(0, 2**31 - 1, (pairs,)).tolist()
+        diffs = []
+        for seed in seeds:
+            gen = torch.Generator(device=params[0].device).manual_seed(seed)
+            eps = [torch.randn(p.shape, generator=gen, device=p.device, dtype=p.dtype) for p in params]
+            for p, e in zip(params, eps):
+                p.add_(e, alpha=sigma)
+            plus = float(self._loss(trainer, batch))
+            for p, e in zip(params, eps):
+                p.add_(e, alpha=-2 * sigma)
+            minus = float(self._loss(trainer, batch))
+            for p, e in zip(params, eps):
+                p.add_(e, alpha=sigma)
+            diffs.append((plus, minus))
+        if self.cfg.rank_shaping:
+            flat = [v for pm in diffs for v in pm]
+            order = sorted(range(len(flat)), key=flat.__getitem__)
+            ranks = [0.0] * len(flat)
+            for r, i in enumerate(order):
+                ranks[i] = r / max(1, len(flat) - 1) - 0.5
+            weights = [ranks[2 * i] - ranks[2 * i + 1] for i in range(pairs)]
+        else:
+            weights = [plus - minus for plus, minus in diffs]
+        grads = [torch.zeros_like(p) for p in params]
+        for seed, w in zip(seeds, weights):
+            gen = torch.Generator(device=params[0].device).manual_seed(seed)
+            for g, p in zip(grads, params):
+                g.add_(torch.randn(p.shape, generator=gen, device=p.device, dtype=p.dtype), alpha=w)
+        scale = 1.0 / (2 * pairs * sigma) if not self.cfg.rank_shaping else 1.0 / (pairs * sigma)
+        for p, g in zip(params, grads):
+            p.grad = g * scale
+        trainer.step_with_grads(self.primary_key)
+        spread = sum(abs(a - b) for a, b in diffs) / pairs
+        return {"loss": base_loss, "es_streuung": spread}
+
+    def validation_step(self, trainer, batch):
+        return {"loss": float(self._loss(trainer, batch))}
+
 
 R = PARADIGMS.register
 R("supervised", lambda a: Supervised(a), config=SupervisedConfig, aliases=("ueberwacht",), tooltip=T(
@@ -967,3 +1125,8 @@ R("preference", lambda a: Preference(a), config=PreferenceConfig, aliases=("rewa
 R("dpo", lambda a: DPO(a), config=DPOConfig, level=Level.ADVANCED, tags=("nlp",), tooltip=T(
     "Direct Preference Optimization.", "Präferenzlernen ohne separates Reward-Modell/RL.",
     "Ausrichtung von Sprachmodellen."))
+R("evolution_strategies", lambda a: EvolutionStrategies(a), config=EvolutionStrategiesConfig, aliases=("es",),
+  level=Level.EXPERIMENTAL, tooltip=T(
+      "Evolution Strategies: Gewichte zufällig stören, aus der Fitness die Richtung schätzen (ohne Backward).",
+      "Gradientenfrei – für nicht differenzierbare Ziele, sehr gut parallelisierbar (OpenAI-ES).",
+      "Kleine Modelle, Forschung, robuste Optimierung; langsamer als Backprop bei großen Netzen."))

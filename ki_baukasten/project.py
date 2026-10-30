@@ -31,6 +31,7 @@ jede Änderung. So passt eine Vorlage auch zu eigenen Daten.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -38,13 +39,17 @@ import torch
 from torch import nn
 
 from .core import BaseConfig, ComponentParam, ConfigError, ConfigListParam, Level, NestedParam, Param, T
+from .analysis.goals import GoalsConfig
+from .analysis.inference import InferenceConfig
 from .analysis.targets import DeploymentConfig
 from .compress import CompressionConfig
 from .memory import MemoryConfig, MemoryManager, estimate_memory
 from .tensor import ModuleRuleConfig, ModuleSurgeon, TensorRuleConfig, TensorSurgeon
+from .models.transformer import GenerationConfig
 from .training import Trainer, TrainingConfig
 from .training.data_utils import to_device
 from .training.paradigms import call_model
+from .workflow import WorkflowConfig
 
 
 class ProjectConfig(BaseConfig):
@@ -59,6 +64,7 @@ class ProjectConfig(BaseConfig):
         "Anwendungsgebiet (z. B. sprache, bild, zeitreihen, tabellen, rl …).", "Ordnet Vorlagen ein.",
         "Wird von Presets gesetzt."))
     description = Param("", tooltip=T("Freie Beschreibung.", "Dokumentation des Experiments.", "Was wird getestet?"))
+    goals = NestedParam(GoalsConfig, group="Ziele")
     model = ComponentParam("model", "mlp", group="Modell", tooltip=T(
         "Das Modell (beliebig aus der Registry 'model', auch Kombinationen).", "Architektur der KI.",
         "Siehe 'python -m ki_baukasten modelle'."))
@@ -76,6 +82,11 @@ class ProjectConfig(BaseConfig):
         "Transfer-Learning, Kompression, Experimente."))
     compression = NestedParam(CompressionConfig, group="Kompression", level=Level.ADVANCED)
     deployment = NestedParam(DeploymentConfig, group="Kompression")
+    inference = NestedParam(InferenceConfig, group="Einsatz")
+    generation = NestedParam(GenerationConfig, group="Einsatz", tooltip=T(
+        "Standard-Einstellungen für generate()/ask() (Temperatur, top_p, Beam Search, Wiederholungssperre …).",
+        "Einmal einstellen, überall gleich – auch im HTTP-Server.", "Sprachmodelle."))
+    workflow = NestedParam(WorkflowConfig, group="Ablauf")
     auto_fit_dims = Param(True, tooltip=T(
         "Modellgrößen (Ein-/Ausgabe, Vokabular, Beobachtungen …) automatisch an Daten/Umgebung anpassen.",
         "Vorlagen passen dadurch ohne Handarbeit zu jedem Datensatz.", "Aus, wenn exakte Werte erzwungen werden sollen."),
@@ -83,6 +94,33 @@ class ProjectConfig(BaseConfig):
     output_dir = Param("ausgaben", tooltip=T(
         "Basisordner für Ausgaben (Checkpoints, Protokolle, gespeicherte Projekte).", "Ordnung.", "ausgaben."),
         level=Level.ADVANCED)
+
+
+#: Bereiche, deren Änderung ein trainiertes Modell nicht ungültig macht.
+_RESULTS = ("last_test", "last_baseline", "last_calibration")   # mit save() gespeicherte Ergebnisse
+
+
+def _numbers(d: Any) -> dict[str, Any]:
+    """Nur Zahlen/Texte eines Ergebnis-dicts (JSON-tauglich)."""
+    if not isinstance(d, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for k, v in d.items():
+        if isinstance(v, torch.Tensor) and v.numel() == 1:
+            v = v.item()
+        if isinstance(v, (int, float, str, bool)) and not (isinstance(v, float) and v != v):
+            out[str(k)] = v
+    return out
+
+
+_STRUCTURE_MEMORY = ("param_dtype", "quantization", "quant_bits", "quant_group_size", "quant_skip", "quant_only",
+                     "quant_compute_dtype", "quant_targets", "lora")
+_KEEP_MODEL = {"inference", "generation", "deployment", "goals", "workflow", "compression", "name", "description",
+               "domain", "output_dir"}
+
+
+def _changed_tops(a: dict, b: dict) -> list[str]:
+    return [k for k in set(a) | set(b) if a.get(k) != b.get(k)]
 
 
 # (Info-Schlüssel des Datensatzes, Modellparameter, Modus)
@@ -112,6 +150,23 @@ class Project:
         self._redo: list[dict] = []
         self._teacher: nn.Module | None = None       # Lehrer für distillation (Project.distill)
         self.last_compression: Any = None
+        self._switch_memory: dict[str, Any] = {}     # beim Ausschalten gemerkte eigene Werte (für "an"/"eigen")
+        self._loggers: list[Any] = []                # zur Laufzeit eingebundene Logger (add_logger)
+        self._technique_memory: dict[str, Any] = {}  # vorherige Werte eingeschalteter Techniken (für disable)
+        self.goal_report: Any = None                 # letzte Bewertung der Ziele (goal_check / from_goals)
+        self.test_data: Any = None                   # zurückgehaltene Testmenge (training.test_split / data.test)
+        self._test_split: tuple | None = None        # (Original-Trainingsdaten, Rest ohne Testmenge)
+        self.last_data_report: Any = None            # letzte Datenprüfung (data_check)
+        self.last_test: dict[str, float] = {}        # letzte Ergebnisse für die Modellkarte
+        self.last_calibration: dict[str, Any] = {}
+        self.last_fairness: Any = None
+        self.last_robustness: Any = None
+        self.last_baseline: dict[str, float] = {}
+        self.last_export: Any = None                 # Bericht des letzten Exports (was entfernt/eingerechnet wurde)
+        self._artifacts: dict[str, Any] | None = None  # gespeicherte Vorverarbeitung (Project.load)
+        self._built_from: str | None = None          # Aufbau-Einstellungen, aus denen self.model gebaut wurde
+        self._reference: dict | None = None          # Ausgangsvorlage (Wirkungsprüfung meldet nur eigene Änderungen)
+        self._auto_done: dict[str, Any] = {}         # von auto_lr/auto_batch_size gesetzte Werte (Nutzer gewinnt)
 
     # ================================================================ Erzeugen
     @classmethod
@@ -120,9 +175,137 @@ class Project:
         from .presets import get_preset
 
         p = cls(get_preset(name))
+        p._reference = p.config.to_dict()
         if overrides:
             p.config.update(overrides)
         return p
+
+    @classmethod
+    def auto(cls, source: str | Path, target: str | None = None, description: str = "", train: bool = True,
+             steps: int | None = None, improve: int = 0, **overrides: Any) -> "Project":
+        """**Ein Aufruf von den Daten zur fertigen KI**: erkennt die Datenart, wählt die passende Vorlage,
+        schaltet alle empfohlenen Anforderungen ein (Testmenge, Kalibrierung …), trainiert, testet und vergleicht
+        mit einer Basis. Alles bleibt danach einzeln änderbar.
+
+        ``source``: CSV/TSV (Tabelle oder Texte mit Labels), Bildordner (``ordner/<klasse>/*.png``), Audio-Ordner
+        (``ordner/<klasse>/*.wav``), JSONL mit ``prompt``/``response`` (Assistent), ``.txt`` (Sprachmodell) oder
+        ``.pt`` (Tensoren). ``target``: Zielspalte bei Tabellen. ``improve``: so viele Runden
+        *Diagnose → Maßnahmen → neu trainieren* anhängen (``Project.improve``) – behalten wird nur, was die
+        Validierung verbessert; erst danach wird einmal getestet.
+        """
+        preset, data = detect_data(Path(source), target)
+        p = cls.from_preset(preset)
+        p.config.set("data", data)
+        if description:
+            p.config.set("goals.description", description)
+        wishes = dict(overrides)
+        if steps is not None:
+            wishes["training.max_steps"] = steps
+        p.config.update(wishes)                           # vorher: die Automatik berücksichtigt die Wünsche …
+        p.apply_perfection("empfohlen")
+        for key in ("checkpoints", "log_datei"):          # schreiben Dateien – bei Bedarf selbst einschalten
+            if key in {r.technique.key for r in p.techniques(status="an")}:
+                p.disable(key)
+        p.config.update(wishes)                           # … und nachher: ausdrückliche Wünsche gewinnen immer
+        if p._verbose():
+            print(f"  Project.auto: Vorlage '{preset}', Daten '{data['name']}'")
+        if train:
+            p.train()
+            if improve:
+                p.improve(improve)
+            if p.test_data is not None:
+                p.test()
+            if p.config.training.paradigm.name == "supervised":
+                try:
+                    p.baseline()
+                except ConfigError:
+                    pass
+        return p
+
+    @classmethod
+    def from_goals(cls, goals: Any = None, choice: int = 0, apply_techniques: bool = True,
+                   **goal_fields: Any) -> "Project":
+        """Neue KI aus **Zielen**: Aufgabe, Prioritäten, Daten, Zielgerät … → beste Vorlage + passende Techniken.
+
+        Beispiel::
+
+            p = Project.from_goals(task="text_klassifizieren", priorities=["geschwindigkeit", "datenschutz"],
+                                   data_size="klein", target="smartphone",
+                                   description="Spam-Erkennung direkt auf dem Handy")
+            print(p.goal_report)          # Empfehlungen, Abratungen, Techniken, Hinweise
+
+        Args:
+            choice: Index der Empfehlung (0 = beste).
+            apply_techniques: empfohlene Techniken direkt einschalten.
+        """
+        from .analysis.goals import evaluate_goals, interpret
+
+        data = goals.to_dict() if isinstance(goals, GoalsConfig) else dict(goals or {})
+        data.update(goal_fields)
+        g = interpret(GoalsConfig.from_dict(data))
+        report = evaluate_goals(g)
+        if not report.recommended:
+            raise ConfigError(f"Keine passende Vorlage für die Aufgabe '{g.task}' – Aufgabe/Beschreibung genauer "
+                              f"angeben. Aufgaben: {', '.join(t for t in GoalsConfig().params()['task'].choices)}.")
+        pick = report.recommended[min(choice, len(report.recommended) - 1)].preset
+        p = cls.from_preset(pick)
+        g.use_description = False         # erkannte Angaben sind übernommen; spätere Änderungen gelten wörtlich
+        p.config.goals = g
+        if g.target:
+            d = p.config.deployment
+            d.main_target = g.target
+            if g.target not in d.targets:
+                d.targets = list(d.targets) + [g.target]
+        from .analysis.goals import HEAVY
+
+        enabled = []
+        if apply_techniques:
+            for key, _why in report.techniques:
+                if key in HEAVY:
+                    continue                  # aufwendige Techniken nur auf ausdrücklichen Wunsch
+                try:
+                    if p.technique(key, "an"):
+                        enabled.append(key)
+                except ConfigError:
+                    pass                      # passt nicht zu dieser Vorlage
+        p._undo.clear()
+        p.goal_report = report
+        p._note(f"Vorlage '{pick}' nach Zielen gewählt" + (f"; Techniken eingeschaltet: {', '.join(enabled)}"
+                                                          if enabled else ""))
+        return p
+
+    def set_goals(self, **changes: Any) -> Any:
+        """Ziele ändern (z. B. ``set_goals(target="raspberry_pi", priorities=[...])``) und neu bewerten."""
+        self._snapshot()
+        try:
+            self.config.goals.update(changes)
+        except Exception:
+            self._undo.pop()
+            raise
+        return self.goal_check()
+
+    def goal_check(self, top: int = 4) -> Any:
+        """Bewertet das aktuelle Projekt gegen seine Ziele: passt das Modell, was ist besser, welche Techniken?"""
+        from .analysis.goals import evaluate_goals
+
+        self.goal_report = evaluate_goals(self.config.goals, top, project=self)
+        return self.goal_report
+
+    def apply_goal_techniques(self, include_heavy: bool = False) -> list[str]:
+        """Zu den Zielen passende Techniken einschalten (aufwendige wie DP-SGD/föderiert nur mit include_heavy)."""
+        from .analysis.goals import HEAVY
+
+        report = self.goal_check()
+        done = []
+        for key, _why in report.techniques:
+            if key in HEAVY and not include_heavy:
+                continue
+            try:
+                if self.technique(key, "an"):
+                    done.append(key)
+            except ConfigError:
+                pass
+        return done
 
     @classmethod
     def import_model(cls, path: str | Path, format: str = "auto", data: Any = "none", name: str | None = None,
@@ -152,7 +335,18 @@ class Project:
 
     # ================================================================ Einstellungen
     def set(self, path: str, value: Any) -> "Project":
-        """Setzt eine Einstellung. Enthält ``path`` ein ``*``, gilt der Wert für alle Treffer (siehe ``set_all``)."""
+        """Setzt eine Einstellung. Enthält ``path`` ein ``*``, gilt der Wert für alle Treffer (siehe ``set_all``).
+
+        Die Werte ``"an"``, ``"aus"``, ``"eigen"`` und ``"standard"`` schalten die Einstellung um (siehe
+        ``switch``), sofern sie dort nicht ohnehin ein gültiger Text sind – z. B. ``p.set("**.dropout", "aus")``
+        oder ``p.set("training.ema", "an")``.
+        """
+        from .core.switches import is_switch_command
+
+        probe = self.config.find(path)[0] if "*" in path and self.config.find(path) else path
+        if isinstance(value, str) and "*" not in probe and is_switch_command(self.config, probe, value):
+            self.switch(path, value)
+            return self
         if "*" in path:
             self.set_all(path, value)
             return self
@@ -162,7 +356,7 @@ class Project:
         except Exception:
             self._undo.pop()  # fehlgeschlagene Änderung nicht in den Verlauf
             raise
-        self._invalidate()
+        self._invalidate([path])
         return self
 
     def find(self, pattern: str) -> list[str]:
@@ -198,8 +392,263 @@ class Project:
         self._snapshot()
         for path in paths:
             self.config.set(path, value)
-        self._invalidate()
+        self._invalidate(paths)
         return paths
+
+    # ------------------------------------------------------------ Schalter (An / Aus / Eigen)
+    def switch(self, pattern: str, state: str, value: Any = None, scope: str = "alle",
+               pick: str | None = None) -> list[str]:
+        """Schaltet Einstellungen **an**, **aus**, auf **eigen** (benutzerdefiniert) oder **standard**.
+
+        Args:
+            pattern: Pfad oder Muster (``*``/``**``) – z. B. ``"**.dropout"``, ``"training.regularization"``
+                     (ganze Gruppe) oder ``"training.ema"`` (Gruppe mit ``enabled``-Schalter).
+            state:   ``an`` | ``aus`` | ``eigen`` | ``standard``.
+            value:   eigener Wert für ``eigen`` (ohne Angabe: zuletzt gemerkter Wert).
+            scope/pick: wie bei ``set_all`` (alle, nur_auswahl, nur_einer, alle_ausser).
+
+        Pflicht-Einstellungen (ohne Aus-Zustand) werden bei Mustern übersprungen. Rückgängig mit ``undo()``.
+        """
+        from .core import UNSET
+        from .core.switches import set_state
+        from .tensor.selection import apply_scope
+
+        if "*" in pattern:
+            paths = apply_scope(self.config.find(pattern), scope, pick, f"switch('{pattern}')")
+            if not paths:
+                raise ConfigError(f"Kein Pfad passt auf '{pattern}'. Tipp: Project.search('{pattern}').")
+        else:
+            paths = [pattern]
+        trial = self.config.copy()
+        memory = dict(self._switch_memory)
+        changed: list[str] = []
+        errors: list[str] = []
+        for path in paths:
+            try:
+                changed += set_state(trial, path, state, UNSET if value is None else value, memory)
+            except ConfigError as exc:
+                if len(paths) == 1:
+                    raise
+                errors.append(f"{path}: {exc}")
+        if not changed:
+            if errors and len(errors) == len(paths):
+                raise ConfigError(f"switch('{pattern}', '{state}'): nichts umschaltbar:\n  - " + "\n  - ".join(errors))
+            self._switch_memory = memory
+            return []
+        self._snapshot()
+        self.config = trial
+        self._switch_memory = memory
+        self._invalidate(changed)
+        return changed
+
+    def turn_on(self, pattern: str, **kw: Any) -> list[str]:
+        """Kurzform für ``switch(pattern, "an")``."""
+        return self.switch(pattern, "an", **kw)
+
+    def turn_off(self, pattern: str, **kw: Any) -> list[str]:
+        """Kurzform für ``switch(pattern, "aus")``."""
+        return self.switch(pattern, "aus", **kw)
+
+    def reset(self, pattern: str, **kw: Any) -> list[str]:
+        """Kurzform für ``switch(pattern, "standard")`` (Standardwert wiederherstellen)."""
+        return self.switch(pattern, "standard", **kw)
+
+    # ------------------------------------------------------------ Techniken (Katalog, an/aus)
+    def techniques(self, category: str | None = None, status: str | None = None,
+                   max_level: str | None = None) -> list:
+        """Katalog aller Techniken mit Status für dieses Projekt (``TechniqueState``)."""
+        from .techniques import CATALOG, status as tech_status
+
+        limit = Level.parse(max_level)
+        rows = [tech_status(self.config, t) for t in CATALOG
+                if (category is None or t.in_category(category)) and t.level.visible_at(limit)]
+        return [r for r in rows if status is None or r.status == status]
+
+    def technique(self, key: str, state: str = "an") -> list[str]:
+        """Eine Technik ein- (``an``) oder ausschalten (``aus``). Rückgängig mit ``undo()``."""
+        from .techniques import BY_KEY, disable, enable
+
+        if key not in BY_KEY:
+            from .core.errors import suggest
+
+            hint = suggest(key, list(BY_KEY))
+            raise ConfigError(f"Unbekannte Technik '{key}'." + (f" Meinten Sie {hint}?" if hint else "") +
+                              " Liste: projekt.techniques()")
+        trial = self.config.copy()
+        memory = {k: dict(v) for k, v in self._technique_memory.items()}
+        on = str(state).lower() in ("an", "ein", "on", "true", "1")
+        before = {r.technique.key for r in self.techniques(status="an")} if on else set()
+        changed = (enable if on else disable)(trial, BY_KEY[key], memory)
+        trial.validate()
+        if changed:
+            self._snapshot()
+            self.config = trial
+            self._invalidate(changed)
+            lost = sorted(before - {r.technique.key for r in self.techniques(status="an")} - {key})
+            if lost:                                  # z. B. 'fsdp' ersetzt 'ddp' – nie stillschweigend
+                for k in lost:
+                    memory.pop(k, None)
+                self._note(f"Technik '{key}' eingeschaltet – dadurch ausgeschaltet (schließen sich aus): "
+                           f"{', '.join(lost)}")
+        self._technique_memory = memory
+        return changed
+
+    def enable(self, *keys: str) -> list[str]:
+        """Techniken einschalten, z. B. ``p.enable("qlora", "gradient_clipping", "early_stopping")``."""
+        return [path for k in keys for path in self.technique(k, "an")]
+
+    def disable(self, *keys: str) -> list[str]:
+        """Techniken ausschalten (vorherige Werte kommen zurück)."""
+        return [path for k in keys for path in self.technique(k, "aus")]
+
+    def diagnose(self) -> Any:
+        """**Diagnose nach dem Training**: Überanpassung, zu kurz trainiert, instabil, lernt kaum, kaum besser als
+        die Basis, unausgeglichene Klassen, Kalibrierung … – je mit konkreten Maßnahmen.
+        ``print(projekt.diagnose())``; anwenden mit ``apply_diagnosis()``, automatisch mit ``improve()``."""
+        from .analysis.diagnosis import diagnose
+
+        if not self.history:
+            raise ConfigError("Erst trainieren (train) – die Diagnose liest die Lernkurven.")
+        return diagnose(self)
+
+    def apply_diagnosis(self, report: Any = None, max_actions: int = 4, include_hints: bool = True) -> list[str]:
+        """Wendet die Maßnahmen der Diagnose an (Techniken bzw. Einstellungen) – danach neu trainieren."""
+        from .analysis.diagnosis import apply
+
+        self._snapshot()
+        done = apply(self, report or self.diagnose(), max_actions, include_hints)
+        if not done:
+            self._undo.pop()
+        return done
+
+    def improve(self, rounds: int = 2, max_actions: int = 4) -> dict[str, Any]:
+        """**Automatisch verbessern**: Diagnose → Maßnahmen → neu trainieren, bis zu ``rounds``-mal. Jede Runde
+        wird nur behalten, wenn die Validierung (Metrik des Early Stopping, sonst ``val_loss``) besser wird – sonst
+        geht es mit dem besseren Stand weiter. Die Testmenge wird nie benutzt; danach ``test()`` aufrufen.
+
+        Rückgabe: ``{"start": wert, "ende": wert, "metrik": name, "runden": [...]}``.
+        """
+        from .analysis.diagnosis import _better, monitor_of
+        from .training.metrics import direction
+
+        if self.model is None or not self.history:
+            self.train()
+
+        def score() -> float:
+            metric = monitor_of(self)
+            values = self.evaluate()
+            value = values.get(metric, values.get("val_loss", float("nan")))
+            return float(value)
+
+        metric = monitor_of(self)
+        mode = direction(metric)
+        current = score()
+        start = current
+
+        def snapshot() -> dict[str, Any]:
+            return {"config": self.config.to_dict(), "model": self.model, "trainer": self.trainer,
+                    "history": list(self.history), "memory": {k: dict(v) for k, v in self._technique_memory.items()},
+                    "built": self._built_from, "baseline": dict(self.last_baseline), "auto": dict(self._auto_done)}
+
+        best = snapshot()
+        rounds_log: list[dict[str, Any]] = []
+        for r in range(max(0, rounds)):
+            report = self.diagnose()
+            done = self.apply_diagnosis(report, max_actions, include_hints=False)   # gleiche Validierungsdaten
+            if not done:
+                break
+            if self._verbose():
+                print(f"  Verbessern, Runde {r + 1}: " + "; ".join(done))
+            self.last_baseline = {}
+            self.train()
+            new = score()
+            kept = math.isfinite(new) and (not math.isfinite(current) or _better(new, current, mode))
+            rounds_log.append({"runde": r + 1, "massnahmen": done, "vorher": current, "nachher": new,
+                               "behalten": kept})
+            if kept:
+                current, best = new, snapshot()
+            else:                                      # schlechter → zurück zum besseren Stand
+                self.config = ProjectConfig.from_dict(best["config"])
+                self.model, self.trainer, self.history = best["model"], best["trainer"], best["history"]
+                self._technique_memory, self._built_from = best["memory"], best["built"]
+                self.last_baseline, self._auto_done = best["baseline"], best["auto"]
+            if self._verbose():
+                print(f"    {metric}: {rounds_log[-1]['vorher']:.4g} → {new:.4g} – "
+                      f"{'behalten' if kept else 'verworfen (zurück zum besseren Stand)'}")
+        if self.config.training.paradigm.name == "supervised" and not self.last_baseline:
+            try:
+                self.baseline()
+            except ConfigError:
+                pass
+        return {"metrik": metric, "start": start, "ende": current, "runden": rounds_log}
+
+    def inactive_settings(self) -> list:
+        """Geänderte Einstellungen, die gerade **nichts bewirken**, weil ihr Schalter aus ist (z. B.
+        ``memory.lora.rank`` ohne LoRA, EMA-Feinheiten ohne EMA) – je mit Grund und Abhilfe. ``train()`` meldet
+        sie vorab."""
+        from .analysis.effects import inactive_settings
+
+        reference = None
+        if self._reference is not None:
+            try:
+                reference = ProjectConfig.from_dict(self._reference)
+            except ConfigError:
+                reference = None
+        return inactive_settings(self.config, reference)
+
+    def perfection_check(self, min_importance: str = "optional") -> Any:
+        """Prüft das Projekt gegen den **Anforderungs-Katalog** seiner Anwendung (Daten, Modell, Training,
+        Bewertung, Vertrauen, Einsatz): je Punkt aktiv / eingebaut / aus / offen / fehlt – mit Punktzahl und den
+        nächsten Schritten. ``print(project.perfection_check())``."""
+        from .requirements import perfection_check
+
+        return perfection_check(self, min_importance)
+
+    def apply_perfection(self, min_importance: str = "empfohlen", include_heavy: bool = False) -> list[str]:
+        """Schaltet für alle offenen Anforderungen (ab ``min_importance``: pflicht | empfohlen | optional) die
+        passende Technik ein. Rückgängig mit ``undo()`` bzw. einzeln mit ``disable(…)``."""
+        from .requirements import apply
+
+        return apply(self, min_importance, include_heavy)
+
+    def technique_overview(self, only_active: bool = False, max_level: str | None = None) -> str:
+        """Alle Techniken nach Kategorien mit Status (● an · ○ aus · ◐ teilweise · – passt nicht)."""
+        from .techniques import overview
+
+        return overview(self.config, only_active, max_level)
+
+    def switches(self, pattern: str | None = None, state: str | None = None, max_level: str | None = None,
+                 only_switchable: bool = False) -> list:
+        """Zustand aller Einstellungen (``SwitchInfo``: Pfad, an/aus/eigen, Wert, Aus-/An-Wert, Pflicht?)."""
+        from .core import switch_table
+
+        return switch_table(self.config, pattern, state, max_level, only_switchable)
+
+    def switch_overview(self, max_level: str | None = "advanced") -> str:
+        """Kompakte Übersicht: was ist an, was aus, was eigen – nach Bereichen gruppiert."""
+        from .core.switches import _show, summary
+
+        counts = summary(self.config, max_level)
+        lines = [f"Schalter-Übersicht ({self.config.name}): {counts['an']} an · {counts['aus']} aus · "
+                 f"{counts['eigen']} eigen  ({counts['schaltbar']} schaltbar, {counts['pflicht']} Pflicht)"]
+        active: dict[str, list[str]] = {}
+        custom: dict[str, list[str]] = {}
+        for info in self.switches(max_level=max_level):
+            section, _, rest = info.path.partition(".")
+            if not rest:
+                continue  # Projekt-Metadaten (Name, Gebiet …)
+            if info.switchable and info.state != "aus":
+                text = rest if info.value is True else f"{rest}={_show(info.value)}"
+                active.setdefault(section, []).append(text + ("*" if info.state == "eigen" else ""))
+            elif not info.switchable and info.state == "eigen":
+                custom.setdefault(section, []).append(f"{rest}={_show(info.value)}")
+        lines.append("Eingeschaltet (* = eigener Wert):")
+        lines.extend(f"  [{k}] " + ", ".join(v) for k, v in active.items())
+        if custom:
+            lines.append("Eigene Werte bei Pflicht-Einstellungen:")
+            lines.extend(f"  [{k}] " + ", ".join(v) for k, v in custom.items())
+        lines.append(f"Ausgeschaltet: {counts['aus']} Einstellungen – Liste: projekt.switches(state='aus')")
+        return "\n".join(lines)
 
     def search(self, text: str, max_level: str | None = None, limit: int = 40) -> list[tuple[str, str]]:
         """Volltextsuche über Pfade **und** Tooltips → ``[(pfad, Kurzbeschreibung)]``.
@@ -239,7 +688,7 @@ class Project:
         except Exception:
             self.config = ProjectConfig.from_dict(self._undo.pop())  # alles oder nichts
             raise
-        self._invalidate()
+        self._invalidate(list(changes))
         return self
 
     # ------------------------------------------------------------ Verlauf (Rückgängig/Wiederholen)
@@ -258,7 +707,7 @@ class Project:
             self.config = ProjectConfig.from_dict(self._undo.pop())
             done = True
         if done:
-            self._invalidate()
+            self._invalidate(_changed_tops(self._redo[-1], self.config.to_dict()))
         return done
 
     def redo(self, steps: int = 1) -> bool:
@@ -271,7 +720,7 @@ class Project:
             self.config = ProjectConfig.from_dict(self._redo.pop())
             done = True
         if done:
-            self._invalidate()
+            self._invalidate(_changed_tops(self._undo[-1], self.config.to_dict()))
         return done
 
     def diff(self, other: "Project | ProjectConfig | str | dict") -> list[tuple[str, Any, Any]]:
@@ -317,7 +766,19 @@ class Project:
         self._invalidate()
         return self
 
-    def _invalidate(self) -> None:
+    def _invalidate(self, paths: list[str] | None = None) -> None:
+        """Nach Änderungen: Modell/Trainer verwerfen – aber nur, wenn die geänderten Einstellungen sie betreffen.
+
+        Einstellungen zu Vorhersage, Zielsystemen, Zielen, Ablauf, Kompression und Beschreibung lassen ein
+        trainiertes Modell unangetastet; Daten-Änderungen laden die Daten neu.
+        """
+        tops = None if paths is None else {str(p).split(".", 1)[0].split("[", 1)[0] for p in paths}
+        if tops is None or "data" in tops:
+            self._bundle = None
+            self.test_data = None
+            self._test_split = None
+        if tops is not None and not (tops - _KEEP_MODEL):
+            return
         self.model = None
         self.surgeon = None
         self.trainer = None
@@ -329,10 +790,88 @@ class Project:
             self._bundle = self.config.data.build()
         return self._bundle
 
+    def _info(self) -> dict[str, Any]:
+        """Zusatzinfos der Daten (Tokenizer, Klassen, Vorverarbeitung …) – nach ``load`` auch ohne die Daten."""
+        if self._bundle is not None:
+            return self._bundle.info or {}
+        if self._artifacts is not None:
+            return self._artifacts
+        if self.config.data.name == "none":
+            return {}
+        return self.data().info or {}
+
+    def data_check(self, train_data: Any = None, val_data: Any = None) -> Any:
+        """Prüft die Daten vor dem Training (Klassen, Lecks, Duplikate, Skalen, NaN, Texte …) → ``DataReport``.
+
+        ``str(report)`` zeigt alle Befunde mit Abhilfe; ``apply_data_fixes()`` übernimmt die Vorschläge.
+        """
+        from .analysis.datacheck import check_data
+
+        info: dict = {}
+        if train_data is None:
+            bundle = self.data()
+            train_data, val_data, info = bundle.train, val_data if val_data is not None else bundle.val, bundle.info
+        n_params = None
+        try:
+            if self.config.data.name != "none":
+                n_params = sum(p.numel() for p in self._ensure_model().parameters())
+        except Exception:  # noqa: BLE001 - Prüfung soll auch ohne baubares Modell gehen
+            pass
+        task = {"classification": "klassifikation", "regression": "regression"}.get(str(info.get("task")), "auto")
+        self.last_data_report = check_data(train_data, val_data, info, n_params, task)
+        return self.last_data_report
+
+    def apply_data_fixes(self, report: Any = None, techniques: bool = True) -> list[str]:
+        """Übernimmt die Vorschläge der Datenprüfung (Einstellungen + passende Techniken)."""
+        report = report or self.last_data_report or self.data_check()
+        changed: list[str] = []
+        self._snapshot()
+        for path, value in report.settings().items():
+            try:
+                if self.config.get(path) != value:
+                    self.config.set(path, value)
+                    changed.append(f"{path} = {value!r}")
+            except ConfigError:
+                continue
+        if techniques:
+            from .techniques import BY_KEY
+
+            for key in report.techniques():
+                if key in BY_KEY:
+                    try:
+                        changed += self.technique(key, "an")
+                    except ConfigError:
+                        continue
+        self._invalidate([c.split(" ", 1)[0] for c in changed])
+        return changed
+
+    def drift_report(self, new_data: Any, reference: Any = None, with_model: bool = True) -> Any:
+        """Vergleicht neue Daten (z. B. aus dem Einsatz) mit den Trainingsdaten → ``DriftReport`` (PSI, KS …).
+
+        Mit trainiertem Modell zusätzlich die Vorhersage-Drift (Verteilung der vorhergesagten Klassen).
+        """
+        from .analysis.drift import drift_report
+
+        info = {}
+        if reference is None:
+            bundle = self.data()
+            reference, info = bundle.train, bundle.info
+        predict = None
+        if with_model and self.model is not None:
+            predict = self.predict
+        return drift_report(reference, new_data, info.get("features"), predict=predict)
+
     # ================================================================ Bauen
+    def _verbose(self, kind: str = "info") -> bool:
+        """Konsolenausgabe des Projekts gemäß ``training.verbose`` und ``training.logging.level``."""
+        from .training.logger import KINDS, LEVELS
+
+        t = self.config.training
+        return t.verbose and LEVELS[t.logging.level] >= KINDS.get(kind, 2)
+
     def _note(self, text: str) -> None:
         self.notes.append(text)
-        if self.config.training.verbose:
+        if self._verbose():
             print(f"  ℹ {text}")
 
     def _fit_value(self, path: str, value: Any, mode: str = "set") -> None:
@@ -404,25 +943,78 @@ class Project:
             self.surgeon = TensorSurgeon(model, list(cfg.tensor_rules))
             self.surgeon.apply_build(num_layers=model.depth() if hasattr(model, "depth") else None)
         self.model = model
+        self._built_from = self._structure_signature()
         return model
 
+    def _structure_signature(self) -> str:
+        """Alles, was den Aufbau des Modells bestimmt (Modell, Regeln, Quantisierung/LoRA/Datentyp)."""
+        d = self.config.to_dict()
+        mem = d["memory"]
+        return json.dumps({"model": d["model"], "module_rules": d["module_rules"], "tensor_rules": d["tensor_rules"],
+                           "memory": {k: v for k, v in mem.items() if k in _STRUCTURE_MEMORY}},
+                          sort_keys=True, default=str)
+
+    def _rebuild_if_changed(self) -> None:
+        """Direkt geänderte Aufbau-Einstellungen (``p.config.model.x = …`` statt ``p.set``) nie stillschweigend
+        übergehen: das Modell wird dann neu gebaut – genau wie bei ``p.set``."""
+        if self.model is not None and self._built_from is not None and self._structure_signature() != self._built_from:
+            self._note("Aufbau-Einstellungen wurden seit dem Bau geändert – Modell wird neu gebaut "
+                       "(bisherige Gewichte verworfen; zum Weitertrainieren continue_training nutzen).")
+            self.model = self.surgeon = self.trainer = None
+
     # ================================================================ Training
-    def train(self, train_data: Any = None, val_data: Any = None) -> list[dict]:
-        """Trainiert (baut vorher, falls nötig). Ohne Daten wird der konfigurierte Datensatz genutzt."""
+    def train(self, train_data: Any = None, val_data: Any = None, hold_out_test: bool = True) -> list[dict]:
+        """Trainiert (baut vorher, falls nötig). Ohne Daten wird der konfigurierte Datensatz genutzt.
+
+        ``hold_out_test=False``: keine Testmenge abteilen (z. B. wenn ``train_data`` schon ohne sie ist).
+        """
+        self._rebuild_if_changed()
+        fresh = self.model is None or self.trainer is None
         if self.model is None:
             self.build()
+        t = self.config.training
+        if fresh and train_data is None and t.paradigm.name != "reinforcement":
+            if t.auto_batch_size and self._auto_due("batch", t.batch_size):
+                self._auto_batch_size()
+                self._auto_done["batch"] = self.config.training.batch_size
+            lr_now = getattr(self.config.training.optimizer.args, "lr", None)
+            if t.auto_lr and self._auto_due("lr", lr_now):
+                result = self.find_lr()
+                if result.suggestion is not None:
+                    self.config.set("training.optimizer.lr", float(f"{result.suggestion:.3g}"))
+                    self._note(f"auto_lr: Lernrate {self.config.training.optimizer.args.lr:.3g} (LR-Finder)")
+                self._auto_done["lr"] = getattr(self.config.training.optimizer.args, "lr", None)
+            self._auto_done["sig"] = self._structure_signature()
+        info: dict = {}
         if train_data is None and self.config.training.paradigm.name != "reinforcement":
             bundle = self.data()
             train_data = bundle.train
+            info = bundle.info or {}
             val_data = val_data if val_data is not None else bundle.val
+            if bundle.test is not None:
+                self.test_data = bundle.test
             if self.config.data.name == "anomaly":
                 val_data = None  # Anomalie-Testmenge hat Labels → separat mit anomaly_report() auswerten
+        if hold_out_test:
+            train_data = self._hold_out_test(train_data)
+        self._fit_warning()
+        for item in self.inactive_settings():          # geändert, aber wirkungslos → nie stillschweigend
+            self._note(f"⚠ {item}")
         self.trainer = Trainer(self.model, self.config.training, self.config.memory, self.surgeon,
-                               teacher=self._teacher)
-        self.model = self.trainer.model
+                               teacher=self._teacher, log_backends=self._loggers, run_name=self.config.name,
+                               run_config=self.config.to_dict())
+        from .training.metrics import target_inverse
+
+        self.trainer.target_inverse = target_inverse(info.get("target_transform"))
+        self.model = self.trainer.module
         self.history = self.trainer.fit(train_data, val_data)
+        if self.config.inference.auto_calibrate and self.trainer.val_data is not None:
+            try:
+                self.calibrate()
+            except ConfigError as exc:
+                self._note(f"Kalibrierung übersprungen: {exc}")
         d = self.config.deployment
-        if self.config.training.verbose and d.show_after_training:
+        if self._verbose() and d.show_after_training:
             try:
                 print()
                 print(self.deployment_overview())
@@ -433,16 +1025,95 @@ class Project:
                 print(f"  (Reduktions-Übersicht nicht verfügbar: {exc})")
         return self.history
 
+    def _hold_out_test(self, train_data: Any) -> Any:
+        """``training.test_split > 0``: einen Teil der Trainingsdaten als Testmenge zurückhalten (einmalig)."""
+        t = self.config.training
+        if t.test_split <= 0 or train_data is None or isinstance(train_data, torch.utils.data.DataLoader):
+            return train_data
+        cached = self._test_split
+        if cached is not None and cached[0] is train_data:
+            return cached[1]                      # gleiche Daten → gleiche Testmenge (kein Leck beim Neutrainieren)
+        if cached is None and self.test_data is not None:
+            return train_data                     # eigene Testmenge des Datensatzes (data.test)
+        from .training.data_utils import as_dataset, split_dataset
+
+        rest, test = split_dataset(as_dataset(train_data), t.test_split, t.seed, t.validation_strategy)
+        if test is None:
+            return train_data
+        self.test_data = test
+        self._test_split = (train_data, rest)
+        self._note(f"Testmenge: {len(test)} Beispiele zurückgehalten – erst am Ende mit Project.test() auswerten.")
+        return rest
+
+    def test(self, data: Any = None) -> dict[str, float]:
+        """Endgültige Bewertung auf Daten, die das Training **nie** gesehen hat (Präfix ``test_``).
+
+        Ohne ``data``: die mit ``training.test_split`` zurückgehaltene Testmenge bzw. ``data.test`` des Datensatzes.
+        Validierungswerte sind durch Early Stopping/Suche leicht geschönt – der Test zeigt die echte Qualität.
+        """
+        trainer = self._eval_trainer()
+        data = data if data is not None else self.test_data
+        if data is None:
+            raise ConfigError("Keine Testmenge vorhanden – training.test_split > 0 setzen (z. B. "
+                              "project.turn_on('training.test_split')) und neu trainieren, oder Daten übergeben.",
+                              "training.test_split")
+        result = trainer.evaluate(data, prefix="test_")
+        if self._verbose("eval"):
+            print("  Test: " + "  ".join(f"{k}={v:.4g}" for k, v in result.items()))
+        self.last_test = dict(result)
+        return result
+
+    def _fit_warning(self) -> None:
+        """Mit gesetztem ``memory.memory_budget_gb``: vor dem Training prüfen und Notfall-Optionen nennen."""
+        if not (self.config.memory.memory_budget_gb and self._verbose("warnung")):
+            return
+        try:
+            report = self.memory_report()
+            if report.fits() is False:
+                from .analysis.fallback import options_text
+
+                budget = self.config.memory.memory_budget_gb * 1024
+                opts = [o for o in self.fallback_options(budget_mb=budget, training=True) if o.fits][:3]
+                print(f"  ⚠ Training passt voraussichtlich nicht ins Budget ({report.total_bytes / 2**20:.0f} MB > "
+                      f"{budget:.0f} MB).")
+                if opts:
+                    print("  " + options_text(opts, budget).replace("\n", "\n  "))
+        except Exception:  # noqa: BLE001 - Prüfung darf das Training nie verhindern
+            pass
+
     # ================================================================ Zielsysteme
     def _example_input(self) -> Any:
+        """Beispiel-Eingabe (eine Zeile der Daten, sonst ``model.example_input``) – geprüft, dass das Modell sie
+        annimmt (z. B. braucht ein Diffusionsmodell zusätzlich den Zeitschritt, ein Seq2Seq-Modell Decoder-Eingaben)."""
+        model = self._ensure_model()
+        device = self._device()
+        candidates = []
         try:
             bundle = self.data()
             if isinstance(bundle.train, dict) and "inputs" in bundle.train:
-                return bundle.train["inputs"][:1].to(self._device())
+                x = bundle.train["inputs"]
+                candidates.append(to_device(x[:1] if isinstance(x, torch.Tensor) else
+                                            {k: v[:1] for k, v in x.items()} if isinstance(x, dict) else x, device))
         except Exception:  # noqa: BLE001
             pass
-        model = self._ensure_model()
-        return model.example_input(1) if hasattr(model, "example_input") else None
+        if hasattr(model, "example_input"):
+            try:
+                candidates.append(to_device(model.example_input(1), device))
+            except Exception:  # noqa: BLE001
+                pass
+        was = model.training
+        model.eval()
+        try:
+            for ex in candidates:
+                try:
+                    with torch.no_grad():
+                        call_model(model, ex)
+                    return ex
+                except Exception:  # noqa: BLE001 - passt nicht → nächster Kandidat
+                    continue
+        finally:
+            model.train(was)
+        return candidates[0] if candidates else None
 
     def _macs(self) -> int | None:
         from .analysis.benchmark import count_macs
@@ -460,7 +1131,8 @@ class Project:
         """Reduktions-Empfehlung für ein Zielsystem (siehe ``analysis.targets.TARGETS``)."""
         from .analysis.targets import recommend
 
-        return recommend(self._ensure_model(), target, self._macs(), self._can_heal())
+        return recommend(self._ensure_model(), target, self._macs(), self._can_heal(),
+                         activations_mb=self._activations_mb(False))
 
     def deployment_overview(self, targets: list[str] | None = None) -> str:
         """Tabelle: passt das Modell auf die Zielsysteme – und wie wird es passend?"""
@@ -469,8 +1141,85 @@ class Project:
         return overview(self._ensure_model(), targets or list(self.config.deployment.targets), self._macs(),
                         self._can_heal())
 
-    def reduce_for(self, target: str, export: str | Path | None = None, allow_student: bool = True) -> "Project":
+    def _budget_mb(self, target: str | None = None, budget_mb: float | None = None) -> float:
+        from .analysis.targets import TARGETS
+        from .memory.estimator import detect_budget
+
+        if budget_mb is not None:
+            return float(budget_mb)
+        if target is not None:
+            if target not in TARGETS:
+                raise ConfigError(f"Unbekanntes Zielsystem '{target}'. Verfügbar: {', '.join(TARGETS)}.")
+            return TARGETS[target].memory_mb
+        if self.config.memory.memory_budget_gb:
+            return self.config.memory.memory_budget_gb * 1024
+        detected = detect_budget(self._device())
+        if detected is None:
+            raise ConfigError("Kein Speicherbudget bekannt – target=…, budget_mb=… oder memory.memory_budget_gb setzen.")
+        return detected / 2**20
+
+    def _activations_mb(self, training: bool) -> float:
+        """Aktivierungsspeicher: Training für den ganzen Batch, Inferenz grob pro Beispiel."""
+        try:
+            report = self.memory_report()
+            act = (report.activations_bytes or 0.0) / 2**20
+        except Exception:  # noqa: BLE001
+            return 0.0
+        if training:
+            return act
+        return act * 0.25 / max(1, report.batch_size)   # Inferenz speichert nichts für den Backward
+
+    def fallback_options(self, target: str | None = None, budget_mb: float | None = None, training: bool = False,
+                         scale: float = 1.0) -> list:
+        """Notfall-Ausführung: alle Wege, das Modell trotz Speichermangel laufen zu lassen (mit Schätzung).
+
+        Args:
+            target:    Zielsystem (Budget aus dessen Profil) – oder ``budget_mb`` direkt angeben.
+            training:  Optionen fürs Training statt für die Inferenz.
+        """
+        from .analysis.fallback import execution_options
+
+        model = self._ensure_model()
+        t = self.config.training
+        budget = self._budget_mb(target, budget_mb)
+        gpu = (target is not None and ("gpu" in target or target == "apple_silicon")) or \
+            (target is None and self._device().type != "cpu")
+        return execution_options(model, budget, training, self._activations_mb(training), scale=scale,
+                                 batch_size=t.batch_size if training else 1, gpu_target=gpu, callbacks=[c.to_dict() for c in t.callbacks],
+                                 gradient_accumulation_steps=t.gradient_accumulation_steps)
+
+    def apply_fallback(self, key: str = "auto", target: str | None = None, budget_mb: float | None = None,
+                       training: bool = False, allow_quality_loss: bool = False) -> Any:
+        """Schaltet eine Notfall-Option ein (``auto`` = schnellste passende ohne Qualitätsverlust).
+
+        Returns:
+            Die angewandte ``ExecutionOption`` (mit Nutzungshinweis). Rückgängig mit ``undo()``.
+        """
+        from .analysis.fallback import best_option
+
+        options = self.fallback_options(target, budget_mb, training)
+        if key == "auto":
+            chosen = best_option(options, allow_quality_loss) or best_option(options, True)
+            if chosen is None:
+                raise ConfigError("Keine Notfall-Option passt in das Budget – kleineres Grundmodell, Schüler-Modell "
+                                  "(distill) oder mehr Geräte (cluster) wählen.")
+        else:
+            matches = [o for o in options if o.key == key]
+            if not matches:
+                raise ConfigError(f"Unbekannte Notfall-Option '{key}'. Verfügbar: {', '.join(o.key for o in options)}.")
+            chosen = matches[0]
+        if chosen.changes:
+            self.update(chosen.changes)
+        self._note(f"Notfall-Ausführung '{chosen.key}' eingeschaltet: {chosen.title}"
+                   + (f" – {chosen.usage}" if chosen.usage else ""))
+        return chosen
+
+    def reduce_for(self, target: str, export: str | Path | None = None, allow_student: bool = True,
+                   fallback: str | None = "auto") -> "Project":
         """Wendet die Empfehlung für ``target`` an: ggf. Schüler-Modell (Distillation), dann Kompression.
+
+        Passt das Ergebnis trotzdem nicht, wird mit ``fallback`` (``auto`` oder eine Kennung aus
+        ``fallback_options``) eine Notfall-Ausführung eingeschaltet – z. B. Schicht für Schicht von der SSD.
 
         Returns:
             Das reduzierte Projekt (``self`` oder – bei Schüler-Empfehlung – ein neues Schüler-Projekt).
@@ -492,6 +1241,14 @@ class Project:
         steps = [s for s in steps if s["name"] != "skip"]
         if steps:
             project.compress(steps)
+        if fallback and not rec.fits_after:
+            from .analysis.benchmark import model_size_bytes
+
+            if model_size_bytes(project._ensure_model()) / 2**20 > rec.target.memory_mb:
+                try:
+                    project.apply_fallback(fallback, target=target)
+                except ConfigError as exc:
+                    project._note(f"Keine Notfall-Ausführung möglich: {exc}")
         if export is not None:
             fmt = "onnx" if "ONNX" in rec.target.export.split("/")[0] and _has_onnx() else "export"
             project.export(export, fmt)
@@ -539,7 +1296,7 @@ class Project:
             self.config.module_rules.append(ModuleRuleConfig.from_dict(r))
         self.model, self.trainer = model, None
         self.last_compression = report
-        if self.config.training.verbose:
+        if self._verbose():
             print(report)
         return report
 
@@ -574,6 +1331,7 @@ class Project:
         if steps is not None:
             sp.config.training.max_steps = steps
         sp._teacher = teacher
+        sp._loggers = list(self._loggers)
         sp.train()
         return sp
 
@@ -615,23 +1373,709 @@ class Project:
                                                          "task": task, "temperature": 2.0}}
         if method == "replay":
             train_data = mix_replay(train_data, old, replay_fraction, seed=t.seed or 0)
-        trainer = Trainer(model, t, self.config.memory, self.surgeon, teacher=teacher)
+        trainer = Trainer(model, t, self.config.memory, self.surgeon, teacher=teacher, log_backends=self._loggers,
+                          run_name=f"{self.config.name}_weiterlernen", run_config=self.config.to_dict())
         if method == "ewc":
             batches = self._batches(old, 8)
             fisher = fisher_information(trainer.model, batches, calibration_loss)
             trainer.penalties.append(ewc_penalty(trainer.model, fisher, strength * 100.0))
-        self.trainer, self.model = trainer, trainer.model
+        self.trainer, self.model = trainer, trainer.module
         hist = trainer.fit(train_data, val_data)
         self.history = self.history + hist
         return hist
 
-    def evaluate(self, data: Any = None) -> dict[str, float]:
+    # ================================================================ Ablauf (Suche, Schwarm, Evolution …)
+    def tune(self, method: str | None = None, space: dict | None = None, trials: int | None = None,
+             steps_per_trial: int | None = None, **settings: Any) -> Any:
+        """Automatische Suche (``random`` | ``grid`` | ``evolution`` | ``pso`` | ``pbt``) – Einstellungen aus
+        ``workflow.search``, hier überschreibbar. Übernimmt das Beste (``apply_best``)."""
+        from .workflow import run_search
+
+        s = self.config.workflow.search.copy()
+        for key, value in (("method", method), ("space", space), ("trials", trials),
+                           ("steps_per_trial", steps_per_trial), *settings.items()):
+            if value is not None:
+                s.set(key, value)
+        return run_search(self, s)
+
+    def federated_train(self, **settings: Any) -> list[dict]:
+        """Föderiertes Lernen (FedAvg/FedProx) mit simulierten Teilnehmern (``workflow.federated``)."""
+        from .workflow import federated_training
+
+        f = self.config.workflow.federated.copy()
+        for key, value in settings.items():
+            f.set(key, value)
+        return federated_training(self, f)
+
+    def model_soup(self, runs: int | None = None, mode: str | None = None) -> dict[str, Any]:
+        """Model Soup: mehrere Läufe vom selben Startpunkt trainieren und die Gewichte mitteln."""
+        from .workflow import model_soup
+
+        w = self.config.workflow
+        return model_soup(self, runs or max(2, w.soup_runs), mode or w.soup_mode)
+
+    def run(self) -> dict[str, Any]:
+        """Führt den ganzen **Ablauf** aus (``workflow``): Datenprüfung → Suche → Training (normal / föderiert /
+        Model Soup) → Test → Kalibrierung → Robustheit/Fairness → Kreuzvalidierung → Kompression → Export →
+        Speichern. Jede Stufe ist einzeln schaltbar."""
+        w = self.config.workflow
+        report: dict[str, Any] = {}
+        supervised = self.config.training.paradigm.name != "reinforcement" and self.config.data.name != "none"
+        if w.check_data and supervised:
+            report["datenpruefung"] = self.data_check()
+            if self._verbose():
+                print(report["datenpruefung"])
+            if w.apply_data_fixes and not report["datenpruefung"].ok:
+                report["datenkorrekturen"] = self.apply_data_fixes()
+        if w.search.method != "none":
+            report["suche"] = self.tune()
+        if w.federated.enabled:
+            report["foederiert"] = self.federated_train()
+        elif w.soup_runs > 1:
+            report["model_soup"] = self.model_soup()
+        elif self.config.workflow.search.method != "pbt":       # PBT hat bereits trainiert
+            report["training"] = self.train()
+        if w.run_test and self.test_data is not None and self.model is not None:
+            report["test"] = self.test()
+        if w.compare_baseline and supervised and self.model is not None \
+                and self.config.training.paradigm.name == "supervised":
+            try:
+                report["basis"] = self.baseline()
+            except ConfigError as exc:
+                self._note(f"Basis-Vergleich übersprungen: {exc}")
+        if self.config.inference.auto_calibrate and self.last_calibration:
+            report["kalibrierung"] = self.last_calibration
+        if w.robustness_check and supervised and self.model is not None:
+            try:
+                report["robustheit"] = self.robustness_report()
+            except ConfigError as exc:
+                self._note(f"Robustheitsprüfung übersprungen: {exc}")
+        if w.fairness_column and self.model is not None:
+            report["fairness"] = self.fairness_report(w.fairness_column)
+        if w.cross_validation >= 2:
+            report["kreuzvalidierung"] = self.cross_validate(w.cross_validation)
+        if w.compress_after_training:
+            steps = list(self.config.compression.steps)
+            if not steps:
+                target = self.config.deployment.main_target or "smartphone"
+                steps = [dict(s) for s in self.recommend_for(target).steps if s["name"] != "heal"]
+            if steps:
+                report["kompression"] = self.compress(steps)
+        if w.export_format != "none":
+            path = w.export_path or str(Path(self.config.output_dir) / self.config.name / "modell")
+            report["export"] = self.export(path, w.export_format)
+        if w.save_project:
+            report["gespeichert"] = self.save()
+        return report
+
+    def find_lr(self, min_lr: float = 1e-7, max_lr: float = 1.0, steps: int = 100, apply: bool = False) -> Any:
+        """Lernraten-Finder (LR-Range-Test) auf einer Kopie des Modells; ``apply=True`` übernimmt die Empfehlung."""
+        from .training.lr_finder import find_lr
+
+        result = find_lr(self, min_lr, max_lr, steps)
+        if apply and result.suggestion is not None:
+            self.set("training.optimizer.lr", float(f"{result.suggestion:.3g}"))
+        return result
+
+    def find_batch_size(self, max_batch: int = 4096, headroom: float = 0.85) -> int:
+        """Größte Batchgröße, die (geschätzt) sicher in den Gerätespeicher passt – nur auf GPUs; auf der CPU wird
+        die eingestellte Größe zurückgegeben (größere Batches bringen dort kaum Tempo)."""
+        from .memory.estimator import detect_budget
+        from .memory.manager import resolve_device
+
+        t = self.config.training
+        device = resolve_device(self.config.memory.device)
+        if device.type not in ("cuda", "mps"):
+            return t.batch_size
+        budget = (self.config.memory.memory_budget_gb or 0) * 2**30 or detect_budget(device)
+        report = self.memory_report(batch_size=1)
+        per_sample = report.activations_bytes
+        if not budget or not per_sample:
+            return t.batch_size
+        fixed = report.total_bytes - per_sample
+        limit = int((headroom * budget - fixed) // per_sample)
+        try:
+            limit = min(limit, max(1, len(next(iter(self.data().train.values()))) // 8))
+        except Exception:  # noqa: BLE001 - Datenumfang unbekannt
+            pass
+        best = 1
+        while best * 2 <= min(limit, max_batch):
+            best *= 2
+        return max(1, best)
+
+    def _auto_due(self, kind: str, current: Any) -> bool:
+        """Automatik (LR-Finder, Batchgröße) nur, wenn nötig: noch nie gelaufen oder Modell umgebaut – und nie über
+        einen Wert hinweg, den der Nutzer seitdem ausdrücklich gesetzt hat."""
+        done = self._auto_done
+        if kind not in done:
+            return True
+        if current != done[kind]:
+            self._note(f"auto_{'lr' if kind == 'lr' else 'batch_size'}: ausdrücklich gesetzter Wert {current!r} bleibt "
+                       f"(Automatik übersprungen)")
+            done[kind] = current
+            return False
+        return done.get("sig") != self._structure_signature()
+
+    def _auto_batch_size(self) -> None:
+        t = self.config.training
+        new = self.find_batch_size()
+        if new != t.batch_size and new > 0:
+            old = t.batch_size
+            self.config.set("training.batch_size", new)
+            lr = getattr(t.optimizer.args, "lr", None)
+            if lr is not None:                                  # √-Regel für adaptive Optimierer
+                self.config.set("training.optimizer.lr", float(f"{lr * (new / old) ** 0.5:.3g}"))
+            self._note(f"auto_batch_size: Batchgröße {old} → {new} (Lernrate √-skaliert)")
+
+    def cross_validate(self, k: int = 5, steps: int | None = None, seed: int = 0) -> dict[str, Any]:
+        """k-fache Kreuzvalidierung: k Modelle auf je k−1 Teilen trainieren, auf dem übrigen Teil messen.
+
+        Returns:
+            ``{"folds": [metriken je Teil], "mittel": {...}, "std": {...}}`` – zeigt, wie stabil das Ergebnis ist
+            (kleine Datensätze, ehrliche Schätzung der Generalisierung).
+        """
+        from .training.data_utils import as_tensor_dict
+
+        bundle = self.data()
+        if bundle.test is not None:
+            self.test_data = bundle.test
+        data = as_tensor_dict(self._hold_out_test(bundle.train))     # die Testmenge bleibt unberührt
+        if not isinstance(data, dict):
+            raise ConfigError("cross_validate braucht Daten als dict von Tensoren (z. B. die eingebauten Datensätze).")
+        n = next(iter(v for v in data.values() if isinstance(v, torch.Tensor))).shape[0]
+        if k < 2 or k > n:
+            raise ConfigError(f"k muss zwischen 2 und der Anzahl Beispiele ({n}) liegen.")
+        perm = torch.randperm(n, generator=torch.Generator().manual_seed(seed))
+        folds = [perm[i::k] for i in range(k)]
+        results = []
+        for i in range(k):
+            val_idx = folds[i]
+            train_idx = torch.cat([f for j, f in enumerate(folds) if j != i])
+            pick = (lambda idx: {key: v[idx] if isinstance(v, torch.Tensor) and v.shape[:1] == (n,) else v
+                                 for key, v in data.items()})
+            cfg = self.config.copy()
+            cfg.training.validation_split = 0.0
+            cfg.deployment.show_after_training = False
+            cfg.training.verbose = False
+            if steps is not None:
+                cfg.training.max_steps = steps
+            q = Project(cfg)
+            q._bundle = bundle
+            q.train(pick(train_idx), None, hold_out_test=False)
+            q.trainer.target_inverse = self._target_inverse()
+            metrics = q.evaluate(pick(val_idx))
+            results.append(metrics)
+            if self._verbose():
+                print(f"  Teil {i + 1}/{k}: " + "  ".join(f"{m}={v:.4g}" for m, v in metrics.items()))
+        keys = results[0].keys()
+        mean = {m: sum(r[m] for r in results) / k for m in keys}
+        std = {m: (sum((r[m] - mean[m]) ** 2 for r in results) / max(1, k - 1)) ** 0.5 for m in keys}
+        if self._verbose():
+            print("  Kreuzvalidierung: " + "  ".join(f"{m}={mean[m]:.4g}±{std[m]:.2g}" for m in keys))
+        return {"folds": results, "mittel": mean, "std": std}
+
+    def add_logger(self, logger: Any) -> "Project":
+        """Eigenen Logger einbinden: ``logging.Logger``, ein ``LogBackend`` oder ein Objekt mit (einigen der)
+        Methoden ``start``, ``message(kind, text)``, ``metrics(step, werte, phase)``, ``histogram``, ``close``.
+
+        Umfang und Ziele aus der Konfiguration: ``training.logging`` (Stufe, Backends, Intervalle, Rotation).
+        """
+        self._loggers.append(logger)
+        return self
+
+    def _eval_trainer(self) -> Trainer:
+        """Trainer für Bewertungen – nach ``load()`` ohne Training ein reiner Bewertungs-Trainer."""
         if self.trainer is None:
-            raise ConfigError("Erst trainieren (train) oder Trainer erzeugen.")
+            if self.model is None:
+                raise ConfigError("Erst trainieren (train) oder ein gespeichertes Projekt laden (Project.load).")
+            self.trainer = Trainer(self.model, self.config.training, MemoryConfig(), log_backends=self._loggers,
+                                   run_name=self.config.name)
+            self.model = self.trainer.module
+            self.trainer.target_inverse = self._target_inverse()   # Regression in echten Einheiten (auch nach load)
+        return self.trainer
+
+    def _target_inverse(self) -> Any:
+        from .training.metrics import target_inverse
+
+        try:
+            return target_inverse(self._info().get("target_transform"))
+        except (OSError, ValueError, ConfigError):    # Daten nicht verfügbar → Werte bleiben, wie sie sind
+            return None
+
+    def evaluate(self, data: Any = None) -> dict[str, float]:
+        """Bewertung (Präfix ``val_``) – ohne ``data`` auf der Validierung des Datensatzes."""
+        trainer = self._eval_trainer()
         if data is None:
             bundle = self.data()
             data = bundle.val if bundle.val is not None else bundle.train
-        return self.trainer.evaluate(data)
+        return trainer.evaluate(data)
+
+    # ================================================================ Vertrauen
+    def _eval_data(self, data: Any = None, prefer_test: bool = False) -> Any:
+        if data is not None:
+            return data
+        candidates = [self.test_data] if prefer_test else []
+        candidates.append(getattr(self.trainer, "val_data", None))
+        for c in candidates:
+            if c is not None:
+                return c
+        try:
+            val = self.data().val if self.config.data.name != "none" else None
+        except (OSError, ValueError):                 # z. B. nach load() ohne die Original-Daten
+            val = None
+        if val is not None:
+            return val
+        if self.test_data is not None:                # z. B. nach föderiertem Training: keine eigene Validierung
+            return self.test_data
+        raise ConfigError("Keine Validierungsdaten – erst trainieren (train) oder Daten übergeben.")
+
+    @torch.no_grad()
+    def _outputs(self, data: Any, limit: int = 20000) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """(Ausgaben, Ziele, Eingaben) über einen Datensatz im Eval-Modus."""
+        from .training.data_utils import make_loader
+        from .training.paradigms import main_output
+
+        model = self._ensure_model()
+        was = model.training
+        model.eval()
+        device = self._device()
+        outs, targets, inputs, n = [], [], [], 0
+        try:
+            for batch in make_loader(data, self.config.training.eval_batch_size or self.config.training.batch_size,
+                                     False):
+                batch = to_device(batch, device)
+                if "targets" not in batch:
+                    raise ConfigError("Die Daten haben keine Ziele ('targets').")
+                out = main_output(call_model(model, batch["inputs"], attention_mask=batch.get("attention_mask"),
+                                             lengths=batch.get("lengths")))
+                outs.append(out.float().cpu())
+                targets.append(batch["targets"].cpu())
+                inputs.append(batch["inputs"].cpu() if isinstance(batch["inputs"], torch.Tensor) else None)
+                n += out.shape[0]
+                if n >= limit:
+                    break
+        finally:
+            model.train(was)
+        x = torch.cat(inputs) if all(i is not None for i in inputs) else None
+        return torch.cat(outs), torch.cat(targets), x
+
+    def _is_classification(self, out: torch.Tensor, target: torch.Tensor | None = None) -> bool:
+        task = str(self._info().get("task", ""))
+        if task in ("classification", "regression"):
+            return task == "classification"
+        if target is not None:
+            return not target.is_floating_point() and out.dim() == target.dim() + 1
+        return out.dim() == 2 and out.shape[-1] > 1
+
+    def calibrate(self, data: Any = None) -> dict[str, Any]:
+        """Stellt Temperatur, Schwelle und Conformal-Grenze auf Validierungsdaten ein (``project.inference``).
+
+        Ergebnis: Kalibrierungsfehler (ECE) vorher/nachher, Temperatur, Schwelle, Conformal-Abdeckung.
+        """
+        from .analysis.inference import (best_threshold, conformal_quantile, conformal_scores, fit_temperature)
+        from .training.metrics import METRICS, target_inverse
+
+        from .training.paradigms import is_segmentation
+
+        ic = self.config.inference
+        out, target, _ = self._outputs(self._eval_data(data))
+        if is_segmentation(out, target):                 # je Pixel kalibrieren
+            out, target = out.permute(0, 2, 3, 1).reshape(-1, out.shape[1]), target.reshape(-1)
+        result: dict[str, Any] = {}
+        self._snapshot()
+        if self._is_classification(out, target) and out.dim() == 2:
+            ece = METRICS.get("ece").factory(METRICS.get("ece").config_cls())
+            result["ece_vorher"] = ece(out, target)
+            t = fit_temperature(out, target)
+            ic.temperature = t
+            scaled = out / t
+            result.update(temperatur=t, ece_nachher=ece(scaled, target))
+            if ic.optimize_threshold != "keine" and out.shape[1] == 2:
+                ic.threshold = best_threshold(scaled.softmax(-1)[:, 1], target, ic.optimize_threshold)
+                result["schwelle"] = ic.threshold
+            if ic.conformal_alpha:
+                ic.conformal_q = conformal_quantile(conformal_scores(scaled, target, True), ic.conformal_alpha)
+                result["conformal_q"] = ic.conformal_q
+        else:
+            inverse = target_inverse(self._info().get("target_transform"))
+            pred, tgt = inverse(out, target) if inverse else (out, target)
+            if ic.conformal_alpha:
+                ic.conformal_q = conformal_quantile(conformal_scores(pred, tgt, False), ic.conformal_alpha)
+                result["intervall_halbbreite"] = ic.conformal_q
+        if self._verbose():
+            print("  Kalibrierung: " + "  ".join(f"{k}={v:.4g}" for k, v in result.items()))
+        self.last_calibration = dict(result)
+        return result
+
+    def _forward_fn(self) -> Any:
+        from .training.paradigms import main_output
+
+        model = self._ensure_model()
+        device = self._device()
+        def forward(x: Any) -> torch.Tensor:
+            if isinstance(x, dict):                     # z. B. Texte: {"inputs", "attention_mask"}
+                x = to_device(x, device)
+                return main_output(call_model(model, x["inputs"], attention_mask=x.get("attention_mask"))).float()
+            return main_output(call_model(model, x.to(device) if isinstance(x, torch.Tensor) else x)).float()
+
+        return forward
+
+    @torch.no_grad()
+    def _samples(self, inputs: torch.Tensor) -> torch.Tensor:
+        """Ausgaben ``[S, N, …]`` (S = 1 ohne Unsicherheitsschätzung)."""
+        from .analysis.inference import sample_outputs
+
+        ic = self.config.inference
+        model = self._ensure_model()
+        was = model.training
+        model.eval()
+        try:
+            if ic.uncertainty == "keine":
+                return self._forward_fn()(inputs).unsqueeze(0).cpu()
+            return sample_outputs(model, self._forward_fn(), inputs, ic.uncertainty, ic.samples, ic.tta_transforms,
+                                  ic.tta_noise).cpu()
+        finally:
+            model.train(was)
+
+    def predict_proba(self, inputs: torch.Tensor) -> torch.Tensor:
+        """Kalibrierte Klassenwahrscheinlichkeiten ``[N, K]`` (Temperatur, MC-Dropout/TTA laut ``inference``)."""
+        s = self._samples(inputs)
+        return (s / self.config.inference.temperature).softmax(-1).mean(0)
+
+    def predict_labels(self, inputs: torch.Tensor, names: bool = True) -> list:
+        """Lesbare Vorhersagen: Klassennamen (mit Schwelle und Enthaltung ``'unsicher'``) bzw. Zahlen in echten
+        Einheiten (Rückrechnung der Ziel-Skalierung)."""
+        return self.predict_with_uncertainty(inputs, names)["vorhersage"]
+
+    def predict_with_uncertainty(self, inputs: torch.Tensor, names: bool = True) -> dict[str, Any]:
+        """Vorhersage + Sicherheit: Wahrscheinlichkeit, Entropie, Streuung (MC-Dropout/TTA), Conformal-Menge
+        bzw. -Intervall – gemäß ``project.inference``."""
+        from .analysis.inference import entropy, prediction_sets
+        from .training.metrics import target_inverse
+
+        ic = self.config.inference
+        s = self._samples(inputs)
+        info = self._info()
+        label_names = info.get("label_names") if names else None
+        if info.get("task") == "segmentation" and s.dim() == 5:      # [S, N, C, H, W] → Klassenkarte je Pixel
+            probs = (s / ic.temperature).softmax(2).mean(0)
+            conf, idx = probs.max(1)
+            out = {"vorhersage": idx, "wahrscheinlichkeit": conf, "wahrscheinlichkeiten": probs,
+                   "klassen": label_names, "entropie": entropy(probs.movedim(1, -1))}
+            if ic.abstain_below is not None:
+                out["unsicher"] = conf < ic.abstain_below
+            return out
+        if self._is_classification(s[0]):
+            probs = (s / ic.temperature).softmax(-1)
+            mean = probs.mean(0)
+            conf, idx = mean.max(-1)
+            if ic.threshold is not None and mean.shape[-1] == 2:
+                idx = (mean[:, 1] >= ic.threshold).long()
+                conf = mean.gather(1, idx[:, None]).squeeze(1)
+            labels: list = [label_names[i] if label_names and i < len(label_names) else i for i in idx.tolist()]
+            if ic.abstain_below is not None:
+                labels = [lab if float(c) >= ic.abstain_below else "unsicher" for lab, c in zip(labels, conf)]
+            out = {"vorhersage": labels, "wahrscheinlichkeit": conf, "wahrscheinlichkeiten": mean,
+                   "entropie": entropy(mean)}
+            if s.shape[0] > 1:
+                out["streuung"] = probs.std(0).gather(1, idx[:, None]).squeeze(1)
+            if ic.conformal_q is not None:
+                sets = prediction_sets(mean, ic.conformal_q)
+                out["menge"] = [[label_names[i] if label_names and i < len(label_names) else i for i in m]
+                                for m in sets]
+            return out
+        inverse = target_inverse(info.get("target_transform"))
+        values = s.mean(0)
+        spread = s.std(0) if s.shape[0] > 1 else None
+        if inverse is not None:
+            values = inverse(values, values)[0]
+            if spread is not None:
+                spread = (inverse(s, s)[0]).std(0)
+        flat = values.reshape(values.shape[0], -1)
+        out = {"vorhersage": [float(v[0]) if v.numel() == 1 else v.tolist() for v in flat], "werte": values}
+        if spread is not None:
+            out["streuung"] = spread
+        if ic.conformal_q is not None:
+            out["intervall"] = (values - ic.conformal_q, values + ic.conformal_q)
+        return out
+
+    def explain_prediction(self, inputs: torch.Tensor, target: Any = None, method: str = "auto",
+                           index: int = 0) -> Any:
+        """Warum diese Vorhersage? Wichtigkeit jedes Merkmals/Tokens/Bildbereichs für das Beispiel ``index``.
+
+        ``method``: auto | gradient | integrated_gradients | occlusion. ``target``: Klasse (Index oder Name).
+        """
+        from .analysis.explain import METHODS, Explanation, gradient_x_input, integrated_gradients, occlusion
+
+        if method not in METHODS:
+            raise ConfigError(f"Unbekannte Methode '{method}'. Erlaubt: {', '.join(METHODS)}.")
+        x = inputs[index:index + 1] if inputs.dim() > 1 else inputs.unsqueeze(0)
+        info = self._info()
+        label_names = info.get("label_names") or []
+        if isinstance(target, str):
+            if target not in label_names:
+                raise ConfigError(f"Klasse '{target}' unbekannt. Klassen: {label_names}.")
+            target = label_names.index(target)
+        tokens = not x.is_floating_point()
+        if method == "auto":
+            method = "occlusion" if tokens else ("integrated_gradients" if x.dim() == 2 else "gradient")
+        model = self._ensure_model()
+        was = model.training
+        model.eval()
+        forward = self._forward_fn()
+        try:
+            fn = {"gradient": gradient_x_input, "integrated_gradients": integrated_gradients,
+                  "occlusion": occlusion}[method]
+            attr = fn(forward, x.to(self._device()), target).cpu()
+            with torch.no_grad():
+                out = forward(x)
+        finally:
+            model.train(was)
+        if tokens:
+            tok = info.get("tokenizer")
+            ids = x[0].tolist()
+            names = [f"{i}:{tok.itos[t] if tok is not None and t < len(tok.itos) else t}" for i, t in enumerate(ids)]
+        else:
+            names = list(info.get("features") or [])
+        pred_idx = int(out[0].argmax()) if out.dim() == 2 and out.shape[-1] > 1 else None
+        shown = (label_names[pred_idx] if pred_idx is not None and pred_idx < len(label_names) else pred_idx) \
+            if pred_idx is not None else [round(v, 4) for v in out[0].reshape(-1).tolist()][:4]
+        tgt_name = (label_names[target] if isinstance(target, int) and target < len(label_names) else target)
+        return Explanation(method, attr, names, shown, tgt_name)
+
+    def feature_importance(self, data: Any = None, metric: str | None = None, repeats: int = 3) -> Any:
+        """Globale Merkmals-Wichtigkeit per Permutation auf Validierungsdaten (welche Spalten zählen wirklich?)."""
+        from .analysis.explain import permutation_importance
+        from .core import ComponentSpec
+        from .training.metrics import direction
+
+        out, target, x = self._outputs(self._eval_data(data))
+        if x is None or not x.is_floating_point() or x.dim() != 2:
+            raise ConfigError("feature_importance braucht Tabellen-Eingaben [N, Merkmale] – für Bilder/Texte "
+                              "explain_prediction(…) verwenden.")
+        cls = self._is_classification(out, target)
+        metric = metric or ("balanced_accuracy" if cls else "mae")
+        fn = ComponentSpec.from_value("metric", metric).build()
+        forward = self._forward_fn()
+        model = self._ensure_model()
+        was = model.training
+        model.eval()
+        try:
+            with torch.no_grad():
+                imp = permutation_importance(lambda xx: fn(forward(xx).cpu(), target), x, direction(metric) == "max",
+                                             self._info().get("features"), repeats, metric=metric)
+        finally:
+            model.train(was)
+        return imp
+
+    def fairness_report(self, groups: Any, data: Any = None, positive_class: int = 1) -> Any:
+        """Fairness je Gruppe (Genauigkeit, Positiv-Rate, TPR/FPR, Disparate Impact).
+
+        ``groups``: Gruppe je Beispiel (Liste/Tensor) oder Name einer Merkmalsspalte (CSV, z. B. ``'geschlecht'``).
+        Ohne ``data``: Testmenge, sonst Validierung.
+        """
+        from .analysis.fairness import fairness_report, groups_from_features
+
+        out, target, x = self._outputs(self._eval_data(data, prefer_test=True))
+        if not self._is_classification(out, target):
+            raise ConfigError("Der Fairness-Bericht ist für Klassifikation gedacht.")
+        names = None
+        if isinstance(groups, str):
+            if x is None or x.dim() != 2:
+                raise ConfigError("Gruppen als Spaltenname gehen nur bei Tabellen-Daten.")
+            groups, names = groups_from_features(x, list(self._info().get("features") or []), groups)
+        pred = out.argmax(-1)
+        ic = self.config.inference
+        if ic.threshold is not None and out.shape[-1] == 2:
+            pred = ((out / ic.temperature).softmax(-1)[:, 1] >= ic.threshold).long()
+        self.last_fairness = fairness_report(pred, target, groups, positive_class, names)
+        return self.last_fairness
+
+    def baseline(self, data: Any = None) -> dict[str, float]:
+        """Vergleich mit einer **einfachen Basis**: häufigste Klasse bzw. Mittelwert der Trainingsziele.
+
+        Ein Modell, das die Basis nicht deutlich schlägt, hat nichts gelernt (oder die Metrik ist ungeeignet).
+        """
+        from .training.metrics import auto_specs, compute_metrics, task_of
+        from .training.paradigms import is_segmentation
+
+        out, target, _ = self._outputs(self._eval_data(data))
+        if is_segmentation(out, target):
+            out, target = out.permute(0, 2, 3, 1).reshape(-1, out.shape[1]), target.reshape(-1)
+        task = task_of(out, target)
+        train_targets = None
+        try:
+            from .training.data_utils import as_dataset, class_labels
+
+            train = self.data().train
+            train_targets = class_labels(as_dataset(train)) if task == "klassifikation" else \
+                (train.get("targets") if isinstance(train, dict) else None)
+        except Exception:  # noqa: BLE001 - ohne Trainingsdaten: Validierung als Bezug
+            pass
+        if task == "klassifikation":
+            ref = train_targets if train_targets is not None else target.reshape(-1)
+            ref = ref[ref >= 0]
+            majority = int(torch.bincount(ref.long()).argmax())
+            const = torch.full_like(out, -10.0)
+            const[..., majority] = 10.0
+        else:
+            ref = train_targets if isinstance(train_targets, torch.Tensor) and train_targets.shape[1:] == \
+                target.shape[1:] else target
+            const = ref.float().mean(0, keepdim=True).expand_as(target).reshape(out.shape) \
+                if target.numel() == out.numel() else torch.zeros_like(out)
+        if task == "regression":                       # in echten Einheiten (Ziel-Skalierung zurückrechnen)
+            from .training.metrics import target_inverse
+
+            inverse = target_inverse(self._info().get("target_transform"))
+            if inverse is not None:
+                const, _ = inverse(const, target)
+                out, target = inverse(out, target)
+        base = compute_metrics(auto_specs(task), const, target, prefix="basis_")
+        model = compute_metrics(auto_specs(task), out, target, prefix="modell_")
+        result = {**base, **model}
+        self.last_baseline = result
+        if self._verbose():
+            print("  Basis vs. Modell: " + "  ".join(f"{k}={v:.4g}" for k, v in result.items()))
+        return result
+
+    def error_analysis(self, data: Any = None, top: int = 10) -> dict[str, Any]:
+        """Fehleranalyse: Konfusionsmatrix, Präzision/Trefferquote je Klasse und die sichersten Fehlgriffe
+        (Klassifikation) bzw. die größten Fehler (Regression) – mit Index zum Nachschauen."""
+        out, target, _ = self._outputs(self._eval_data(data))
+        names = self._info().get("label_names")
+        if self._is_classification(out, target) and out.dim() == 2:
+            probs = (out / self.config.inference.temperature).softmax(-1)
+            pred = probs.argmax(-1)
+            k = out.shape[-1]
+            cm = torch.bincount(target.long() * k + pred, minlength=k * k).reshape(k, k)
+            per_class = {}
+            for c in range(k):
+                tp, fp, fn = int(cm[c, c]), int(cm[:, c].sum() - cm[c, c]), int(cm[c].sum() - cm[c, c])
+                per_class[names[c] if names and c < len(names) else c] = {
+                    "praezision": tp / max(1, tp + fp), "trefferquote": tp / max(1, tp + fn), "anzahl": int(cm[c].sum())}
+            wrong = (pred != target).nonzero().flatten()
+            conf = probs[wrong].max(-1).values
+            order = wrong[conf.argsort(descending=True)][:top]
+            label = (lambda i: names[i] if names and i < len(names) else i)
+            worst = [{"index": int(i), "richtig": label(int(target[i])), "vorhergesagt": label(int(pred[i])),
+                      "sicherheit": float(probs[i].max())} for i in order]
+            return {"konfusionsmatrix": cm.tolist(), "klassen": names, "je_klasse": per_class,
+                    "sicherste_fehler": worst, "fehlerquote": float((pred != target).float().mean())}
+        err = (out.reshape(out.shape[0], -1).float() - target.reshape(target.shape[0], -1).float()).abs().mean(1)
+        order = err.argsort(descending=True)[:top]
+        return {"groesste_fehler": [{"index": int(i), "fehler": float(err[i])} for i in order],
+                "mittlerer_fehler": float(err.mean())}
+
+    def robustness_report(self, data: Any = None, epsilons: list[float] | None = None, metric: str | None = None,
+                          methods: tuple[str, ...] = ("rauschen", "fgsm", "pgd"), limit: int = 512) -> Any:
+        """Wie stark leidet die Qualität unter Rauschen und gezielten Angriffen (FGSM/PGD)?
+
+        ``epsilons``: Störstärken relativ zur Standardabweichung der Eingaben (Standard 0.01, 0.05, 0.1).
+        """
+        from .analysis.robustness import robustness_report
+        from .core import ComponentSpec
+        from .training.paradigms import auto_loss
+
+        out, target, x = self._outputs(self._eval_data(data), limit)
+        if x is None or not x.is_floating_point():
+            raise ConfigError("Robustheitsprüfung braucht Zahlen-Eingaben (Tabellen, Bilder, Signale).")
+        from .training.paradigms import is_segmentation
+
+        cls = self._is_classification(out, target)
+        metric = metric or ("iou" if is_segmentation(out, target) else "accuracy" if cls else "mae")
+        fn = ComponentSpec.from_value("metric", metric).build()
+        forward = self._forward_fn()
+        model = self._ensure_model()
+        was = model.training
+        model.eval()
+        device = self._device()
+        try:
+            self.last_robustness = robustness_report(lambda xx: forward(xx).cpu(), lambda o, y: auto_loss(o, y),
+                                                     lambda o, y: fn(o, y), x.to(device), target,
+                                                     epsilons or [0.01, 0.05, 0.1], metric, methods)
+            return self.last_robustness
+        finally:
+            model.train(was)
+
+    def select_for_labeling(self, pool: Any, n: int = 20, strategy: str = "unsicherheit") -> Any:
+        """Active Learning: welche unbeschrifteten Beispiele sollten Menschen als Nächstes beschriften?
+
+        ``pool``: Eingaben (Tensor) oder dict mit ``inputs``. Strategien: unsicherheit, marge, entropie, vielfalt,
+        zufall. Mit ``inference.uncertainty = 'mc_dropout'`` fließt auch die Modell-Unsicherheit ein.
+        """
+        from .workflow.active import STRATEGIES, Selection, select
+
+        if strategy not in STRATEGIES:
+            raise ConfigError(f"Unbekannte Strategie '{strategy}'. Erlaubt: {', '.join(STRATEGIES)}.")
+        x = pool["inputs"] if isinstance(pool, dict) else pool
+        probs = self.predict_proba(x)
+        idx, scores = select(probs, n, strategy, features=probs, seed=self.config.training.seed or 0)
+        names = self._info().get("label_names")
+        preds = [names[i] if names and i < len(names) else i for i in probs[idx].argmax(-1).tolist()]
+        return Selection(strategy, idx, scores, preds)
+
+    def pseudo_label(self, unlabeled: Any, threshold: float = 0.95, rounds: int = 1) -> dict[str, Any]:
+        """Semi-überwachtes Lernen (Self-Training): sichere Vorhersagen auf unbeschrifteten Daten als Labels
+        übernehmen und mittrainieren – ``rounds`` Runden. Erst normal trainieren, dann aufrufen.
+        """
+        from torch.utils.data import ConcatDataset
+
+        from .training.data_utils import DictDataset, as_dataset
+        from .workflow.active import pseudo_labels
+
+        if self.trainer is None:
+            raise ConfigError("Erst mit den beschrifteten Daten trainieren (train), dann pseudo_label().")
+        x = unlabeled["inputs"] if isinstance(unlabeled, dict) else unlabeled
+        labeled = self._hold_out_test(self.data().train)
+        val = self.trainer.val_data
+        report: dict[str, Any] = {"runden": []}
+        for r in range(rounds):
+            mask, labels = pseudo_labels(self.predict_proba(x), threshold)
+            n = int(mask.sum())
+            if n == 0:
+                self._note(f"Pseudo-Labeling Runde {r + 1}: keine Vorhersage über der Schwelle {threshold}.")
+                break
+            extra = DictDataset({"inputs": x[mask].cpu(), "targets": labels[mask].cpu()})
+            self.train(ConcatDataset([as_dataset(labeled), extra]), val, hold_out_test=False)
+            metrics = self.trainer.evaluate(val) if val is not None else {}
+            report["runden"].append({"runde": r + 1, "uebernommen": n, "anteil": n / len(x), **metrics})
+            self._note(f"Pseudo-Labeling Runde {r + 1}: {n} von {len(x)} Beispielen übernommen.")
+        return report
+
+    def predict_raw(self, records: Any) -> dict[str, Any]:
+        """Vorhersage aus **Rohdaten** – vorverarbeitet genau wie im Training (auch nach ``load`` ohne die Daten):
+
+        Tabellen: Zeilen als dicts ``{spalte: wert}`` (oder Listen in Spaltenreihenfolge); Texte: Strings;
+        Bilder/Audio: Dateipfade oder ``bytes``; sonst Tensoren. Ergebnis wie ``predict_with_uncertainty``.
+        """
+        from .data.artifacts import kind_of, prepare_raw
+
+        info = self._info()
+        kind = kind_of(info)
+        if kind in ("anweisung", "sprachmodell"):
+            raise ConfigError("Für Sprachmodelle ask(frage) bzw. generate(prompt) verwenden.")
+        try:
+            x = prepare_raw(info, records)
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
+        return self.predict_with_uncertainty(x)
+
+    def model_card(self, path: str | Path | None = None) -> str:
+        """Modellkarte (Markdown): Zweck, Modell, Daten, Training, Ergebnisse (Validierung, Test, Kalibrierung,
+        Fairness, Robustheit), Grenzen, Nutzung, Umgebung. Mit ``path`` zusätzlich als Datei."""
+        from .analysis.modelcard import model_card
+
+        text = model_card(self)
+        if path is not None:
+            Path(path).write_text(text, encoding="utf-8")
+        return text
+
+    def serve(self, host: str | None = None, port: int | None = None, api_key: str | None = None) -> None:
+        """HTTP-Server starten (``deployment.server``): /vorhersage, /frage, /generieren, /info – siehe ui.serve."""
+        from .ui.serve import serve
+
+        self._ensure_model()
+        serve(self, host=host, port=port, api_key=api_key)
 
     # ================================================================ Benutzen
     def _ensure_model(self) -> nn.Module:
@@ -647,21 +2091,47 @@ class Project:
             return torch.device("cpu")
 
     @torch.no_grad()
-    def predict(self, inputs: Any, **kwargs: Any) -> Any:
-        """Vorhersage im Eval-Modus (mit gemischter Präzision, falls konfiguriert)."""
+    def predict(self, inputs: Any, chunk_size: int | None = None, **kwargs: Any) -> Any:
+        """Vorhersage im Eval-Modus (mit gemischter Präzision, falls konfiguriert).
+
+        Args:
+            chunk_size: Eingaben stückweise verarbeiten (je so viele Beispiele) – spart Aktivierungsspeicher.
+                        Bei ``memory.oom_strategy = "batch_teilen"`` wird bei Speichermangel automatisch
+                        weiter geteilt.
+        """
+        from .memory.execution import run_chunked
+
         model = self._ensure_model()
         was = model.training
         model.eval()
         mem = self.trainer.mem if self.trainer is not None else MemoryManager(self.config.memory)
-        with mem.autocast():
-            out = call_model(model, to_device(inputs, self._device()), **kwargs)
-        model.train(was)
+        device = self._device()
+        mc = self.config.memory
+
+        def run(part: Any) -> Any:
+            part = to_device(part, device)
+            if mc.param_dtype != "float32":
+                from torch.utils._pytree import tree_map
+
+                from .memory.manager import DTYPES
+                part = tree_map(lambda t: t.to(DTYPES[mc.param_dtype]) if isinstance(t, torch.Tensor)
+                                and t.is_floating_point() else t, part)
+            with mem.autocast():
+                return call_model(model, part, **kwargs)
+
+        try:
+            out, _ = run_chunked(run, inputs, chunk_size, on_oom=mc.oom_strategy == "batch_teilen",
+                                 max_splits=mc.oom_max_splits)
+        finally:
+            model.train(was)
         return out
 
     def generate(self, prompt: str | torch.Tensor, **generation: Any) -> Any:
         """Text-/Token-Generierung (Sprachmodelle). Mit Zeichen-Tokenizer des Datensatzes auch für Text."""
         model = self._ensure_model()
-        tok = self.data().info.get("tokenizer") if self.config.data.name != "none" else None
+        info = self._info()
+        tok = info.get("tokenizer")
+        generation = self._generation_args(model, info, generation)
         if isinstance(prompt, str):
             if tok is None:
                 raise ConfigError("Für Text-Prompts wird ein Tokenizer im Datensatz benötigt (z. B. Datensatz 'text').")
@@ -669,6 +2139,34 @@ class Project:
             out = model.generate(ids, **generation)
             return tok.decode(out[0].tolist())
         return model.generate(prompt.to(self._device()), **generation)
+
+    def _generation_args(self, model: nn.Module, info: dict, overrides: dict) -> dict:
+        """``project.generation`` als Standard, Aufruf-Argumente haben Vorrang; Ende-Token aus den Daten."""
+        import inspect
+
+        if "generation" not in inspect.signature(model.generate).parameters:
+            return overrides
+        g = self.config.generation
+        if g.eos_token_id is None and info.get("eos_token_id") is not None and "eos_token_id" not in overrides:
+            overrides = {**overrides, "eos_token_id": info["eos_token_id"]}
+        return {"generation": g, **overrides}
+
+    def ask(self, question: str, **generation: Any) -> str:
+        """Frage an ein Instruction-Modell (Datensatz ``instructions``): gleiche Vorlage wie im Training, Antwort
+        bis zum Ende-Zeichen. Standard: gierige Auswahl (``temperature=0``)."""
+        info = self._info()
+        template, tok = info.get("prompt_template"), info.get("tokenizer")
+        if template is None or tok is None:
+            raise ConfigError("ask() braucht einen Datensatz mit Vorlage (data = 'instructions').")
+        prompt = template.format(prompt=question)
+        generation.setdefault("temperature", 0.0)
+        n = len(tok.encode(prompt))
+        model = self._ensure_model()
+        generation = self._generation_args(model, info, generation)
+        ids = torch.tensor([tok.encode(prompt)], device=self._device())
+        out = model.generate(ids, **generation)[0, n:].tolist()
+        text = tok.decode(out)
+        return text.split(info.get("eos_text", "\x00"), 1)[0].strip()
 
     def sample(self, n: int = 16, **kwargs: Any) -> torch.Tensor:
         """Neue Daten erzeugen (GAN, Diffusion, VAE/VQ-VAE)."""
@@ -739,19 +2237,42 @@ class Project:
             self._undo.pop()
         return chosen
 
-    def export(self, path: str | Path, fmt: str = "export", merge_lora: bool = True) -> Path:
-        """Modell exportieren: ``export`` (torch.export), ``torchscript``, ``onnx`` oder ``state_dict``."""
-        from .analysis import export_model
+    def export(self, path: str | Path, fmt: str = "export", merge_lora: bool | str | None = None,
+               **settings: Any) -> Path:
+        """Modell **schlank** exportieren: ``export`` (torch.export), ``torchscript``, ``onnx`` oder ``state_dict``.
+
+        Auf einer Kopie werden Trainings-Hüllen entfernt, EMA-Gewichte übernommen, LoRA eingerechnet, BatchNorm
+        gefaltet und ungenutzte Gewichte entfernt – jeder Schritt geprüft und einzeln schaltbar
+        (``deployment.export`` bzw. ``**settings``, z. B. ``dtype="float16"``). Bericht: ``project.last_export``.
+        """
+        from .analysis.export import export_model
 
         model = self._ensure_model()
-        example = None
-        try:
-            bundle = self.data()
-            if isinstance(bundle.train, dict) and "inputs" in bundle.train:
-                example = bundle.train["inputs"][:1].cpu()
-        except Exception:  # noqa: BLE001
-            example = None
-        return export_model(model, path, fmt, example, merge_lora)
+        cfg = self.config.deployment.export.copy()
+        if merge_lora is not None:
+            cfg.merge_lora = merge_lora if isinstance(merge_lora, str) else ("auto" if merge_lora else "nein")
+        cfg.update(settings)
+        example = self._example_input()
+        ema_state = None
+        trainer = self.trainer
+        if trainer is not None and trainer.ema is not None and not trainer.cfg.ema.apply_at_end:
+            ema_state = {k.replace("_orig_mod.", "").removeprefix("module."): v for k, v in trainer.ema.shadow.items()}
+        offloader = trainer.mem.offloader if trainer is not None else None
+        path, report = export_model(model, path, fmt, example, cfg=cfg, ema_state=ema_state, offloader=offloader,
+                                    return_report=True)
+        self.last_export = report
+        if self._verbose():
+            print(report)
+        return path
+
+    def hardware_report(self) -> str:
+        """Erkanntes Rechengerät und die automatisch gewählten Einstellungen (Präzision, TF32, cuDNN, Layout …)."""
+        from .memory.hardware import detect, report_text, resolve
+        from .memory.manager import resolve_device
+
+        device = resolve_device(self.config.memory.device)
+        model = self.model if self.model is not None else None
+        return report_text(detect(device), resolve(self.config.memory, device, model))
 
     def memory_report(self, batch_size: int | None = None) -> Any:
         model = self._ensure_model()
@@ -768,41 +2289,155 @@ class Project:
 
     # ================================================================ Speichern
     def save(self, directory: str | Path | None = None) -> Path:
-        """Speichert Konfiguration (projekt.json), Gewichte (modell.pt) und Verlauf (verlauf.json)."""
+        """Speichert Konfiguration (projekt.json), Gewichte (modell.pt) und Verlauf (verlauf.json).
+
+        Im verteilten Training rufen alle Prozesse ``save`` auf (FSDP sammelt die Gewichte ein);
+        geschrieben wird nur von Prozess 0.
+        """
+        from .training.distributed import is_main_process
+
         d = Path(directory or Path(self.config.output_dir) / self.config.name)
-        d.mkdir(parents=True, exist_ok=True)
-        self.config.save(d / "projekt.json")
+        state = None
         if self.model is not None:
             target = getattr(self.model, "_orig_mod", self.model)
-            torch.save(target.state_dict(), d / "modell.pt")
+            state = self.trainer.dist.model_state(target) if self.trainer is not None else target.state_dict()
+        if not is_main_process():
+            return d
+        d.mkdir(parents=True, exist_ok=True)
+        self.config.save(d / "projekt.json", only_changed=self.config.deployment.export.compact_config)
+        if state is not None:
+            torch.save(state, d / "modell.pt")
         (d / "verlauf.json").write_text(json.dumps(self.history, ensure_ascii=False, indent=1, default=str),
                                         encoding="utf-8")
+        from .analysis.modelcard import data_sizes
+
+        results = {k: _numbers(getattr(self, k)) for k in _RESULTS}
+        results["daten"] = data_sizes(self) or getattr(self, "_saved_sizes", None) or {}
+        if any(results.values()):                    # Test/Basis/Kalibrierung – für Modellkarte nach load()
+            (d / "ergebnisse.json").write_text(json.dumps(results, ensure_ascii=False, indent=1), encoding="utf-8")
+        from .analysis.modelcard import environment_info
+        from .data.artifacts import export_artifacts
+
+        try:
+            artifacts = export_artifacts(self._info())
+        except Exception:  # noqa: BLE001 - ohne ladbare Daten gibt es eben keine Vorverarbeitung
+            artifacts = {}
+        if artifacts:
+            (d / "vorverarbeitung.json").write_text(json.dumps(artifacts, ensure_ascii=False, default=str),
+                                                    encoding="utf-8")
+        if self.config.deployment.model_card:
+            (d / "umgebung.json").write_text(json.dumps(environment_info(), ensure_ascii=False, indent=1),
+                                             encoding="utf-8")
+            (d / "MODELLKARTE.md").write_text(self.model_card(), encoding="utf-8")
         return d
 
     @classmethod
-    def load(cls, directory: str | Path) -> "Project":
-        """Lädt ein mit ``save`` gespeichertes Projekt (inkl. Gewichten)."""
+    def load(cls, directory: str | Path, mmap: bool = False) -> "Project":
+        """Lädt ein mit ``save`` gespeichertes Projekt (inkl. Gewichten).
+
+        Args:
+            mmap: Gewichte per Memory-Map einbinden statt zu kopieren – das Betriebssystem lädt nur, was
+                  gebraucht wird (für Modelle nahe an der RAM-Grenze; Inferenz).
+        """
         d = Path(directory)
         p = cls.from_file(d / "projekt.json")
-        p.config.auto_fit_dims = False  # gespeicherte Werte sind bereits angepasst
-        model = p.build()
+        fit, p.config.auto_fit_dims = p.config.auto_fit_dims, False   # gespeicherte Werte sind bereits angepasst
+        try:
+            model = p.build()
+        finally:
+            p.config.auto_fit_dims = fit           # Konfiguration bleibt exakt wie gespeichert (gleiche Prüfsumme)
         weights = d / "modell.pt"
         if weights.exists():
-            state = torch.load(weights, map_location="cpu", weights_only=True)
+            state = torch.load(weights, map_location="cpu", weights_only=True, mmap=mmap)
             if any(k.endswith(".qweight") or ".lora_" in k for k in state):
                 # Quantisierte/LoRA-Modelle: gleiche Struktur herstellen, dann laden.
                 MemoryManager(p.config.memory).apply_structure(model, training=False)
-            model.load_state_dict(state)
+            model.load_state_dict(state, assign=mmap)
             if p.config.memory.param_dtype != "float32":  # z. B. nach Kompressions-Schritt 'dtype'
                 from .memory.manager import DTYPES
                 model.to(DTYPES[p.config.memory.param_dtype])
         if (d / "verlauf.json").exists():
             p.history = json.loads((d / "verlauf.json").read_text(encoding="utf-8"))
+        if (d / "ergebnisse.json").exists():
+            for key, value in json.loads((d / "ergebnisse.json").read_text(encoding="utf-8")).items():
+                if key in _RESULTS and value:
+                    setattr(p, key, value)
+                elif key == "daten":
+                    p._saved_sizes = value
+        if (d / "vorverarbeitung.json").exists():
+            from .data.artifacts import import_artifacts
+
+            p._artifacts = import_artifacts(json.loads((d / "vorverarbeitung.json").read_text(encoding="utf-8")))
         return p
 
     def __repr__(self) -> str:
         return f"<Project {self.config.name!r}: model={self.config.model.name}, data={self.config.data.name}, " \
                f"paradigm={self.config.training.paradigm.name}>"
+
+
+_IMG = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp")
+
+
+def detect_data(path: Path, target: str | None = None) -> tuple[str, dict[str, Any]]:
+    """Datenart einer Datei/eines Ordners erkennen → (Vorlage, Daten-Einstellungen)."""
+    import csv as _csv
+
+    if not path.exists():
+        raise ConfigError(f"'{path}' nicht gefunden.")
+    if path.is_dir():
+        subdirs = [d for d in path.iterdir() if d.is_dir()]
+        names = {d.name.lower() for d in subdirs}
+        if {"bilder", "masken"} <= names or {"images", "masks"} <= names:
+            img = "bilder" if "bilder" in names else "images"
+            return "segmentierung_unet", {"name": "segmentation", "images": str(path / img),
+                                          "masks": str(path / ("masken" if img == "bilder" else "masks"))}
+        files = [f for d in subdirs for f in d.iterdir() if f.is_file()]
+        if any(f.suffix.lower() == ".wav" for f in files):
+            return "audio_klassifikation", {"name": "audio", "path": str(path)}
+        if any(f.suffix.lower() in _IMG for f in files):
+            return "bildklassifikation_cnn", {"name": "image_folder", "path": str(path)}
+        raise ConfigError(f"Ordner '{path}': erwartet ordner/<klasse>/*.png|*.wav oder bilder/ + masken/.")
+    suffix = path.suffix.lower()
+    if suffix in (".jsonl", ".json"):
+        return "sprachmodell_sft", {"name": "instructions", "path": str(path)}
+    if suffix == ".txt":
+        return "sprachmodell_mini", {"name": "text", "path": str(path)}
+    if suffix == ".pt":
+        return "tabellen_klassifikation", {"name": "tensor_file", "path": str(path)}
+    if suffix in (".csv", ".tsv"):
+        with open(path, newline="", encoding="utf-8") as f:
+            first = f.readline()
+            f.seek(0)
+            delim = "\t" if suffix == ".tsv" else (";" if first.count(";") > first.count(",") else ",")  # Excel (DE)
+            reader = _csv.reader(f, delimiter=delim)
+            header = next(reader)
+            rows = [r for _, r in zip(range(200), reader)]
+        target = target or header[-1]
+        if target not in header:
+            raise ConfigError(f"Zielspalte '{target}' nicht in {header}.")
+        ti = header.index(target)
+        others = [i for i in range(len(header)) if i != ti]
+        long_text = [i for i in others if rows and sum(len(r[i]) for r in rows if i < len(r)) / len(rows) > 25
+                     and sum(" " in r[i] for r in rows if i < len(r)) > len(rows) / 2]
+        if len(others) == 1 and long_text:
+            return "text_klassifikation", {"name": "text_classification", "path": str(path),
+                                           "text_column": header[long_text[0]], "label_column": target}
+        values = [r[ti] for r in rows if ti < len(r) and r[ti].strip()]
+
+        def number(v: str) -> bool:
+            try:
+                float(v.replace(",", "."))
+                return True
+            except ValueError:
+                return False
+        numeric = values and all(number(v) for v in values)
+        regression = numeric and len(set(values)) > max(10, len(values) // 5)
+        data = {"name": "csv", "path": str(path), "target": target, "delimiter": delim,
+                "task": "regression" if regression else "classification"}   # gleiche Wahl wie die Vorlage
+        if long_text:
+            data["drop_columns"] = [header[i] for i in long_text]
+        return ("tabellen_regression" if regression else "tabellen_klassifikation"), data
+    raise ConfigError(f"Unbekannte Datenart '{suffix}' – CSV/TSV, Bild-/Audio-Ordner, JSONL, TXT oder PT.")
 
 
 def _has_onnx() -> bool:

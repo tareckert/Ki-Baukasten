@@ -18,6 +18,18 @@ hängen von der gewählten Komponente ab – siehe Abschnitt *Registries und Kom
 | `name` | Text | `'meine_ki'` |  | Basis | **Was:** Projektname.<br>**Nutzen:** Für Ausgabeordner und Übersicht.<br>**Wofür:** Kurz, ohne Leerzeichen. |
 | `domain` | Text | `'allgemein'` |  | Basis | **Was:** Anwendungsgebiet (z. B. sprache, bild, zeitreihen, tabellen, rl …).<br>**Nutzen:** Ordnet Vorlagen ein.<br>**Wofür:** Wird von Presets gesetzt. |
 | `description` | Text | `''` |  | Basis | **Was:** Freie Beschreibung.<br>**Nutzen:** Dokumentation des Experiments.<br>**Wofür:** Was wird getestet? |
+| `goals` | Unter-Konfiguration Ziele & Zweck | ⟶ GoalsConfig |  | Basis | **Was:** Wofür die KI genutzt werden soll, was wichtig ist und wo sie laufen soll.<br>**Nutzen:** Daraus empfiehlt der Assistent passende Modelle, rät von unpassenden ab und schlägt Techniken vor – jederzeit änderbar.<br>**Wofür:** Start eines neuen Projekts (Project.from_goals) und spätere Prüfung (Project.goal_check). |
+| `goals.task` | Text | `'unbekannt'` | Auswahl: unbekannt \| text_erzeugen \| text_klassifizieren \| uebersetzen \| bild_klassifizieren \| bild_segmentieren \| bild_erzeugen \| … | Basis | **Was:** Hauptaufgabe der KI.<br>**Nutzen:** Bestimmt, welche Modellfamilien überhaupt in Frage kommen.<br>**Wofür:** Möglichst konkret. |
+| `goals.description` | Text | `''` |  | Basis | **Was:** Freie Beschreibung: wofür, wichtige Punkte, Einschränkungen.<br>**Nutzen:** Stichwörter (z. B. 'Handy', 'Echtzeit', 'Datenschutz', 'lange Texte', 'erklärbar') werden erkannt.<br>**Wofür:** Ein, zwei Sätze genügen. |
+| `goals.priorities` | Liste[Text] | `[]` |  | Basis | **Was:** Was besonders wichtig ist (Mehrfachauswahl): genauigkeit, geschwindigkeit, wenig_speicher, schnelles_training, erklaerbarkeit, robustheit, datenschutz, energie, einfachheit, lange_kontexte, echtzeit, weiterlernen, kreativitaet.<br>**Nutzen:** Gewichtet Stärken und Schwächen der Modelle.<br>**Wofür:** 2–4 Punkte wählen. |
+| `goals.data_size` | Text | `'mittel'` | Auswahl: winzig \| klein \| mittel \| gross | Basis | **Was:** Wie viele Trainingsbeispiele vorhanden sind.<br>**Nutzen:** Große Modelle brauchen viele Daten.<br>**Wofür:** Grob schätzen. |
+| `goals.labels` | Text | `'vorhanden'` | Auswahl: vorhanden \| wenige \| keine | Basis | **Was:** Gibt es zu den Daten die richtigen Antworten?<br>**Nutzen:** Ohne Labels: selbstüberwachte Verfahren.<br>**Wofür:** vorhanden. |
+| `goals.sequence_length` | Text | `'keine'` | Auswahl: keine \| kurz \| mittel \| lang \| sehr_lang | Basis | **Was:** Typische Länge von Texten/Sequenzen.<br>**Nutzen:** Lange Sequenzen sprengen klassische Attention.<br>**Wofür:** Bei Text/Zeitreihen. |
+| `goals.target` | Text (oder None) | `None` |  | Basis | **Was:** Zielgerät (Profil aus deployment, z. B. smartphone, raspberry_pi, laptop_cpu, gaming_gpu).<br>**Nutzen:** Modelle, die dort nicht laufen, werden abgewertet; Reduktion wird eingeplant.<br>**Wofür:** Wo läuft die KI? |
+| `goals.training_hardware` | Text | `'laptop_gpu'` | Auswahl: cpu \| laptop_gpu \| gaming_gpu \| apple_silicon \| rechenzentrum_gpu \| cluster | Basis | **Was:** Womit trainiert wird.<br>**Nutzen:** Bestimmt, wie groß das Modell sein darf und ob verteilt trainiert wird. |
+| `goals.pretrained` | Ja/Nein | `False` |  | Basis | **Was:** Ein vortrainiertes Modell soll angepasst werden (Feintuning).<br>**Nutzen:** Dann sind LoRA/QLoRA erste Wahl.<br>**Wofür:** Mit Project.import_model laden. |
+| `goals.use_description` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Stichwörter der Beschreibung bei der Bewertung auswerten (ergänzt Aufgabe, Prioritäten, Zielgerät).<br>**Nutzen:** Bequem beim ersten Anlegen. Project.from_goals übernimmt die erkannten Angaben fest und schaltet das danach aus – spätere Änderungen gelten dann genau so, wie sie eingestellt sind.<br>**Wofür:** an für neue Ziele. |
+| `goals.avoid` | Liste[Text] | `[]` |  | Fortgeschritten | **Was:** Vorlagen/Modelle, die nicht vorgeschlagen werden sollen.<br>**Nutzen:** Eigene Ausschlüsse.<br>**Wofür:** z. B. ['gan_2d']. |
 | `model` | Komponente aus Registry 'model' | `mlp` | Auswahl: autoencoder \| cnn \| ensemble \| pipeline \| fusion \| mixture_of_models \| multitask \| extern \| mlp \| gan \| diffusion \| gnn \| graph \| … | Basis | **Was:** Das Modell (beliebig aus der Registry 'model', auch Kombinationen).<br>**Nutzen:** Architektur der KI.<br>**Wofür:** Siehe 'python -m ki_baukasten modelle'. |
 | `model.init` | Unter-Konfiguration Initialisierung | ⟶ InitConfig |  | Fortgeschritten | **Was:** Startwerte der Gewichte, getrennt nach Modultyp.<br>**Nutzen:** Erlaubt bewährte Schemata (GPT-2, ResNet, PPO ...) ohne jede Schicht einzeln anzufassen.<br>**Wofür:** Für einzelne Tensoren/Ausschnitte: Tensor-Chirurgie (tensor_rules) verwenden. |
 | `model.init.linear_weight` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Fortgeschritten | **Was:** Initialisierer für Gewichte linearer Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Transformer: normal(std=0.02). |
@@ -56,8 +68,9 @@ hängen von der gewählten Komponente ab – siehe Abschnitt *Registries und Kom
 | `data.n_features` | Ganzzahl | `2` | ≥ 2 | Basis | **Was:** Merkmale (2 = sichtbar; weitere sind Rauschdimensionen).<br>**Nutzen:** Zusätzliche irrelevante Merkmale testen Robustheit.<br>**Wofür:** 2–50. |
 | `data.noise` | Kommazahl | `0.05` | ≥ 0.0 | Basis | **Was:** Rauschen.<br>**Nutzen:** Überlappung der Klassen (ab ~0.1 überlappen die Spiralarme im Zentrum stark).<br>**Wofür:** 0.02–0.2. |
 | `training` | Unter-Konfiguration Training | ⟶ TrainingConfig |  | Basis | **Was:** Alle Einstellungen des Trainingsablaufs.<br>**Nutzen:** Wie, wie lange und womit das Modell lernt.<br>**Wofür:** Jedes Training. |
-| `training.paradigm` | Komponente aus Registry 'paradigm' | `supervised` | Auswahl: supervised \| causal_lm \| masked_lm \| seq2seq \| autoencoder \| contrastive \| distillation \| gan \| diffusion \| preference \| dpo \| reinforcement | Basis | **Was:** Trainings-Paradigma (welche Art von Lernen).<br>**Nutzen:** Bestimmt, wie aus Daten Verluste werden (überwacht, generativ, kontrastiv, RL ...).<br>**Wofür:** Passend zur Aufgabe wählen; Presets setzen es automatisch. |
+| `training.paradigm` | Komponente aus Registry 'paradigm' | `supervised` | Auswahl: supervised \| causal_lm \| masked_lm \| seq2seq \| autoencoder \| contrastive \| distillation \| gan \| diffusion \| preference \| dpo \| … | Basis | **Was:** Trainings-Paradigma (welche Art von Lernen).<br>**Nutzen:** Bestimmt, wie aus Daten Verluste werden (überwacht, generativ, kontrastiv, RL ...).<br>**Wofür:** Passend zur Aufgabe wählen; Presets setzen es automatisch. |
 | `training.paradigm.task` | Text | `'auto'` | Auswahl: auto \| classification \| regression \| multilabel | Basis | **Was:** Art der überwachten Aufgabe (nur relevant, wenn keine eigenen Verluste gesetzt sind).<br>**Nutzen:** Bestimmt Standardverlust und Metriken.<br>**Wofür:** Meist 'auto'. |
+| `training.paradigm.label_smoothing` | Kommazahl | `0.0` | Bereich 0.0 … 0.5 | Basis | **Was:** Label Smoothing für den Standard-Klassifikationsverlust (Anteil der Zielwahrscheinlichkeit, der gleichmäßig auf alle Klassen verteilt wird).<br>**Nutzen:** Verhindert übermäßig selbstsichere Vorhersagen, bessere Kalibrierung.<br>**Wofür:** Klassifikation: 0.05–0.1. |
 | `training.epochs` | Ganzzahl | `10` | ≥ 1 | Basis | **Was:** Durchläufe durch den Datensatz.<br>**Nutzen:** Mehr = mehr Lernen, aber Überanpassungsgefahr.<br>**Wofür:** 5–100. |
 | `training.max_steps` | Ganzzahl (oder None) | `None` | ≥ 1 | Basis | **Was:** Exakte Anzahl Optimierungsschritte (wenn gesetzt, wird 'epochs' ignoriert).<br>**Nutzen:** Feste Rechenbudgets unabhängig von der Datensatzgröße.<br>**Wofür:** LLM-Training wird meist in Schritten bemessen. |
 | `training.batch_size` | Ganzzahl | `32` | ≥ 1 | Basis | **Was:** Beispiele pro Schritt.<br>**Nutzen:** Größer = stabilere Gradienten, mehr Speicher.<br>**Wofür:** 8–512. |
@@ -69,7 +82,7 @@ hängen von der gewählten Komponente ab – siehe Abschnitt *Registries und Kom
 | `training.optimizer.betas` | Liste[Kommazahl] | `[0.9, 0.999]` | Bereich 0.0 … 1.0 · Länge 2 | Fortgeschritten | **Was:** Abklingraten für 1. Moment (Richtung) und 2. Moment (Skalierung).<br>**Nutzen:** β₂ kleiner (0.95) stabilisiert große Modelle; β₁ steuert die Glättung.<br>**Wofür:** LLMs: [0.9, 0.95]; Standard: [0.9, 0.999]. |
 | `training.optimizer.eps` | Kommazahl | `1e-08` | ≥ 0.0 | Experte | **Was:** Stabilisator im Nenner.<br>**Nutzen:** Verhindert Division durch ~0; größer = vorsichtigere Updates.<br>**Wofür:** fp16: 1e-6…1e-5. |
 | `training.optimizer.amsgrad` | Ja/Nein | `False` |  | Experte | **Was:** AMSGrad-Variante (monotones 2. Moment).<br>**Nutzen:** Theoretische Konvergenzgarantie, praktisch selten besser.<br>**Wofür:** Experimente. |
-| `training.optimizer.fused` | Ja/Nein (oder None) | `None` |  | Experte | **Was:** Fusionierte CUDA-Implementierung (None = PyTorch entscheidet).<br>**Nutzen:** Schneller auf GPUs.<br>**Wofür:** Geschwindigkeit auf CUDA. |
+| `training.optimizer.fused` | Ja/Nein (oder None) | `None` |  | Experte | **Was:** Fusionierte Implementierung (None = automatisch: fusioniert, wenn das Gerät es kann – CPU/GPU; False = Standard).<br>**Nutzen:** Ein Kernel für alle Parameter – auf CPU und GPU deutlich schneller.<br>**Wofür:** None lassen. |
 | `training.optimizer_overrides` | Zuordnung (dict) | `{}` |  | Fortgeschritten | **Was:** Abweichende Optimierer je Optimierungsgruppe des Paradigmas, z. B. {'discriminator': {'name': 'adam', 'lr': 4e-4}}.<br>**Nutzen:** GANs brauchen oft getrennte Lernraten für Generator/Diskriminator (TTUR).<br>**Wofür:** GAN-Training. |
 | `training.scheduler` | Komponente aus Registry 'scheduler' | `warmup_cosine` | Auswahl: constant \| linear \| warmup_cosine \| cosine_restarts \| polynomial \| exponential \| step \| inverse_sqrt \| one_cycle \| wsd \| cyclic \| plateau | Basis | **Was:** Lernraten-Zeitplan.<br>**Nutzen:** Warmup + Abklingen.<br>**Wofür:** warmup_cosine (Standard), constant (Debug). |
 | `training.scheduler.warmup_steps` | Ganzzahl (oder None) | `None` | ≥ 0 | Basis | **Was:** Anzahl Aufwärmschritte (überschreibt warmup_ratio).<br>**Nutzen:** Lernrate steigt langsam an – schützt vor Divergenz am Anfang.<br>**Wofür:** Transformer: 1–5 % der Schritte bzw. 500–2000 Schritte. |
@@ -90,18 +103,47 @@ hängen von der gewählten Komponente ab – siehe Abschnitt *Registries und Kom
 | `training.regularization.gradient_noise_decay` | Kommazahl | `0.55` | ≥ 0.0 | Experimentell | **Was:** Abklingexponent γ des Gradientenrauschens.<br>**Nutzen:** Rauschen nimmt über die Zeit ab.<br>**Wofür:** 0.55. |
 | `training.regularization.flooding_level` | Kommazahl (oder None) | `None` | ≥ 0.0 | Experimentell | **Was:** Flooding: Verlust wird um diesen Pegel gespiegelt (\|L−b\|+b).<br>**Nutzen:** Verhindert, dass der Trainingsverlust gegen 0 geht – wirkt gegen Überanpassung.<br>**Wofür:** Kleine Datensätze (Ishida et al. 2020). |
 | `training.regularization.sam_rho` | Kommazahl | `0.0` | ≥ 0.0 | Experimentell | **Was:** Sharpness-Aware Minimization: Radius der Nachbarschaft (0 = aus).<br>**Nutzen:** Sucht flache Minima → bessere Generalisierung; kostet doppelte Rechenzeit.<br>**Wofür:** Bildklassifikation (ρ ≈ 0.05).<br>**Tipp:** Nicht mit gradient_accumulation_steps > 1 kombinierbar. |
+| `training.augmentation` | Unter-Konfiguration Daten-Augmentierung | ⟶ AugmentationConfig |  | Basis | **Was:** Zufällige Veränderungen der Trainingsbeispiele (nur im Training).<br>**Nutzen:** Das Modell sieht jedes Beispiel in vielen Varianten – weniger Auswendiglernen, robustere Vorhersagen.<br>**Wofür:** Bilder (Spiegeln, Ausschnitt, Ausradieren, CutMix), Texte (Token-Rauschen). |
+| `training.augmentation.hflip` | Ja/Nein | `False` |  | Basis | **Was:** Bilder zufällig horizontal spiegeln.<br>**Nutzen:** Klassische Bild-Augmentierung.<br>**Wofür:** Fotos, Objekte (nicht bei Text/Ziffern mit Richtung). |
+| `training.augmentation.vflip` | Ja/Nein | `False` |  | Fortgeschritten | **Was:** Bilder zufällig vertikal spiegeln.<br>**Nutzen:** Für richtungsfreie Bilder.<br>**Wofür:** Satelliten-, Mikroskopbilder. |
+| `training.augmentation.crop_padding` | Ganzzahl | `0` | ≥ 0 | Basis | **Was:** Zufälliger Ausschnitt nach Auffüllen um so viele Pixel (0 = aus).<br>**Nutzen:** Verschiebungs-Invarianz.<br>**Wofür:** CIFAR-Standard: 4. |
+| `training.augmentation.random_erasing` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Basis | **Was:** Wahrscheinlichkeit, ein zufälliges Rechteck im Bild zu löschen (Cutout).<br>**Nutzen:** Robust gegen Verdeckungen.<br>**Wofür:** 0.25. |
+| `training.augmentation.cutmix_alpha` | Kommazahl | `0.0` | ≥ 0.0 | Basis | **Was:** CutMix: Bildausschnitt eines anderen Beispiels einsetzen, Ziele anteilig mischen (0 = aus).<br>**Nutzen:** Stärker als Mixup bei Bildern; mit Mixup kombiniert wird pro Batch zufällig gewählt.<br>**Wofür:** 1.0. |
+| `training.augmentation.token_noise` | Kommazahl | `0.0` | Bereich 0.0 … 0.5 | Fortgeschritten | **Was:** Anteil der Eingabe-Tokens, die durch zufällige Tokens ersetzt werden (nur überwachte Aufgaben).<br>**Nutzen:** Robust gegen Tippfehler und Rauschen.<br>**Wofür:** 0.05–0.1. |
+| `training.adversarial` | Unter-Konfiguration Adversariales Training (Robustheit) | ⟶ AdversarialConfig |  | Fortgeschritten | **Was:** Trainiert zusätzlich auf gezielt gestörten Eingaben, die das Modell am stärksten täuschen (FGSM/PGD).<br>**Nutzen:** Winzige, unsichtbare Änderungen können ungeschützte Netze komplett täuschen – adversariales Training macht sie robust (Madry et al. 2018). Wirkt auch als starke Regularisierung.<br>**Wofür:** Sicherheitskritische Bild-/Sensormodelle, Betrugserkennung, Robustheit gegen Rauschen. |
+| `training.adversarial.method` | Text | `'keine'` | Auswahl: keine \| fgsm \| pgd | Fortgeschritten | **Was:** Angriffsverfahren zum Erzeugen der Trainingsbeispiele.<br>**Nutzen:** pgd ist der Standard für echte Robustheit.<br>**Wofür:** Einstieg: fgsm; ernsthaft: pgd. |
+| `training.adversarial.epsilon` | Kommazahl | `0.03` | ≥ 0.0 | Fortgeschritten | **Was:** Maximale Störung je Eingabewert (L∞).<br>**Nutzen:** Größer = robuster, aber oft etwas ungenauer auf sauberen Daten.<br>**Wofür:** Bilder in [0,1]: 8/255 ≈ 0.03; standardisierte Tabellen: 0.05–0.2. |
+| `training.adversarial.steps` | Ganzzahl | `5` | ≥ 1 | Fortgeschritten | **Was:** PGD-Schritte.<br>**Nutzen:** Mehr = stärkerer Angriff.<br>**Wofür:** 3–10. |
+| `training.adversarial.step_size` | Kommazahl (oder None) | `None` | ≥ 0.0 | Fortgeschritten | **Was:** PGD-Schrittweite (None = 2.5 · epsilon / steps).<br>**Nutzen:** Feinheit der Suche.<br>**Wofür:** None. |
+| `training.adversarial.ratio` | Kommazahl | `0.5` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Anteil des adversarialen Verlusts (Rest: saubere Beispiele).<br>**Nutzen:** Ausgleich Genauigkeit ↔ Robustheit.<br>**Wofür:** 0.5. |
 | `training.gradient_clipping` | Unter-Konfiguration Gradient-Clipping | ⟶ GradientClippingConfig |  | Basis | **Was:** Unter-Konfiguration 'Gradient-Clipping'. |
 | `training.gradient_clipping.mode` | Text | `'norm'` | Auswahl: none \| norm \| value \| adaptive | Basis | **Was:** Art des Gradient-Clippings.<br>**Nutzen:** Verhindert explodierende Gradienten.<br>**Wofür:** Transformer/RNNs: norm (1.0). |
 | `training.gradient_clipping.max_norm` | Kommazahl | `1.0` | ≥ 0.0 | Basis | **Was:** Maximale Gradienten-Gesamtnorm (mode=norm).<br>**Nutzen:** Begrenzt Schrittgrößen bei Ausreißern.<br>**Wofür:** 0.5–5; LLMs 1.0. |
 | `training.gradient_clipping.clip_value` | Kommazahl | `1.0` | ≥ 0.0 | Fortgeschritten | **Was:** Maximaler Betrag je Gradient (mode=value).<br>**Nutzen:** Hartes Abschneiden.<br>**Wofür:** Selten. |
 | `training.gradient_clipping.agc_ratio` | Kommazahl | `0.01` | ≥ 0.0 | Experte | **Was:** Erlaubtes Verhältnis ‖g‖/‖w‖ je Einheit (mode=adaptive).<br>**Nutzen:** Skaleninvariantes Clipping.<br>**Wofür:** 0.01–0.16. |
 | `training.gradient_clipping.norm_type` | Kommazahl | `2.0` | ≥ 0.0 | Experte | **Was:** Norm-Typ (2 = euklidisch, inf = Maximum).<br>**Nutzen:** Art der Größenmessung.<br>**Wofür:** 2. |
+| `training.stability` | Unter-Konfiguration Stabilität: Verlust-Spitzen | ⟶ StabilityConfig |  | Fortgeschritten | **Was:** Schutz vor plötzlichen Verlust-Spitzen (Loss-Spikes), die große Trainingsläufe zerstören können.<br>**Nutzen:** Ein einzelner schlechter Batch oder eine instabile Phase kann Gewichte unbrauchbar machen – der Schutz überspringt solche Schritte oder springt auf den letzten guten Stand zurück (wie bei großen LLM-Läufen).<br>**Wofür:** Lange/teure Läufe, hohe Lernraten, fp16, verrauschte Daten. |
+| `training.stability.spike_guard` | Ja/Nein | `False` |  | Fortgeschritten | **Was:** Verlust-Spitzen erkennen und abfangen.<br>**Nutzen:** Verhindert, dass Ausreißer das Training zerstören.<br>**Wofür:** Lange Läufe: an. |
+| `training.stability.spike_factor` | Kommazahl | `3.0` | ≥ 1.0 | Fortgeschritten | **Was:** Spitze = Verlust größer als Faktor × gleitender Mittelwert.<br>**Nutzen:** Empfindlichkeit.<br>**Wofür:** 2–5. |
+| `training.stability.spike_window` | Kommazahl | `0.98` | Bereich 0.0 … 0.9999 | Fortgeschritten | **Was:** Glättung des gleitenden Mittels (näher an 1 = längeres Gedächtnis).<br>**Nutzen:** Robuste Referenz.<br>**Wofür:** 0.95–0.99. |
+| `training.stability.spike_warmup` | Ganzzahl | `20` | ≥ 0 | Fortgeschritten | **Was:** Erst nach so vielen Schritten prüfen (Anfangsverluste schwanken stark).<br>**Nutzen:** Keine Fehlalarme am Start.<br>**Wofür:** 20–100. |
+| `training.stability.spike_action` | Text | `'skip'` | Auswahl: skip \| rollback | Fortgeschritten | **Was:** Reaktion auf eine Spitze.<br>**Nutzen:** rollback hilft, wenn das Modell schon 'abgerutscht' ist.<br>**Wofür:** skip. |
+| `training.stability.rollback_every` | Ganzzahl | `50` | ≥ 1 | Fortgeschritten | **Was:** Alle n Schritte einen Sicherungsstand im RAM ablegen (rollback).<br>**Nutzen:** Wie weit zurückgesprungen wird.<br>**Wofür:** Kostet eine Kopie von Modell + Optimierer im RAM. |
+| `training.stability.rollback_lr_factor` | Kommazahl | `0.5` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Lernrate nach einem Rücksprung mit diesem Faktor multiplizieren.<br>**Nutzen:** Verhindert den gleichen Absturz.<br>**Wofür:** 0.5. |
+| `training.optimizer_extras` | Unter-Konfiguration Optimierer-Erweiterungen | ⟶ OptimizerExtrasConfig |  | Fortgeschritten | **Was:** Zusätze, die mit jedem Optimierer kombinierbar sind (Lookahead, Gradient Centralization, Grokfast).<br>**Nutzen:** Verbessern Stabilität bzw. Generalisierung, ohne den Optimierer zu wechseln.<br>**Wofür:** Experimente, schwer trainierbare Modelle. |
+| `training.optimizer_extras.lookahead_k` | Ganzzahl (oder None) | `None` | ≥ 1 | Fortgeschritten | **Was:** Lookahead: alle k Schritte die 'langsamen' Gewichte ein Stück zu den schnellen ziehen (None = aus).<br>**Nutzen:** Glättet die Optimierung, weniger empfindlich gegenüber der Lernrate (Zhang et al. 2019).<br>**Wofür:** k = 5. |
+| `training.optimizer_extras.lookahead_alpha` | Kommazahl | `0.5` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Lookahead-Schrittweite der langsamen Gewichte.<br>**Nutzen:** 0.5 = halber Weg.<br>**Wofür:** 0.5. |
+| `training.optimizer_extras.gradient_centralization` | Ja/Nein | `False` |  | Fortgeschritten | **Was:** Gradient Centralization: Mittelwert jeder Gewichts-Gradientenzeile abziehen.<br>**Nutzen:** Stabilisiert und beschleunigt oft das Training von CNNs/MLPs (Yong et al. 2020).<br>**Wofür:** CNNs. |
+| `training.optimizer_extras.grokfast_alpha` | Kommazahl (oder None) | `None` | Bereich 0.0 … 0.9999 | Experimentell | **Was:** Grokfast: langsame Gradientenanteile (EMA mit dieser Glättung) verstärken (None = aus).<br>**Nutzen:** Beschleunigt 'Grokking' – späte Generalisierung nach Auswendiglernen (Lee et al. 2024).<br>**Wofür:** Kleine algorithmische Datensätze; 0.98.<br>**Tipp:** Experimentell. |
+| `training.optimizer_extras.grokfast_lambda` | Kommazahl | `2.0` | ≥ 0.0 | Experimentell | **Was:** Verstärkung der langsamen Gradientenanteile.<br>**Nutzen:** Stärke des Effekts.<br>**Wofür:** 1–5. |
 | `training.ema` | Unter-Konfiguration EMA der Gewichte | ⟶ EMAConfig |  | Fortgeschritten | **Was:** Unter-Konfiguration 'EMA der Gewichte'. |
 | `training.ema.enabled` | Ja/Nein | `False` |  | Fortgeschritten | **Was:** Exponentiell gleitenden Mittelwert der Gewichte mitführen.<br>**Nutzen:** Gemittelte Gewichte sind oft besser und stabiler als die letzten.<br>**Wofür:** Diffusionsmodelle (Pflicht), GANs, Bildklassifikation. |
 | `training.ema.decay` | Kommazahl | `0.999` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Abklingrate (näher an 1 = längeres Gedächtnis).<br>**Nutzen:** Glättungsstärke.<br>**Wofür:** 0.999–0.9999. |
 | `training.ema.start_step` | Ganzzahl | `0` | ≥ 0 | Fortgeschritten | **Was:** Erst ab diesem Schritt mitteln.<br>**Nutzen:** Frühe, schlechte Gewichte auslassen.<br>**Wofür:** Ein paar hundert Schritte. |
 | `training.ema.update_every` | Ganzzahl | `1` | ≥ 1 | Fortgeschritten | **Was:** Aktualisierung alle n Schritte.<br>**Nutzen:** Spart Rechenzeit.<br>**Wofür:** 1–10. |
 | `training.ema.use_for_eval` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** EMA-Gewichte für Evaluierung verwenden.<br>**Nutzen:** Bewertet das gemittelte Modell.<br>**Wofür:** Standard: an. |
+| `training.ema.apply_at_end` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Am Ende des Trainings die EMA-Gewichte ins Modell übernehmen.<br>**Nutzen:** Vorhersage, Speichern und Export nutzen dann genau das Modell, dessen Werte in der Validierung angezeigt wurden.<br>**Wofür:** an (aus: letzte Trainingsgewichte behalten). |
+| `training.ema.warmup` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Abklingrate anfangs kleiner: min(decay, (1+n)/(10+n)).<br>**Nutzen:** Ohne Aufwärmen enthält die EMA nach kurzen Läufen fast nur die zufälligen Startgewichte.<br>**Wofür:** an. |
 | `training.nan_policy` | Text | `'skip'` | Auswahl: raise \| skip \| ignore | Fortgeschritten | **Was:** Verhalten bei NaN/Inf in Verlust oder Gradienten.<br>**Nutzen:** Schützt vor Zerstörung der Gewichte.<br>**Wofür:** skip. |
 | `training.curriculum` | Unter-Konfiguration Curriculum Learning | ⟶ CurriculumConfig |  | Fortgeschritten | **Was:** Unter-Konfiguration 'Curriculum Learning'. |
 | `training.curriculum.strategy` | Text | `'none'` | Auswahl: none \| length \| key | Fortgeschritten | **Was:** Curriculum-Strategie.<br>**Nutzen:** Leicht → schwer kann Training beschleunigen und stabilisieren.<br>**Wofür:** Sprachmodelle (kurz → lang), Robotik, Mathe-Aufgaben. |
@@ -111,26 +153,68 @@ hängen von der gewählten Komponente ab – siehe Abschnitt *Registries und Kom
 | `training.eval_max_batches` | Ganzzahl (oder None) | `None` | ≥ 1 | Fortgeschritten | **Was:** Höchstens so viele Batches evaluieren.<br>**Nutzen:** Schnellere Zwischen-Evaluierungen.<br>**Wofür:** Große Validierungsmengen. |
 | `training.log_every_steps` | Ganzzahl | `10` | ≥ 1 | Basis | **Was:** Ausgabe des Fortschritts alle n Schritte.<br>**Nutzen:** Übersicht im Terminal.<br>**Wofür:** 10–100. |
 | `training.verbose` | Ja/Nein | `True` |  | Basis | **Was:** Fortschritt ausgeben.<br>**Nutzen:** Konsolenausgabe.<br>**Wofür:** Standard: an. |
-| `training.callbacks` | Liste von Komponenten aus Registry 'callback' | 0 Elemente | Elemente: early_stopping \| checkpoint \| csv_logger \| jsonl_logger \| gradient_monitor \| time_limit \| gradual_unfreeze | Basis | **Was:** Callbacks (Early Stopping, Checkpoints, Logger ...).<br>**Nutzen:** Erweitern den Trainingsablauf.<br>**Wofür:** Nach Bedarf. |
+| `training.logging` | Unter-Konfiguration Logging (Protokolle) | ⟶ LoggingConfig |  | Basis | **Was:** Wohin, wie ausführlich und was beim Training protokolliert wird.<br>**Nutzen:** Konsole, Dateien und Dashboards (TensorBoard, W&B, MLflow) – oder ein eigener Logger.<br>**Wofür:** Jedes Training; für Vergleiche und Fehlersuche unverzichtbar. |
+| `training.logging.level` | Text | `'normal'` | Auswahl: still \| minimal \| normal \| ausfuehrlich \| debug | Basis | **Was:** Umfang der Protokolle.<br>**Nutzen:** Mehr Details helfen bei der Fehlersuche, kosten aber Übersicht und etwas Zeit.<br>**Wofür:** Normal; debug bei Problemen, minimal für lange Läufe. |
+| `training.logging.backends` | Liste von Komponenten aus Registry 'log_backend' | 1 Elemente | Elemente: console \| datei \| jsonl \| csv \| python \| tensorboard \| wandb \| mlflow | Basis | **Was:** Logger-Ziele (beliebig kombinierbar, jedes mit eigenen Einstellungen).<br>**Nutzen:** Gleichzeitig in Konsole, Datei und Dashboard protokollieren.<br>**Wofür:** z. B. ['console', 'jsonl', 'tensorboard']. |
+| `training.logging.backends.0` | beliebig | `log_backend:console()` |  | Basis | **Was:** Ausgabe im Terminal.<br>**Nutzen:** Fortschritt direkt sehen.<br>**Wofür:** Standard. |
+| `training.logging.backends.0.level` | Text (oder None) | `None` | Auswahl: still \| minimal \| normal \| ausfuehrlich \| debug | Basis | **Was:** Eigene Stufe für dieses Ziel (None = Stufe des Loggers).<br>**Nutzen:** z. B. Konsole knapp, Datei ausführlich.<br>**Wofür:** None. |
+| `training.logging.directory` | Text | `'logs'` |  | Basis | **Was:** Basisordner für Protokolldateien (je Lauf ein Unterordner).<br>**Nutzen:** Ordnung bei vielen Läufen.<br>**Wofür:** logs. |
+| `training.logging.run_name` | Text (oder None) | `None` |  | Basis | **Was:** Name des Laufs (None = Zeitstempel).<br>**Nutzen:** Wiedererkennen im Dashboard und im Ordner.<br>**Wofür:** z. B. 'lr_3e-4'. |
+| `training.logging.every_n_steps` | Ganzzahl (oder None) | `None` | ≥ 1 | Basis | **Was:** Protokoll-Intervall in Schritten (None = training.log_every_steps).<br>**Nutzen:** Häufiger = feiner, mehr Daten.<br>**Wofür:** 10–100. |
+| `training.logging.log_lr` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Lernrate protokollieren.<br>**Nutzen:** Zeitplan überprüfen.<br>**Wofür:** an. |
+| `training.logging.log_grad_norm` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Gradientennorm protokollieren.<br>**Nutzen:** Explodierende/verschwindende Gradienten früh erkennen.<br>**Wofür:** an. |
+| `training.logging.log_throughput` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Durchsatz (Beispiele/s, Tokens/s) protokollieren.<br>**Nutzen:** Tempo-Optimierungen messbar machen.<br>**Wofür:** an. |
+| `training.logging.log_memory` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Speicherverbrauch (GPU-Spitze bzw. RAM) protokollieren.<br>**Nutzen:** Engpässe erkennen.<br>**Wofür:** an. |
+| `training.logging.log_config` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Alle Einstellungen zu Beginn protokollieren.<br>**Nutzen:** Jeder Lauf bleibt reproduzierbar.<br>**Wofür:** an. |
+| `training.logging.weights_every_n_steps` | Ganzzahl (oder None) | `None` | ≥ 1 | Fortgeschritten | **Was:** Alle n Schritte Statistiken (Norm, Mittel, Std) jedes Gewichtstensors protokollieren (None = aus).<br>**Nutzen:** Zeigt, welche Schichten lernen, stillstehen oder explodieren; TensorBoard zusätzlich Histogramme.<br>**Wofür:** Analyse, Debugging; 100–1000. |
+| `training.logging.gradients_every_n_steps` | Ganzzahl (oder None) | `None` | ≥ 1 | Fortgeschritten | **Was:** Alle n Schritte Gradientennormen je Tensor protokollieren (None = aus).<br>**Nutzen:** Findet Schichten mit verschwindenden/explodierenden Gradienten.<br>**Wofür:** Debugging; 50–500. |
+| `training.logging.max_file_mb` | Kommazahl | `50.0` | ≥ 0.0 | Fortgeschritten | **Was:** Maximale Größe einer Protokolldatei (MB), danach wird rotiert (0 = unbegrenzt).<br>**Nutzen:** Begrenzt den Plattenverbrauch langer Läufe.<br>**Wofür:** 10–100. |
+| `training.logging.keep_files` | Ganzzahl | `3` | ≥ 0 | Fortgeschritten | **Was:** Wie viele rotierte Protokolldateien aufbewahrt werden.<br>**Nutzen:** Platz vs. Verlauf.<br>**Wofür:** 3–10. |
+| `training.logging.flush_every` | Ganzzahl | `1` | ≥ 1 | Experte | **Was:** Dateien alle n Einträge auf die Platte schreiben.<br>**Nutzen:** Höher = weniger Plattenzugriffe, im Absturzfall gehen die letzten Einträge verloren.<br>**Wofür:** 1 (sicher) bis 50. |
+| `training.callbacks` | Liste von Komponenten aus Registry 'callback' | 0 Elemente | Elemente: early_stopping \| checkpoint \| csv_logger \| jsonl_logger \| gradient_monitor \| time_limit \| swa \| lisa \| gradual_unfreeze | Basis | **Was:** Callbacks (Early Stopping, Checkpoints, Logger ...).<br>**Nutzen:** Erweitern den Trainingsablauf.<br>**Wofür:** Nach Bedarf. |
 | `training.seed` | Ganzzahl (oder None) | `42` |  | Basis | **Was:** Zufalls-Seed (None = nicht setzen).<br>**Nutzen:** Reproduzierbare Ergebnisse.<br>**Wofür:** Für Vergleiche immer setzen. |
 | `training.deterministic` | Ja/Nein | `False` |  | Experte | **Was:** Deterministische Algorithmen erzwingen.<br>**Nutzen:** Bitgenaue Reproduzierbarkeit, oft langsamer.<br>**Wofür:** Debugging. |
+| `training.metrics` | Liste von Komponenten aus Registry 'metric' | 0 Elemente | Elemente: accuracy \| top_k_accuracy \| precision \| recall \| f1 \| balanced_accuracy \| mcc \| auroc \| log_loss \| ece \| brier \| mae \| mse \| rmse \| … | Basis | **Was:** Metriken für Validierung und Test (leer = automatische Auswahl je Aufgabe, siehe auto_metrics).<br>**Nutzen:** Der Verlust allein sagt wenig: bei seltenen Klassen f1/balanced_accuracy, bei Prognosen mae/rmse, bei Risiken ece (Kalibrierung), bei Übersetzung bleu.<br>**Wofür:** Klassifikation: ['f1', 'auroc']; Regression: ['mae', 'r2']; Early Stopping mit monitor='val_f1'. |
+| `training.auto_metrics` | Ja/Nein | `True` |  | Basis | **Was:** Ohne eigene Liste passende Metriken automatisch berechnen (Klassifikation: accuracy, balanced_accuracy, f1, auroc, ece; Regression: mae, rmse, r2; Sprache: perplexity, token_accuracy …).<br>**Nutzen:** Man sieht sofort, ob das Modell wirklich gut ist.<br>**Wofür:** an (kostet nur etwas Rechenzeit in der Evaluierung). |
+| `training.metric_max_samples` | Ganzzahl | `5000` | ≥ 1 | Fortgeschritten | **Was:** Höchstens so viele Beispiele für die Metriken sammeln.<br>**Nutzen:** Begrenzt Speicher bei großen Validierungsmengen.<br>**Wofür:** 1000–20000. |
+| `training.class_weights` | Text | `'keine'` | Auswahl: keine \| ausgeglichen \| wurzel | Basis | **Was:** Klassengewichte im Standard-Klassifikationsverlust.<br>**Nutzen:** Bei unausgewogenen Daten ignoriert das Modell sonst seltene Klassen (Alternative zu balance_classes).<br>**Wofür:** Betrug, Diagnosen, seltene Fehler: ausgeglichen oder wurzel. |
+| `training.auto_lr` | Ja/Nein | `False` |  | Basis | **Was:** Vor dem ersten Training die Lernrate per LR-Finder (Bereichstest) bestimmen und übernehmen.<br>**Nutzen:** Die Lernrate ist die wichtigste Einstellung – automatisch passend zu Modell und Daten.<br>**Wofür:** Neue Modelle/Daten ohne Erfahrungswerte. |
+| `training.auto_batch_size` | Ja/Nein | `False` |  | Basis | **Was:** Auf GPUs die größte Batchgröße wählen, die sicher in den Gerätespeicher passt (Lernrate √-skaliert).<br>**Nutzen:** Nutzt die Hardware voll aus – gleiche Rechenzeit, mehr Daten je Schritt.<br>**Wofür:** GPU-Training; auf der CPU ohne Wirkung. |
+| `training.resume_from` | Text (oder None) | `None` |  | Basis | **Was:** Training aus einem Checkpoint fortsetzen (Pfad zu einer .pt-Datei oder 'auto' = neuester Checkpoint im Checkpoint-Ordner).<br>**Nutzen:** Nach Abbruch, Stromausfall oder Zeitlimit weitermachen – mit Optimierer-, Zeitplan- und Schrittstand.<br>**Wofür:** Lange Läufe, Cluster mit Zeitslots. |
 | `training.validation_split` | Kommazahl | `0.1` | Bereich 0.0 … 0.9 | Basis | **Was:** Anteil der Trainingsdaten als Validierung (wenn keine eigenen Validierungsdaten übergeben werden).<br>**Nutzen:** Misst Generalisierung während des Trainings.<br>**Wofür:** 0.1–0.2. |
+| `training.validation_strategy` | Text | `'zufall'` | Auswahl: zufall \| stratifiziert \| zeitlich | Basis | **Was:** Wie Validierungs- und Testdaten abgeteilt werden.<br>**Nutzen:** Falsche Aufteilung führt zu geschönten Ergebnissen (z. B. Zukunftsdaten im Training bei Zeitreihen).<br>**Wofür:** Klassifikation: stratifiziert; Zeitreihen/Prognosen: zeitlich. |
+| `training.test_split` | Kommazahl | `0.0` | Bereich 0.0 … 0.5 | Basis | **Was:** Anteil, der als Testmenge ganz zurückgehalten wird (0 = keine).<br>**Nutzen:** Validierung steuert das Training (Early Stopping, Suche) und ist dadurch leicht geschönt – nur eine nie benutzte Testmenge zeigt die echte Qualität (Project.test()).<br>**Wofür:** 0.1–0.2 bei genug Daten. |
 | `training.shuffle` | Ja/Nein | `True` |  | Basis | **Was:** Daten jede Epoche mischen.<br>**Nutzen:** Verhindert Reihenfolge-Effekte.<br>**Wofür:** an. |
 | `training.drop_last` | Ja/Nein | `False` |  | Fortgeschritten | **Was:** Letzten unvollständigen Batch verwerfen.<br>**Nutzen:** Gleich große Batches (wichtig für BatchNorm).<br>**Wofür:** BatchNorm: an. |
 | `training.num_workers` | Ganzzahl | `0` | ≥ 0 | Fortgeschritten | **Was:** Hintergrundprozesse zum Datenladen.<br>**Nutzen:** Schneller bei aufwendigem Laden.<br>**Wofür:** 0 (einfach) bis CPU-Kerne. |
-| `training.pin_memory` | Ja/Nein | `False` |  | Experte | **Was:** Gepinnter Speicher für schnellere GPU-Übertragung.<br>**Nutzen:** Schneller bei CUDA.<br>**Wofür:** GPU-Training: an. |
+| `training.pin_memory` | Ja/Nein (oder None) | `None` |  | Experte | **Was:** Gepinnter Speicher für schnellere GPU-Übertragung (None = automatisch an auf CUDA).<br>**Nutzen:** Schneller bei CUDA.<br>**Wofür:** None lassen. |
+| `training.balance_classes` | Ja/Nein | `False` |  | Fortgeschritten | **Was:** Seltene Klassen häufiger ziehen (gewichtetes Sampling nach Klassenhäufigkeit).<br>**Nutzen:** Bei unausgewogenen Daten lernt das Modell sonst vor allem die häufigen Klassen.<br>**Wofür:** Betrugserkennung, Diagnosen, seltene Ereignisse. |
+| `training.privacy` | Unter-Konfiguration Datenschutz (DP-SGD) | ⟶ PrivacyConfig |  | Fortgeschritten | **Was:** Differentiell privates Training: Gradient jedes Beispiels begrenzen und Rauschen hinzufügen.<br>**Nutzen:** Das Modell kann sich einzelne Datensätze kaum merken – Schutz sensibler Daten (Google, Apple).<br>**Wofür:** Medizin-, Finanz-, Nutzerdaten.<br>**Tipp:** Rechnet jedes Beispiel einzeln (langsam). Ohne Privacy-Accounting (ε); für formale Garantien Opacus nutzen. |
+| `training.privacy.enabled` | Ja/Nein | `False` |  | Fortgeschritten | **Was:** DP-SGD einschalten.<br>**Nutzen:** Schützt einzelne Trainingsbeispiele.<br>**Wofür:** Sensible Daten. |
+| `training.privacy.clip_norm` | Kommazahl | `1.0` | ≥ 0.0 | Fortgeschritten | **Was:** Maximale Gradientennorm pro Beispiel.<br>**Nutzen:** Begrenzt den Einfluss jedes Einzelnen.<br>**Wofür:** 0.5–2. |
+| `training.privacy.noise_multiplier` | Kommazahl | `1.0` | ≥ 0.0 | Fortgeschritten | **Was:** Rauschstärke relativ zu clip_norm.<br>**Nutzen:** Mehr Rauschen = mehr Schutz, schlechtere Genauigkeit.<br>**Wofür:** 0.5–2. |
+| `training.distributed` | Unter-Konfiguration Verteiltes Training (Cluster) | ⟶ DistributedConfig |  | Fortgeschritten | **Was:** Training auf mehreren GPUs, Rechnern oder CPU-Prozessen.<br>**Nutzen:** Mehr Geräte = schneller (Daten parallel) und/oder größere Modelle (Gewichte verteilt).<br>**Wofür:** Große Datensätze, große Modelle, Rechen-Cluster. Start mit 'python -m ki_baukasten verteilt …'. |
+| `training.distributed.strategy` | Text | `'none'` | Auswahl: none \| ddp \| zero1 \| fsdp | Fortgeschritten | **Was:** Verteilungsstrategie.<br>**Nutzen:** ddp beschleunigt, zero1 spart Optimierer-Speicher, fsdp verteilt das ganze Modell.<br>**Wofür:** Modell passt auf eine GPU: ddp. Adam-Speicher knapp: zero1. Modell zu groß für eine GPU: fsdp.<br>**Tipp:** Ohne Start über 'verteilt'/torchrun (WORLD_SIZE=1) läuft alles normal in einem Prozess. |
+| `training.distributed.backend` | Text | `'auto'` | Auswahl: auto \| nccl \| gloo | Fortgeschritten | **Was:** Kommunikations-Backend.<br>**Nutzen:** nccl ist auf NVIDIA-GPUs am schnellsten, gloo läuft überall.<br>**Wofür:** auto. |
+| `training.distributed.find_unused_parameters` | Ja/Nein | `True` |  | Experte | **Was:** DDP: Parameter ohne Gradient in einem Schritt erlauben.<br>**Nutzen:** Nötig, wenn nicht jeder Teil des Modells in jedem Schritt benutzt wird (z. B. MoE, ungenutzte Köpfe).<br>**Wofür:** Aus = minimal schneller, wenn wirklich alle Parameter immer genutzt werden. |
+| `training.distributed.fsdp_reshard_after_forward` | Ja/Nein | `True` |  | Experte | **Was:** FSDP: Gewichte nach dem Forward wieder verteilen (ZeRO-3) statt bis zum Backward zu behalten (ZeRO-2).<br>**Nutzen:** An = weniger Speicher, aus = weniger Kommunikation.<br>**Wofür:** an. |
+| `training.distributed.fsdp_cpu_offload` | Ja/Nein | `False` |  | Experte | **Was:** FSDP: verteilte Gewichte und Optimierer-Zustände im CPU-RAM halten.<br>**Nutzen:** Noch größere Modelle, deutlich langsamer.<br>**Wofür:** Nur wenn es sonst nicht passt. |
+| `training.distributed.sync_batchnorm` | Ja/Nein | `False` |  | Fortgeschritten | **Was:** BatchNorm-Statistiken über alle Prozesse berechnen.<br>**Nutzen:** Wichtig bei kleinen Batches pro Gerät.<br>**Wofür:** CNNs mit kleinem Batch pro GPU. |
+| `training.distributed.timeout_minutes` | Kommazahl | `30.0` | ≥ 1.0 | Experte | **Was:** Zeitlimit für Kommunikation (Minuten).<br>**Nutzen:** Erkennt hängende Prozesse.<br>**Wofür:** 30. |
 | `memory` | Unter-Konfiguration Speicher & Präzision | ⟶ MemoryConfig |  | Basis | **Was:** Einstellungen für Speicherbedarf, numerische Präzision und Geschwindigkeit.<br>**Nutzen:** Entscheiden, ob ein Modell überhaupt in den Speicher passt und wie schnell es läuft.<br>**Wofür:** Große Modelle, kleine GPUs, CPU-Training, Inferenz-Optimierung. |
 | `memory.device` | Text | `'auto'` |  | Basis | **Was:** Rechengerät: 'auto', 'cpu', 'cuda', 'cuda:1', 'mps' (Apple).<br>**Nutzen:** GPUs sind für Training meist 10–100× schneller.<br>**Wofür:** 'auto' wählt die beste verfügbare Option. |
 | `memory.param_dtype` | Text | `'float32'` | Auswahl: float32 \| bfloat16 \| float16 \| float64 | Basis | **Was:** Datentyp der Gewichte.<br>**Nutzen:** 16 Bit halbiert den Speicher für Gewichte und Gradienten.<br>**Wofür:** Reines bf16-Training großer Modelle; sonst float32 + mixed_precision. |
-| `memory.mixed_precision` | Text | `'none'` | Auswahl: none \| bf16 \| fp16 | Basis | **Was:** Gemischte Präzision (autocast).<br>**Nutzen:** Halbiert Aktivierungsspeicher und beschleunigt auf Tensor-Core-GPUs deutlich.<br>**Wofür:** GPU-Training: bf16 (Ampere+), fp16 (ältere GPUs). |
+| `memory.mixed_precision` | Text | `'auto'` | Auswahl: auto \| none \| bf16 \| fp16 | Basis | **Was:** Gemischte Präzision (autocast).<br>**Nutzen:** Halbiert Aktivierungsspeicher und beschleunigt auf Tensor-Core-GPUs deutlich.<br>**Wofür:** auto (wählt pro Gerät das Schnellste); fest: bf16 (Ampere+), fp16 (ältere GPUs), none (volle Präzision). |
 | `memory.grad_scaler` | Text | `'auto'` | Auswahl: auto \| on \| off | Experte | **Was:** Dynamisches Loss-Scaling.<br>**Nutzen:** Verhindert Unterlauf kleiner fp16-Gradienten.<br>**Wofür:** auto. |
 | `memory.gradient_checkpointing` | Ja/Nein | `False` |  | Basis | **Was:** Aktivierungen der Blöcke nicht speichern, sondern im Backward neu berechnen.<br>**Nutzen:** Spart bei tiefen Netzen oft 60–80 % Aktivierungsspeicher – kostet ~30 % mehr Rechenzeit.<br>**Wofür:** Große Modelle / lange Sequenzen, wenn der Speicher knapp ist. |
 | `memory.checkpoint_layers` | Text | `'*'` |  | Fortgeschritten | **Was:** Welche Blöcke neu berechnet werden (Selektor wie bei layer_overrides).<br>**Nutzen:** Feiner Kompromiss Speicher vs. Zeit (z. B. nur jeden zweiten Block).<br>**Wofür:** '*', '::2', '0:8'. |
 | `memory.activation_offload` | Ja/Nein | `False` |  | Fortgeschritten | **Was:** Für den Backward gespeicherte Aktivierungen in den CPU-RAM auslagern.<br>**Nutzen:** Spart GPU-Speicher ohne Neuberechnung, kostet Übertragungszeit.<br>**Wofür:** Lange Sequenzen auf kleiner GPU. |
 | `memory.offload` | Unter-Konfiguration Offloading / Layer-Swapping | ⟶ OffloadConfig |  | Fortgeschritten | **Was:** Auslagern von Modellblöcken auf CPU-RAM oder Festplatte (Swapping).<br>**Nutzen:** Ermöglicht Modelle, die größer als der Speicher des Rechengeräts sind.<br>**Wofür:** Inferenz sehr großer Modelle auf kleiner GPU / wenig RAM. |
-| `memory.offload.mode` | Text | `'none'` | Auswahl: none \| cpu \| disk \| stream | Fortgeschritten | **Was:** Auslagerungsmodus.<br>**Nutzen:** Tauscht Geschwindigkeit gegen Speicher: disk spart am meisten, ist aber am langsamsten; stream erlaubt Training von Modellen, deren Gewichte + Optimierer nicht auf die GPU passen.<br>**Wofür:** Inferenz großer Modelle: cpu/disk. Training großer Modelle auf kleiner GPU: stream.<br>**Tipp:** stream rechnet jeden Block im Backward neu (wie Checkpointing) und überträgt die Gewichte zweimal pro Schritt – typischerweise 1.3–3× langsamer. |
+| `memory.offload.mode` | Text | `'none'` | Auswahl: none \| cpu \| disk \| stream \| split | Fortgeschritten | **Was:** Auslagerungsmodus.<br>**Nutzen:** Tauscht Geschwindigkeit gegen Speicher: disk spart am meisten, ist aber am langsamsten; stream erlaubt Training von Modellen, deren Gewichte + Optimierer nicht auf die GPU passen.<br>**Wofür:** Inferenz großer Modelle: cpu/disk. Training großer Modelle auf kleiner GPU: stream.<br>**Tipp:** stream rechnet jeden Block im Backward neu (wie Checkpointing) und überträgt die Gewichte zweimal pro Schritt – typischerweise 1.3–3× langsamer. |
 | `memory.offload.targets` | Text | `'auto'` |  | Fortgeschritten | **Was:** Welche Module ausgelagert werden: 'auto' = Hauptblöcke des Modells, sonst Regex auf Modulnamen.<br>**Nutzen:** Kleine Teile (Embeddings, Kopf) bleiben dauerhaft auf dem Gerät.<br>**Wofür:** Meist 'auto'; z. B. 'blocks\.(1[0-9]\|2[0-9])' für nur hintere Blöcke. |
 | `memory.offload.layers` | Text | `'*'` |  | Fortgeschritten | **Was:** Welche der automatisch gefundenen Blöcke ausgelagert werden (Selektor wie bei layer_overrides).<br>**Nutzen:** Feiner Kompromiss: nur so viele Blöcke auslagern, wie nötig – der Rest rechnet ohne Übertragung.<br>**Wofür:** '*' = alle, '0:12' = die ersten 12, '::2' = jeder zweite. Nur mit targets='auto'. |
+| `memory.offload.storage` | Text | `'ram'` | Auswahl: ram \| disk | Fortgeschritten | **Was:** Ablageort der eingefrorenen Gewichte im Modus 'stream'.<br>**Nutzen:** Mit 'disk' passt auch ein Modell, das größer als der RAM ist: z. B. QLoRA/LoRA-Feintuning, bei dem nur die kleinen Adapter im RAM liegen und die Basis Block für Block von der SSD gelesen wird.<br>**Wofür:** Sehr große Modelle auf kleinen Rechnern. Schnelle SSD empfohlen (directory).<br>**Tipp:** Trainierbare Gewichte, Gradienten und Optimierer-Zustände bleiben immer im RAM. |
+| `memory.offload.split_device` | Text | `'cpu'` |  | Fortgeschritten | **Was:** Zweites Rechengerät für den Modus 'split' (z. B. 'cpu', 'cuda:1').<br>**Nutzen:** Blöcke, die nicht auf das Hauptgerät passen, rechnen dort – langsamer, aber es läuft.<br>**Wofür:** GPU zu klein: hintere Blöcke auf der CPU; zwei GPUs: Modell aufteilen. |
 | `memory.offload.prefetch` | Ja/Nein | `False` |  | Experimentell | **Was:** Nächsten Block auf einem eigenen CUDA-Stream vorladen, während der aktuelle rechnet (nur stream + CUDA).<br>**Nutzen:** Versteckt Übertragungszeit hinter Rechenzeit.<br>**Wofür:** Experimentell; bei Problemen ausschalten. |
 | `memory.offload.directory` | Text | `'offload_cache'` |  | Fortgeschritten | **Was:** Ordner für ausgelagerte Gewichte (disk).<br>**Nutzen:** Schnelle SSD empfohlen.<br>**Wofür:** Lokale SSD. |
 | `memory.offload.pin_memory` | Ja/Nein | `True` |  | Experte | **Was:** CPU-Kopien in gepinntem Speicher halten (cpu-Modus, nur CUDA).<br>**Nutzen:** Deutlich schnellere Übertragung CPU → GPU.<br>**Wofür:** CUDA. |
@@ -154,13 +238,16 @@ hängen von der gewählten Komponente ab – siehe Abschnitt *Registries und Kom
 | `memory.lora.train_also` | Text (oder None) | `None` |  | Fortgeschritten | **Was:** Regex: diese Parameter trotz freeze_base trainieren (z. B. Normen, Ausgabekopf).<br>**Nutzen:** Kleine Zusatzteile trainieren oft spürbar besser mit.<br>**Wofür:** 'norm', 'lm_head\|head'. |
 | `memory.lora.init` | Text | `'kaiming'` | Auswahl: kaiming \| gaussian \| pissa | Experte | **Was:** Initialisierung der Adapter.<br>**Nutzen:** Bestimmt den Startpunkt.<br>**Wofür:** kaiming; pissa für schnelleres Lernen. |
 | `memory.lora.use_dora` | Ja/Nein | `False` |  | Experimentell | **Was:** DoRA: zusätzlicher lernbarer Betrag pro Ausgabekanal.<br>**Nutzen:** Oft näher an vollem Feintuning, etwas teurer.<br>**Wofür:** Wenn LoRA zu schwach ist. |
-| `memory.channels_last` | Ja/Nein | `False` |  | Experte | **Was:** Speicherlayout NHWC für Faltungsnetze.<br>**Nutzen:** Schneller auf Tensor-Core-GPUs.<br>**Wofür:** CNN-Training auf GPU. |
+| `memory.channels_last` | Ja/Nein (oder None) | `None` |  | Experte | **Was:** Speicherlayout NHWC für Faltungsnetze (None = automatisch: an bei Faltungsnetz + NVIDIA + 16 Bit).<br>**Nutzen:** Schneller auf Tensor-Core-GPUs.<br>**Wofür:** None lassen. |
 | `memory.compile` | Ja/Nein | `False` |  | Fortgeschritten | **Was:** Modell mit torch.compile übersetzen.<br>**Nutzen:** Oft 1.3–2× schneller nach Aufwärmzeit.<br>**Wofür:** Lange Trainings auf GPU. |
 | `memory.compile_mode` | Text | `'default'` | Auswahl: default \| reduce-overhead \| max-autotune | Experte | **Was:** Modus von torch.compile.<br>**Nutzen:** Mehr Optimierung = längeres Kompilieren.<br>**Wofür:** default. |
-| `memory.matmul_precision` | Text | `'highest'` | Auswahl: highest \| high \| medium | Experte | **Was:** Genauigkeit von fp32-Matrixmultiplikationen.<br>**Nutzen:** Geschwindigkeit vs. Genauigkeit.<br>**Wofür:** Training auf A100/H100: high. |
+| `memory.cudnn_benchmark` | Ja/Nein (oder None) | `None` |  | Fortgeschritten | **Was:** cuDNN probiert für jede Eingabeform den schnellsten Faltungs-Algorithmus aus (None = automatisch: an bei Faltungsnetzen auf NVIDIA).<br>**Nutzen:** Spürbar schnellere CNNs bei gleichbleibenden Bildgrößen.<br>**Wofür:** CNN-Training auf NVIDIA-GPUs.<br>**Tipp:** Bei ständig wechselnden Formen eher langsamer. |
+| `memory.matmul_precision` | Text | `'auto'` | Auswahl: auto \| highest \| high \| medium | Experte | **Was:** Genauigkeit von fp32-Matrixmultiplikationen.<br>**Nutzen:** Geschwindigkeit vs. Genauigkeit.<br>**Wofür:** Training auf A100/H100: high. |
 | `memory.cpu_threads` | Ganzzahl (oder None) | `None` | ≥ 1 | Fortgeschritten | **Was:** Anzahl CPU-Threads für PyTorch (None = automatisch).<br>**Nutzen:** Begrenzen auf geteilten Rechnern.<br>**Wofür:** Kernanzahl. |
 | `memory.max_memory_fraction` | Kommazahl (oder None) | `None` | Bereich 0.05 … 1.0 | Experte | **Was:** Maximaler Anteil des GPU-Speichers für diesen Prozess.<br>**Nutzen:** Mehrere Prozesse auf einer GPU.<br>**Wofür:** 0.5. |
 | `memory.empty_cache_every_n_steps` | Ganzzahl (oder None) | `None` | ≥ 1 | Experte | **Was:** GPU-Cache alle n Schritte leeren.<br>**Nutzen:** Gegen Fragmentierung bei variablen Formen.<br>**Wofür:** Selten nötig. |
+| `memory.oom_strategy` | Text | `'batch_teilen'` | Auswahl: fehler \| batch_teilen | Basis | **Was:** Was bei Speichermangel (Out-of-Memory) während Training/Vorhersage passiert.<br>**Nutzen:** 'batch_teilen' teilt den Batch so oft wie nötig in kleinere Stücke; durch Akkumulation bleibt die effektive Batchgröße – und damit das Training – gleich. Das Training bricht nicht mehr mitten ab.<br>**Wofür:** Unbekannte Hardware, schwankende Sequenzlängen, Notfall-Ausführung.<br>**Tipp:** Erkennt CUDA-/MPS-/CPU-Speicherfehler. Mehr Teilstücke = langsamer. |
+| `memory.oom_max_splits` | Ganzzahl | `64` | ≥ 1 | Fortgeschritten | **Was:** Höchstens so viele Teilstücke pro Batch.<br>**Nutzen:** Begrenzt die Verlangsamung; danach wird der Fehler gemeldet.<br>**Wofür:** 16–64. |
 | `memory.memory_budget_gb` | Kommazahl (oder None) | `None` | ≥ 0.0 | Basis | **Was:** Verfügbarer Speicher in GB für die Speicherschätzung (None = automatisch erkennen).<br>**Nutzen:** Die Schätzung prüft, ob das Training hineinpasst, und schlägt Einstellungen vor.<br>**Wofür:** Planung vor dem Training großer Modelle. |
 | `module_rules` | Liste von Modul-Regel | 0 Elemente |  | Fortgeschritten | **Was:** Regeln für Eingriffe in ganze Schichten (ersetzen, entfernen, LoRA/Quantisierung einzeln, Hooks …).<br>**Nutzen:** Jede Schicht jeder Art anpassen – für alle, nur bestimmte oder genau eine (scope).<br>**Wofür:** Ablationen, gezieltes Feintuning, Präzision pro Schicht, Analyse. Wirken vor den Tensor-Regeln. |
 | `tensor_rules` | Liste von Tensor-Regel | 0 Elemente |  | Fortgeschritten | **Was:** Regeln für Eingriffe in einzelne Tensoren (Einfrieren, Pruning, Kopieren, eigene LR …).<br>**Nutzen:** Feinste Kontrolle bis auf einzelne Gewichte – für alle, nur bestimmte oder genau einen (scope).<br>**Wofür:** Transfer-Learning, Kompression, Experimente. |
@@ -174,7 +261,89 @@ hängen von der gewählten Komponente ab – siehe Abschnitt *Registries und Kom
 | `deployment.show_after_training` | Ja/Nein | `True` |  | Basis | **Was:** Nach train() die Reduktions-Übersicht anzeigen.<br>**Nutzen:** Man sieht beim Fertigstellen sofort die Optionen.<br>**Wofür:** an. |
 | `deployment.main_target` | Text (oder None) | `None` |  | Basis | **Was:** Hauptziel: nach dem Training zusätzlich die ausführliche Empfehlung zeigen.<br>**Nutzen:** Detailliertes Rezept + Exportformat für genau dieses Gerät.<br>**Wofür:** z. B. 'smartphone'. |
 | `deployment.heal_steps` | Ganzzahl | `300` | ≥ 0 | Fortgeschritten | **Was:** Heil-Schritte (Distillation vom Original) in reduce_for.<br>**Nutzen:** Mehr = bessere Qualität nach dem Verkleinern.<br>**Wofür:** 100–1000. |
+| `deployment.model_card` | Ja/Nein | `True` |  | Basis | **Was:** Beim Speichern eine Modellkarte (MODELLKARTE.md) und Umgebungsdaten (umgebung.json) ablegen.<br>**Nutzen:** Dokumentation von Zweck, Daten, Ergebnissen, Grenzen und Versionen – für Nachvollziehbarkeit und Vorgaben.<br>**Wofür:** an. |
+| `deployment.server` | Unter-Konfiguration HTTP-Server (Bereitstellung) | ⟶ ServeConfig |  | Fortgeschritten | **Was:** Kleiner eingebauter Web-Server: Vorhersagen per HTTP/JSON (nur Standardbibliothek).<br>**Nutzen:** Die KI ohne weiteren Code in Apps, Webseiten oder andere Programme einbinden.<br>**Wofür:** python -m ki_baukasten bereitstellen <projektordner>; für große Lasten: Export + eigener Server. |
+| `deployment.server.host` | Text | `'127.0.0.1'` |  | Fortgeschritten | **Was:** Adresse ('127.0.0.1' = nur dieser Rechner, '0.0.0.0' = im Netzwerk erreichbar).<br>**Nutzen:** Sicherheit: standardmäßig nicht von außen erreichbar.<br>**Wofür:** 127.0.0.1; im Netz nur mit api_key. |
+| `deployment.server.port` | Ganzzahl | `8000` | Bereich 1 … 65535 | Fortgeschritten | **Was:** Port.<br>**Nutzen:** Adresse http://host:port.<br>**Wofür:** 8000. |
+| `deployment.server.api_key` | Text (oder None) | `None` |  | Fortgeschritten | **Was:** Schlüssel, der im Kopf 'X-API-Key' mitgeschickt werden muss (None = keiner).<br>**Nutzen:** Schützt den Server vor fremden Anfragen.<br>**Wofür:** Pflicht, wenn host = 0.0.0.0. |
+| `deployment.server.max_batch` | Ganzzahl | `256` | ≥ 1 | Fortgeschritten | **Was:** Höchstens so viele Beispiele je Anfrage.<br>**Nutzen:** Schützt Speicher und Antwortzeit.<br>**Wofür:** 64–1024. |
+| `deployment.server.max_body_mb` | Kommazahl | `16.0` | ≥ 0.1 | Fortgeschritten | **Was:** Maximale Größe einer Anfrage in MB.<br>**Nutzen:** Schutz vor zu großen Anfragen.<br>**Wofür:** 16. |
+| `deployment.export` | Unter-Konfiguration Export (schlank) | ⟶ ExportConfig |  | Basis | **Was:** Wie exportiert wird: nur das, was die Vorhersage braucht – ohne Trainings-Ballast.<br>**Nutzen:** Ein Einsatz-Modell soll so klein und schnell sein wie ein von Hand gebautes – ohne Hüllen, ungenutzte Gewichte oder Adapter-Umwege.<br>**Wofür:** Project.export / workflow.export_format / CLI exportieren. |
+| `deployment.export.merge_lora` | Text | `'auto'` | Auswahl: auto \| behalten \| entquantisieren \| neu_quantisieren \| nein | Basis | **Was:** Umgang mit LoRA-Adaptern beim Export.<br>**Nutzen:** Eingerechnete Adapter kosten zur Laufzeit nichts.<br>**Wofür:** auto. |
+| `deployment.export.use_ema` | Ja/Nein | `True` |  | Basis | **Was:** EMA-Gewichte exportieren, wenn im Training eine EMA mitlief.<br>**Nutzen:** Geglättete Gewichte sind meist besser.<br>**Wofür:** an. |
+| `deployment.export.fold_batchnorm` | Ja/Nein | `True` |  | Basis | **Was:** BatchNorm in die vorangehende Faltung/lineare Schicht einrechnen.<br>**Nutzen:** Eine Operation weniger je Schicht – schneller, gleiche Ausgabe (geprüft).<br>**Wofür:** an. |
+| `deployment.export.strip_unused` | Ja/Nein | `True` |  | Basis | **Was:** Parameter und Puffer entfernen, die die Vorhersage nie benutzt.<br>**Nutzen:** Abgeschaltete Zweige, Trainings-Köpfe oder Hilfsgrößen sollen keinen Platz kosten.<br>**Wofür:** an. |
+| `deployment.export.dtype` | Text | `'wie_modell'` | Auswahl: wie_modell \| float32 \| float16 \| bfloat16 | Basis | **Was:** Präzision der exportierten Gewichte.<br>**Nutzen:** Halbe Größe und auf GPUs schneller; minimal ungenauer.<br>**Wofür:** GPU-Einsatz: float16/bfloat16; CPU: wie_modell. |
+| `deployment.export.dynamic` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Variable Batchgröße (und Sequenzlänge) im Export.<br>**Nutzen:** Ein Export für alle Eingabegrößen.<br>**Wofür:** an. |
+| `deployment.export.verify` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Ausgabe des Exports gegen das Original prüfen; ändert ein Schritt das Ergebnis, wird er zurückgenommen.<br>**Nutzen:** Sicherheit, dass Verschlanken nichts kaputt macht.<br>**Wofür:** an. |
+| `deployment.export.tolerance` | Kommazahl | `0.0001` | ≥ 0.0 | Experte | **Was:** Erlaubte Abweichung bei der Prüfung (relativ zur Ausgabegröße).<br>**Nutzen:** Rundungsunterschiede.<br>**Wofür:** 1e-4. |
+| `deployment.export.compact_config` | Ja/Nein | `True` |  | Basis | **Was:** Beim Speichern nur geänderte Einstellungen in projekt.json schreiben (Rest = Standard).<br>**Nutzen:** Kleine, lesbare Konfiguration ohne tausende Standardwerte.<br>**Wofür:** an; aus = vollständige Konfiguration. |
 | `deployment.student_steps` | Ganzzahl (oder None) | `None` | ≥ 1 | Fortgeschritten | **Was:** Trainingsschritte eines empfohlenen Schüler-Modells (None = wie training).<br>**Nutzen:** Distillation.<br>**Wofür:** None. |
+| `inference` | Unter-Konfiguration Vorhersage & Vertrauen | ⟶ InferenceConfig |  | Basis | **Was:** Kalibrierung, Schwellen, Enthaltung, Conformal Prediction, Unsicherheit und TTA für Vorhersagen.<br>**Nutzen:** Im Einsatz zählt nicht nur *was* die KI sagt, sondern *wie sicher* – und dass diese Sicherheit stimmt.<br>**Wofür:** Medizin, Finanzen, Qualitätskontrolle, alles mit Risiko. Einstellen mit Project.calibrate(). |
+| `inference.temperature` | Kommazahl | `1.0` | ≥ 0.001 | Basis | **Was:** Temperatur für die Wahrscheinlichkeiten (Logits / T). 1 = unverändert.<br>**Nutzen:** Moderne Netze sind oft überkonfident; T > 1 macht sie ehrlich (Guo et al. 2017).<br>**Wofür:** Wird von Project.calibrate() bestimmt. |
+| `inference.auto_calibrate` | Ja/Nein | `False` |  | Basis | **Was:** Nach train() automatisch kalibrieren (Temperatur, Schwelle, Conformal) auf der Validierungsmenge.<br>**Nutzen:** Kalibrierte Wahrscheinlichkeiten ohne zusätzlichen Schritt.<br>**Wofür:** Klassifikation mit Risiko: an. |
+| `inference.threshold` | Kommazahl (oder None) | `None` | Bereich 0.0 … 1.0 | Basis | **Was:** Entscheidungsschwelle für die positive Klasse (nur 2 Klassen; None = 0.5 bzw. argmax).<br>**Nutzen:** Bei unausgewogenen Daten oder ungleichen Fehlerkosten ist 0.5 selten optimal.<br>**Wofür:** Wird mit optimize_threshold bestimmt. |
+| `inference.optimize_threshold` | Text | `'keine'` | Auswahl: keine \| f1 \| balanced_accuracy \| youden | Basis | **Was:** Kriterium für die Schwelle in Project.calibrate().<br>**Nutzen:** Passend zu den Fehlerkosten.<br>**Wofür:** f1 bei seltenen Positiven. |
+| `inference.abstain_below` | Kommazahl (oder None) | `None` | Bereich 0.0 … 1.0 | Basis | **Was:** Enthaltung: liegt die höchste Wahrscheinlichkeit darunter, lautet die Antwort 'unsicher'.<br>**Nutzen:** Lieber an einen Menschen weitergeben als falsch entscheiden.<br>**Wofür:** 0.6–0.9 je nach Risiko. |
+| `inference.conformal_alpha` | Kommazahl (oder None) | `None` | Bereich 0.001 … 0.5 | Basis | **Was:** Conformal Prediction: erlaubte Fehlerrate α (0.1 = Mengen/Intervalle enthalten in 90 % der Fälle die richtige Antwort).<br>**Nutzen:** Statistisch garantierte Unsicherheitsangabe – für jedes Modell.<br>**Wofür:** 0.05–0.2. |
+| `inference.conformal_q` | Kommazahl (oder None) | `None` |  | Experte | **Was:** Gelernte Conformal-Schwelle (von calibrate bestimmt).<br>**Nutzen:** Intern.<br>**Wofür:** Nicht von Hand setzen. |
+| `inference.uncertainty` | Text | `'keine'` | Auswahl: keine \| mc_dropout \| tta \| beides | Basis | **Was:** Unsicherheitsschätzung in predict_with_uncertainty / predict_proba.<br>**Nutzen:** Zeigt, wo das Modell unsicher ist (Streuung der Vorhersagen).<br>**Wofür:** mc_dropout bei Modellen mit Dropout. |
+| `inference.samples` | Ganzzahl | `16` | ≥ 2 | Fortgeschritten | **Was:** Durchläufe für MC-Dropout bzw. TTA.<br>**Nutzen:** Mehr = genauer, langsamer.<br>**Wofür:** 8–32. |
+| `inference.tta_transforms` | Liste[Text] | `['hflip']` |  | Fortgeschritten | **Was:** TTA-Varianten: hflip, vflip (Bilder), rauschen (Zahlen), keine.<br>**Nutzen:** Mittel über Varianten ist robuster als eine einzelne Vorhersage.<br>**Wofür:** Bilder: hflip. |
+| `inference.tta_noise` | Kommazahl | `0.05` | ≥ 0.0 | Fortgeschritten | **Was:** Stärke des Rauschens für TTA 'rauschen' (in Standardabweichungen).<br>**Nutzen:** Robustheit.<br>**Wofür:** 0.01–0.1. |
+| `generation` | Unter-Konfiguration Generierung | ⟶ GenerationConfig |  | Basis | **Was:** Standard-Einstellungen für generate()/ask() (Temperatur, top_p, Beam Search, Wiederholungssperre …).<br>**Nutzen:** Einmal einstellen, überall gleich – auch im HTTP-Server.<br>**Wofür:** Sprachmodelle. |
+| `generation.max_new_tokens` | Ganzzahl | `50` | ≥ 1 | Basis | **Was:** Maximale Anzahl neu erzeugter Tokens.<br>**Nutzen:** Begrenzt Länge und Laufzeit.<br>**Wofür:** Je nach Anwendung. |
+| `generation.temperature` | Kommazahl | `1.0` | ≥ 0.0 | Basis | **Was:** Sampling-Temperatur (0 = immer das wahrscheinlichste Token).<br>**Nutzen:** Höher = kreativer/zufälliger, niedriger = fokussierter.<br>**Wofür:** Fakten: 0–0.3; kreatives Schreiben: 0.7–1.2. |
+| `generation.top_k` | Ganzzahl (oder None) | `None` | ≥ 1 | Basis | **Was:** Nur aus den k wahrscheinlichsten Tokens ziehen.<br>**Nutzen:** Schneidet unwahrscheinlichen Unsinn ab.<br>**Wofür:** Typisch 40–100. |
+| `generation.top_p` | Kommazahl (oder None) | `None` | Bereich 0.0 … 1.0 | Basis | **Was:** Nucleus-Sampling: kleinste Menge mit kumulierter Wahrscheinlichkeit ≥ p.<br>**Nutzen:** Passt die Auswahlgröße dynamisch an die Unsicherheit an.<br>**Wofür:** Typisch 0.9–0.95. |
+| `generation.min_p` | Kommazahl (oder None) | `None` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Nur Tokens mit p ≥ min_p · p_max zulassen.<br>**Nutzen:** Robust bei hohen Temperaturen.<br>**Wofür:** 0.05–0.1. |
+| `generation.repetition_penalty` | Kommazahl | `1.0` | ≥ 0.0 | Fortgeschritten | **Was:** Strafe für bereits vorgekommene Tokens (> 1 = weniger Wiederholungen).<br>**Nutzen:** Verhindert Endlosschleifen.<br>**Wofür:** 1.1–1.3 bei Wiederholungsproblemen. |
+| `generation.eos_token_id` | Ganzzahl (oder None) | `None` |  | Basis | **Was:** Token, das die Generierung beendet.<br>**Nutzen:** Stoppt, sobald alle Sequenzen es erzeugt haben.<br>**Wofür:** Wenn vorhanden. |
+| `generation.num_beams` | Ganzzahl | `1` | ≥ 1 | Basis | **Was:** Beam Search: so viele Kandidaten-Fortsetzungen parallel verfolgen (1 = aus).<br>**Nutzen:** Findet wahrscheinlichere Gesamtfolgen als Token-für-Token-Auswahl – besser für Übersetzung, Zusammenfassung, Antworten mit fester Lösung.<br>**Wofür:** 3–8; für kreative Texte lieber Sampling.<br>**Tipp:** Rechnet ohne Cache (langsamer); temperature/top_k/top_p werden ignoriert. |
+| `generation.length_penalty` | Kommazahl | `1.0` |  | Fortgeschritten | **Was:** Beam Search: Bewertung = log-Wahrscheinlichkeit / Länge^length_penalty.<br>**Nutzen:** > 1 bevorzugt längere, < 1 kürzere Ausgaben.<br>**Wofür:** 1.0. |
+| `generation.no_repeat_ngram_size` | Ganzzahl | `0` | ≥ 0 | Fortgeschritten | **Was:** Kein n-Gramm dieser Länge darf sich wiederholen (0 = aus).<br>**Nutzen:** Verhindert Wiederholungsschleifen zuverlässig.<br>**Wofür:** 3 bei Wiederholungen. |
+| `generation.use_cache` | Ja/Nein | `True` |  | Basis | **Was:** KV-/Zustands-Cache verwenden (nur neue Tokens berechnen).<br>**Nutzen:** Pro Token nur ein Schritt statt kompletter Neuberechnung – oft 5–50× schneller.<br>**Wofür:** Immer an; aus nur zum Vergleichen. Mixer ohne Cache-Unterstützung schalten ihn automatisch ab. |
+| `generation.cache` | Unter-Konfiguration KV-/Zustands-Cache | ⟶ KVCacheConfig |  | Fortgeschritten | **Was:** Zwischenspeicher für Keys/Values (Attention) und Zustände (SSM, RNN, Faltung) bei der Generierung.<br>**Nutzen:** Jedes neue Token kostet dann nur noch einen Schritt statt einer kompletten Neuberechnung.<br>**Wofür:** Text-/Sequenzgenerierung mit decoder_only-Modellen. |
+| `generation.cache.dtype` | Text | `'auto'` | Auswahl: auto \| float32 \| float16 \| bfloat16 \| int8 | Fortgeschritten | **Was:** Datentyp, in dem Keys/Values im Cache liegen.<br>**Nutzen:** Der KV-Cache ist bei langen Kontexten oft größer als das Modell selbst – kleinere Typen sparen viel.<br>**Wofür:** Lange Kontexte, große Batches; int8 ist meist praktisch verlustfrei.<br>**Tipp:** Gilt für Attention-Caches; SSM-/RNN-Zustände bleiben in voller Genauigkeit (sie sind klein). |
+| `generation.cache.max_length` | Ganzzahl (oder None) | `None` | ≥ 1 | Fortgeschritten | **Was:** Höchstzahl gespeicherter Positionen pro Schicht (None = unbegrenzt).<br>**Nutzen:** Begrenzt den Speicher: ältere Einträge werden verworfen (gleitendes Fenster).<br>**Wofür:** Sehr lange Generierungen, Streaming; mit sink_tokens kombinieren.<br>**Tipp:** Positions-Bias (ALiBi/T5) und Sliding-Window nutzen dann Abstände innerhalb des Caches. |
+| `generation.cache.sink_tokens` | Ganzzahl | `4` | ≥ 0 | Experte | **Was:** Anzahl der ersten Tokens, die bei begrenztem Cache nie verworfen werden ('Attention Sinks').<br>**Nutzen:** Modelle legen viel Attention-Gewicht auf die ersten Tokens – sie zu behalten hält die Qualität stabil.<br>**Wofür:** StreamingLLM (Xiao et al. 2023): 4. |
+| `generation.cache.overflow_keep` | Kommazahl | `0.5` | Bereich 0.0 … 1.0 | Experte | **Was:** Wird max_seq_len überschritten, wird der Cache aus diesem Anteil der letzten Tokens neu aufgebaut.<br>**Nutzen:** 1.0 = exakt wie ohne Cache (aber Neuberechnung bei jedem Schritt); 0.5 = nur selten neu aufbauen.<br>**Wofür:** Generierungen länger als der Trainingskontext. |
+| `generation.prefill_chunk` | Ganzzahl (oder None) | `None` | ≥ 1 | Fortgeschritten | **Was:** Langen Prompt in Stücken dieser Länge vorverarbeiten (Chunked Prefill, None = am Stück).<br>**Nutzen:** Spitzenbedarf der Attention sinkt von Länge² auf Stück × Länge – lange Kontexte passen auch auf kleine Geräte. Das Ergebnis ist identisch.<br>**Wofür:** Lange Prompts, wenig Speicher.<br>**Tipp:** 256–2048; nur mit Cache und ohne attention_mask. |
+| `workflow` | Unter-Konfiguration Ablauf (Project.run) | ⟶ WorkflowConfig |  | Basis | **Was:** Was Project.run() nacheinander ausführt: Datenprüfung → Suche → Training → Test → Robustheit/Fairness → Kreuzvalidierung → Kompression → Export → Speichern.<br>**Nutzen:** Ein Befehl für den ganzen Weg zur fertigen KI; jede Stufe einzeln schaltbar.<br>**Wofür:** Reproduzierbare Pipelines, Automatisierung (python -m ki_baukasten ablauf …). |
+| `workflow.check_data` | Ja/Nein | `True` |  | Basis | **Was:** Vor dem Training die Daten prüfen (Klassen, Lecks, Duplikate, NaN, Skalen …).<br>**Nutzen:** Die meisten KI-Probleme sind Datenprobleme – früh erkannt, viel Zeit gespart.<br>**Wofür:** an. |
+| `workflow.apply_data_fixes` | Ja/Nein | `False` |  | Fortgeschritten | **Was:** Vorschläge der Datenprüfung automatisch übernehmen (z. B. Klassengewichte, stratifiziert, Testmenge).<br>**Nutzen:** Weniger Handarbeit.<br>**Wofür:** an, wenn man den Vorschlägen vertraut. |
+| `workflow.run_test` | Ja/Nein | `True` |  | Basis | **Was:** Nach dem Training auf der zurückgehaltenen Testmenge auswerten (wenn training.test_split > 0).<br>**Nutzen:** Ehrliche Endbewertung.<br>**Wofür:** an. |
+| `workflow.compare_baseline` | Ja/Nein | `True` |  | Basis | **Was:** Nach dem Training mit einer einfachen Basis vergleichen (häufigste Klasse / Mittelwert).<br>**Nutzen:** Zeigt sofort, ob das Modell überhaupt etwas gelernt hat.<br>**Wofür:** an. |
+| `workflow.robustness_check` | Ja/Nein | `False` |  | Basis | **Was:** Nach dem Training Robustheit gegen Rauschen und Angriffe messen.<br>**Nutzen:** Zeigt Anfälligkeiten.<br>**Wofür:** Sicherheitskritische Modelle. |
+| `workflow.fairness_column` | Text (oder None) | `None` |  | Fortgeschritten | **Was:** Merkmalsspalte für einen Fairness-Bericht nach dem Training (z. B. 'geschlecht'; None = keiner).<br>**Nutzen:** Prüft, ob Gruppen gleich behandelt werden.<br>**Wofür:** Entscheidungen über Menschen. |
+| `workflow.save_project` | Ja/Nein | `False` |  | Basis | **Was:** Am Ende speichern (Konfiguration, Gewichte, Vorverarbeitung, Modellkarte).<br>**Nutzen:** Fertig zum Einsatz.<br>**Wofür:** an. |
+| `workflow.search` | Unter-Konfiguration Automatische Suche (AutoML) | ⟶ SearchConfig |  | Basis | **Was:** Hyperparameter (und Architektur-Werte) automatisch suchen.<br>**Nutzen:** Findet gute Einstellungen ohne Handarbeit – mit Zufall, Gitter, Evolution, Partikelschwarm oder Population Based Training.<br>**Wofür:** Neue Aufgaben, Feinabstimmung vor dem großen Lauf. |
+| `workflow.search.method` | Text | `'none'` | Auswahl: none \| random \| grid \| evolution \| pso \| pbt | Basis | **Was:** Suchverfahren.<br>**Nutzen:** Zufall ist überraschend stark; Evolution/PSO nutzen Erfahrungen früherer Versuche; PBT passt Hyperparameter während des Trainings an.<br>**Wofür:** Kleines Budget: random. Mittleres: evolution/pso. Lange Läufe: pbt. |
+| `workflow.search.space` | Zuordnung (dict) | `{}` |  | Basis | **Was:** Suchraum: {pfad: [werte]} oder {pfad: {'min':…, 'max':…, 'log': true, 'type': 'int'}} (leer = automatisch).<br>**Nutzen:** Bestimmt, was variiert wird – jede Einstellung des Projekts ist möglich.<br>**Wofür:** z. B. {'training.optimizer.lr': {'min': 1e-4, 'max': 1e-2, 'log': true}, 'model.dropout': [0, 0.1]}. |
+| `workflow.search.trials` | Ganzzahl | `12` | ≥ 1 | Basis | **Was:** Anzahl Versuche (random/grid) bzw. Obergrenze.<br>**Nutzen:** Mehr Versuche = bessere Chancen, mehr Rechenzeit.<br>**Wofür:** 10–100. |
+| `workflow.search.population` | Ganzzahl | `6` | ≥ 2 | Basis | **Was:** Populations-/Schwarmgröße (evolution, pso, pbt).<br>**Nutzen:** Vielfalt der Suche.<br>**Wofür:** 4–20. |
+| `workflow.search.generations` | Ganzzahl | `3` | ≥ 1 | Basis | **Was:** Generationen bzw. Runden (evolution, pso, pbt).<br>**Nutzen:** Wie oft aus den Ergebnissen gelernt wird.<br>**Wofür:** 3–10. |
+| `workflow.search.steps_per_trial` | Ganzzahl | `60` | ≥ 1 | Basis | **Was:** Trainingsschritte pro Versuch (pbt: pro Runde).<br>**Nutzen:** Kurze Versuche sparen Zeit, sind aber verrauschter.<br>**Wofür:** 50–500. |
+| `workflow.search.metric` | Text | `'val_loss'` |  | Basis | **Was:** Zielgröße (aus der Validierung, sonst Trainingsverlust).<br>**Nutzen:** Was optimiert wird.<br>**Wofür:** val_loss, val_accuracy, val_f1, val_rmse (alle Metriken aus training.metrics). |
+| `workflow.search.mode` | Text | `'auto'` | Auswahl: auto \| min \| max | Basis | **Was:** Richtung der Verbesserung.<br>**Nutzen:** Falsche Richtung = die Suche optimiert das Schlechteste.<br>**Wofür:** auto. |
+| `workflow.search.seed` | Ganzzahl | `0` | ≥ 0 | Fortgeschritten | **Was:** Zufalls-Seed der Suche.<br>**Nutzen:** Reproduzierbar.<br>**Wofür:** 0. |
+| `workflow.search.apply_best` | Ja/Nein | `True` |  | Basis | **Was:** Beste Einstellungen danach ins Projekt übernehmen.<br>**Nutzen:** Direkt weiterarbeiten.<br>**Wofür:** an. |
+| `workflow.federated` | Unter-Konfiguration Föderiertes Lernen | ⟶ FederatedConfig |  | Basis | **Was:** Viele Teilnehmer trainieren lokal auf ihren eigenen Daten; nur Gewichte werden zusammengeführt.<br>**Nutzen:** Daten verlassen nie das Gerät (Datenschutz) – wie bei Smartphone-Tastaturen (Google Gboard).<br>**Wofür:** Verteilte, sensible Daten: Kliniken, Geräte, Filialen. Hier simuliert durch Aufteilen der Daten. |
+| `workflow.federated.enabled` | Ja/Nein | `False` |  | Basis | **Was:** Föderiert trainieren.<br>**Nutzen:** Simulation mehrerer Teilnehmer.<br>**Wofür:** Datenschutz. |
+| `workflow.federated.clients` | Ganzzahl | `4` | ≥ 2 | Basis | **Was:** Anzahl Teilnehmer.<br>**Nutzen:** Mehr = realistischer, langsamer.<br>**Wofür:** 4–100. |
+| `workflow.federated.rounds` | Ganzzahl | `5` | ≥ 1 | Basis | **Was:** Kommunikationsrunden.<br>**Nutzen:** Wie oft zusammengeführt wird.<br>**Wofür:** 5–100. |
+| `workflow.federated.local_steps` | Ganzzahl | `20` | ≥ 1 | Basis | **Was:** Lokale Trainingsschritte je Runde und Teilnehmer.<br>**Nutzen:** Mehr = weniger Kommunikation, mehr Abdrift.<br>**Wofür:** 10–100. |
+| `workflow.federated.client_fraction` | Kommazahl | `1.0` | Bereich 0.01 … 1.0 | Basis | **Was:** Anteil der Teilnehmer pro Runde.<br>**Nutzen:** Realistisch: nicht alle sind immer online.<br>**Wofür:** 0.1–1. |
+| `workflow.federated.algorithm` | Text | `'fedavg'` | Auswahl: fedavg \| fedprox | Basis | **Was:** Verfahren.<br>**Nutzen:** fedprox hilft bei sehr unterschiedlichen Teilnehmern.<br>**Wofür:** fedavg. |
+| `workflow.federated.prox_mu` | Kommazahl | `0.01` | ≥ 0.0 | Basis | **Was:** Stärke des FedProx-Terms.<br>**Nutzen:** Nähe zum globalen Modell.<br>**Wofür:** 0.001–0.1. |
+| `workflow.federated.split` | Text | `'iid'` | Auswahl: iid \| nicht_iid | Basis | **Was:** Wie die Daten auf Teilnehmer verteilt werden.<br>**Nutzen:** nicht_iid ist realistischer und schwerer.<br>**Wofür:** Test der Robustheit: nicht_iid. |
+| `workflow.federated.dirichlet_alpha` | Kommazahl | `0.5` | ≥ 0.01 | Fortgeschritten | **Was:** Ungleichheit bei nicht_iid (klein = sehr ungleich).<br>**Nutzen:** Steuert die Datenverteilung.<br>**Wofür:** 0.1–1. |
+| `workflow.soup_runs` | Ganzzahl | `0` | ≥ 0 | Basis | **Was:** Model Soup: so viele Läufe vom selben Startpunkt (verschiedene Seeds) trainieren und Gewichte mitteln (0 = aus).<br>**Nutzen:** Mittelung mehrerer Läufe verbessert oft Genauigkeit und Robustheit ohne Mehrkosten bei der Nutzung (Wortsman et al. 2022).<br>**Wofür:** 3–8. |
+| `workflow.soup_mode` | Text | `'greedy'` | Auswahl: uniform \| greedy | Fortgeschritten | **Was:** Art der Mittelung.<br>**Nutzen:** greedy ist robuster.<br>**Wofür:** greedy. |
+| `workflow.cross_validation` | Ganzzahl | `0` | ≥ 0 | Basis | **Was:** Zusätzlich k-fache Kreuzvalidierung als Bericht (0 = aus).<br>**Nutzen:** Ehrliche Schätzung der Generalisierung, zeigt die Streuung.<br>**Wofür:** Kleine Datensätze: 5. |
+| `workflow.compress_after_training` | Ja/Nein | `False` |  | Basis | **Was:** Nach dem Training komprimieren (compression.steps, sonst Empfehlung für deployment.main_target).<br>**Nutzen:** Fertiges Modell direkt verkleinert.<br>**Wofür:** Einsatz auf Geräten. |
+| `workflow.export_format` | Text | `'none'` | Auswahl: none \| export \| torchscript \| onnx \| state_dict | Basis | **Was:** Am Ende exportieren (none = nicht).<br>**Nutzen:** Fertige Datei für den Einsatz.<br>**Wofür:** export. |
+| `workflow.export_path` | Text (oder None) | `None` |  | Basis | **Was:** Zielpfad ohne Endung (None = output_dir/name/modell).<br>**Nutzen:** Ablage.<br>**Wofür:** None. |
 | `auto_fit_dims` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Modellgrößen (Ein-/Ausgabe, Vokabular, Beobachtungen …) automatisch an Daten/Umgebung anpassen.<br>**Nutzen:** Vorlagen passen dadurch ohne Handarbeit zu jedem Datensatz.<br>**Wofür:** Aus, wenn exakte Werte erzwungen werden sollen. |
 | `output_dir` | Text | `'ausgaben'` |  | Fortgeschritten | **Was:** Basisordner für Ausgaben (Checkpoints, Protokolle, gespeicherte Projekte).<br>**Nutzen:** Ordnung.<br>**Wofür:** ausgaben. |
 
@@ -193,9 +362,11 @@ hängen von der gewählten Komponente ab – siehe Abschnitt *Registries und Kom
 - [Modelle (`model`)](#registry-model)
 - [Callbacks (`callback`)](#registry-callback)
 - [Verlustfunktionen (`loss`)](#registry-loss)
+- [Metriken (`metric`)](#registry-metric)
 - [Optimierer (`optimizer`)](#registry-optimizer)
 - [Trainings-Paradigmen (`paradigm`)](#registry-paradigm)
 - [Lernraten-Zeitpläne (`scheduler`)](#registry-scheduler)
+- [Logger-Ziele (`log_backend`)](#registry-log-backend)
 - [RL-Umgebungen (`environment`)](#registry-environment)
 - [Belohnungsterme (`reward`)](#registry-reward)
 - [RL-Algorithmen (`rl_algorithm`)](#registry-rl-algorithm)
@@ -861,7 +1032,7 @@ Fabrik-Signatur: `factory(args, d_model)`
 | `normalize_topk` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Gewichte der gewählten Experten auf Summe 1 normieren.<br>**Nutzen:** Hält die Ausgabegröße unabhängig von der Router-Sicherheit.<br>**Wofür:** Mixtral: an. |
 | `router_noise_std` | Kommazahl | `0.0` | ≥ 0.0 | Experte | **Was:** Rauschen auf die Router-Logits im Training (Noisy Top-k Gating).<br>**Nutzen:** Fördert Erkundung, verhindert Kollaps auf wenige Experten.<br>**Wofür:** Training großer MoEs. |
 | `router_bias` | Ja/Nein | `False` |  | Experte | **Was:** Bias im Router.<br>**Nutzen:** Erlaubt globale Vorlieben für Experten.<br>**Wofür:** Selten. |
-| `capacity_factor` | Kommazahl (oder None) | `None` | ≥ 0.1 | Experte | **Was:** Maximale Tokens pro Experte = factor · (Tokens·top_k / Experten). None = unbegrenzt.<br>**Nutzen:** Begrenzt Lastspitzen (überzählige Tokens werden für diesen Experten verworfen).<br>**Wofür:** Verteiltes Training mit festen Puffergrößen. |
+| `capacity_factor` | Kommazahl (oder None) | `None` | ≥ 0.1 | Experte | **Was:** Maximale Tokens pro Experte = factor · (Tokens·top_k / Experten). None = unbegrenzt.<br>**Nutzen:** Begrenzt Lastspitzen (überzählige Tokens werden für diesen Experten verworfen) – nur im Training; im Einsatz hängt eine Vorhersage nie vom restlichen Batch ab.<br>**Wofür:** Verteiltes Training mit festen Puffergrößen. |
 | `aux_loss_coef` | Kommazahl | `0.01` | ≥ 0.0 | Basis | **Was:** Gewicht des Lastverteilungs-Verlusts (Switch-Transformer).<br>**Nutzen:** Bestraft ungleichmäßige Expertennutzung – sonst lernt oft nur ein Experte.<br>**Wofür:** Jedes MoE-Training. 0 = aus. |
 | `z_loss_coef` | Kommazahl | `0.0` | ≥ 0.0 | Experte | **Was:** Gewicht des Router-z-Loss (bestraft große Router-Logits).<br>**Nutzen:** Stabilisiert das Routing numerisch (ST-MoE).<br>**Wofür:** Große MoEs mit Instabilitäten (typisch 1e-3). |
 | `expert_dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Experimentell | **Was:** Wahrscheinlichkeit, im Training eine Experten-Zuweisung zu verwerfen.<br>**Nutzen:** Regularisiert, erzwingt Redundanz zwischen Experten.<br>**Wofür:** Experimente. |
@@ -3579,6 +3750,44 @@ Fabrik-Signatur: `factory(args) -> BaseModel`
 | `head_bias` | Ja/Nein | `False` |  | Experte | **Was:** Bias der Ausgabeschicht.<br>**Nutzen:** Sprachmodelle meist ohne.<br>**Wofür:** Klassifikation: an. |
 | `logit_softcap` | Kommazahl (oder None) | `None` | ≥ 1e-06 | Experte | **Was:** Weiche Obergrenze der Ausgabe-Logits: cap·tanh(x/cap).<br>**Nutzen:** Verhindert überkonfidente Vorhersagen und Instabilität.<br>**Wofür:** Gemma 2: 30. |
 
+#### `model:unet` (Aliase: `u_net`, `segmentierungsnetz`) — Stufe Basis
+
+**Was:** Encoder-Decoder-Faltungsnetz mit Skip-Verbindungen; eine Vorhersage je Pixel.
+
+**Nutzen:** Kombiniert Kontext (tiefe Stufen) mit Details (Skip-Verbindungen) – sehr dateneffizient.
+
+**Wofür:** Segmentierung: Medizin, Satellit, Industrie; Bild-zu-Bild-Aufgaben.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `init` | Unter-Konfiguration Initialisierung | ⟶ InitConfig |  | Fortgeschritten | **Was:** Startwerte der Gewichte, getrennt nach Modultyp.<br>**Nutzen:** Erlaubt bewährte Schemata (GPT-2, ResNet, PPO ...) ohne jede Schicht einzeln anzufassen.<br>**Wofür:** Für einzelne Tensoren/Ausschnitte: Tensor-Chirurgie (tensor_rules) verwenden. |
+| `init.linear_weight` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Fortgeschritten | **Was:** Initialisierer für Gewichte linearer Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Transformer: normal(std=0.02). |
+| `init.linear_bias` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Biases linearer Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Häufig 'zeros'. |
+| `init.conv_weight` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Fortgeschritten | **Was:** Initialisierer für Faltungsgewichte.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** ResNet: kaiming_normal(mode=fan_out). |
+| `init.conv_bias` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Faltungs-Biases.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard. |
+| `init.embedding` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Fortgeschritten | **Was:** Initialisierer für Embedding-Tabellen.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** GPT/BERT: normal(std=0.02). |
+| `init.norm_weight` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Skalen von Normalisierungen.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Normalerweise 1 ('keep'). |
+| `init.norm_bias` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Verschiebungen von Normalisierungen.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard. |
+| `init.rnn_weight_ih` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Eingangsgewichte rekurrenter Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Oft xavier_uniform. |
+| `init.rnn_weight_hh` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für rekurrente Gewichte (Zustand→Zustand).<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** Klassiker: orthogonal. |
+| `init.rnn_bias` | Komponente aus Registry 'initializer' | `keep` | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Biases rekurrenter Schichten.<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard. |
+| `init.residual_projection` | Komponente aus Registry 'initializer' (oder None) | None | Auswahl: keep \| zeros \| ones \| constant \| normal \| uniform \| trunc_normal \| xavier_uniform \| xavier_normal \| kaiming_uniform \| kaiming_normal \| … | Experte | **Was:** Initialisierer für Ausgangsprojektionen von Residual-Zweigen (Attention-Out, FFN-Down).<br>**Nutzen:** Startwerte bestimmen, ob das Training stabil startet.<br>**Wofür:** Feintuning der Trainingsdynamik; 'keep' = PyTorch-Standard.<br>**Tipp:** GPT-2: scaled_normal (std/√(2N)); 'zeros' = Zweige starten als Identität. |
+| `extras` | Zuordnung (dict) | `{}` |  | Experimentell | **Was:** Freies dict für eigene, experimentelle Einstellungen.<br>**Nutzen:** Wird unverändert im Modell als self.config.extras bereitgestellt – eigene Hooks/Unterklassen können es lesen.<br>**Wofür:** Prototyping eigener Ideen, ohne gleich eine neue Config-Klasse zu schreiben. |
+| `in_channels` | Ganzzahl | `3` | ≥ 1 | Basis | **Was:** Eingabekanäle.<br>**Nutzen:** RGB = 3, Graustufen = 1.<br>**Wofür:** Muss zu den Daten passen. |
+| `output_dim` | Ganzzahl | `2` | ≥ 1 | Basis | **Was:** Anzahl Klassen je Pixel (inkl. Hintergrund).<br>**Nutzen:** Form der Ausgabe [B, Klassen, H, W].<br>**Wofür:** Binär: 2 (oder 1). |
+| `input_size` | Liste[Ganzzahl] | `[64, 64]` | ≥ 4 · Länge 2 | Basis | **Was:** Bildgröße (für Beispiel-Eingaben und Speicherschätzung).<br>**Nutzen:** Muss durch 2^depth teilbar sein – sonst wird intern aufgefüllt.<br>**Wofür:** 64–512. |
+| `base_channels` | Ganzzahl | `16` | ≥ 1 | Basis | **Was:** Kanäle der ersten Stufe (verdoppeln sich je Stufe).<br>**Nutzen:** Kapazität.<br>**Wofür:** Klein: 16; Original: 64. |
+| `depth` | Ganzzahl | `3` | Bereich 1 … 6 | Basis | **Was:** Anzahl Verkleinerungs-Stufen.<br>**Nutzen:** Tiefer = mehr Kontext, größere Objekte.<br>**Wofür:** 3–5. |
+| `norm` | Komponente aus Registry 'normalization' | `batchnorm` | Auswahl: layernorm \| rmsnorm \| batchnorm \| groupnorm \| instancenorm \| scalenorm \| l2norm \| dyt \| identity | Basis | **Was:** Normalisierung in den Blöcken.<br>**Nutzen:** BatchNorm Standard; GroupNorm bei kleinen Batches.<br>**Wofür:** batchnorm. |
+| `norm.eps` | Kommazahl | `1e-05` | ≥ 0.0 | Experte | **Was:** Kleine Zahl gegen Division durch 0.<br>**Nutzen:** Zu klein → numerische Probleme bei niedriger Präzision; zu groß → verfälschte Normalisierung.<br>**Wofür:** fp16/bf16-Training (dann eher 1e-5 bis 1e-6 statt 1e-8). |
+| `norm.momentum` | Kommazahl (oder None) | `0.1` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Gewicht neuer Batches im laufenden Mittelwert/Varianz.<br>**Nutzen:** Klein = glattere, trägere Statistik; None = kumulativer Durchschnitt.<br>**Wofür:** Kleine/rauschige Batches → kleineres Momentum. |
+| `norm.affine` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Lernbare Skala/Verschiebung.<br>**Nutzen:** Wie γ/β.<br>**Wofür:** Standard: an. |
+| `norm.track_running_stats` | Ja/Nein | `True` |  | Experte | **Was:** Laufende Statistik für die Inferenz mitführen.<br>**Nutzen:** Aus → auch bei Inferenz Batch-Statistik (Ergebnis hängt dann vom Batch ab!).<br>**Wofür:** Spezialfälle (z. B. Test-Time-Adaption). |
+| `activation` | Komponente aus Registry 'activation' | `relu` | Auswahl: relu \| leaky_relu \| prelu \| rrelu \| elu \| celu \| selu \| gelu \| quick_gelu \| silu \| swish \| mish \| tanh \| sigmoid \| … | Basis | **Was:** Aktivierung.<br>**Nutzen:** Nichtlinearität.<br>**Wofür:** relu; modern: silu/gelu. |
+| `activation.inplace` | Ja/Nein | `False` |  | Experte | **Was:** Ergebnis direkt in den Eingabespeicher schreiben.<br>**Nutzen:** Spart etwas Speicher, kann aber mit Autograd kollidieren, wenn die Eingabe noch gebraucht wird.<br>**Wofür:** Speicheroptimierung bei sehr großen Aktivierungen.<br>**Tipp:** Im Zweifel aus lassen – Fehler äußern sich als RuntimeError beim Backward. |
+| `upsampling` | Text | `'transposed'` | Auswahl: transposed \| bilinear | Fortgeschritten | **Was:** Art des Vergrößerns.<br>**Nutzen:** bilinear vermeidet Artefakte.<br>**Wofür:** transposed. |
+| `dropout` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Basis | **Was:** Dropout im Engpass.<br>**Nutzen:** Regularisierung.<br>**Wofür:** Kleine Datensätze: 0.1–0.3. |
+
 
 ### Registry `callback`
 
@@ -3598,8 +3807,8 @@ Fabrik-Signatur: `factory(args) -> Callback`
 
 | Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
 |---|---|---|---|---|---|
-| `monitor` | Text | `'val_loss'` |  | Basis | **Was:** Beobachtete Metrik (z. B. val_loss, val_accuracy).<br>**Nutzen:** Kriterium für 'besser'.<br>**Wofür:** val_loss. |
-| `mode` | Text | `'min'` | Auswahl: min \| max | Basis | **Was:** min: kleiner ist besser (Verluste); max: größer ist besser (Genauigkeit).<br>**Nutzen:** Richtung.<br>**Wofür:** Passend zur Metrik. |
+| `monitor` | Text | `'val_loss'` |  | Basis | **Was:** Beobachtete Metrik (z. B. val_loss, val_accuracy, val_f1, val_rmse – siehe training.metrics).<br>**Nutzen:** Kriterium für 'besser'.<br>**Wofür:** val_loss; unausgewogene Klassen: val_f1. |
+| `mode` | Text | `'auto'` | Auswahl: auto \| min \| max | Basis | **Was:** Richtung der Verbesserung.<br>**Nutzen:** Falsche Richtung = Abbruch genau beim besten Modell.<br>**Wofür:** auto. |
 | `patience` | Ganzzahl | `5` | ≥ 0 | Basis | **Was:** Evaluierungen ohne Verbesserung bis zum Abbruch.<br>**Nutzen:** Verhindert Überanpassung und spart Zeit.<br>**Wofür:** 3–10. |
 | `min_delta` | Kommazahl | `0.0` | ≥ 0.0 | Fortgeschritten | **Was:** Mindestverbesserung, die als Verbesserung zählt.<br>**Nutzen:** Ignoriert Rauschen.<br>**Wofür:** 1e-4. |
 | `restore_best` | Ja/Nein | `True` |  | Basis | **Was:** Am Ende die besten Gewichte wiederherstellen.<br>**Nutzen:** Man behält das beste, nicht das letzte Modell.<br>**Wofür:** an. |
@@ -3614,8 +3823,8 @@ Fabrik-Signatur: `factory(args) -> Callback`
 
 | Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
 |---|---|---|---|---|---|
-| `monitor` | Text | `'val_loss'` |  | Basis | **Was:** Beobachtete Metrik (z. B. val_loss, val_accuracy).<br>**Nutzen:** Kriterium für 'besser'.<br>**Wofür:** val_loss. |
-| `mode` | Text | `'min'` | Auswahl: min \| max | Basis | **Was:** min: kleiner ist besser (Verluste); max: größer ist besser (Genauigkeit).<br>**Nutzen:** Richtung.<br>**Wofür:** Passend zur Metrik. |
+| `monitor` | Text | `'val_loss'` |  | Basis | **Was:** Beobachtete Metrik (z. B. val_loss, val_accuracy, val_f1, val_rmse – siehe training.metrics).<br>**Nutzen:** Kriterium für 'besser'.<br>**Wofür:** val_loss; unausgewogene Klassen: val_f1. |
+| `mode` | Text | `'auto'` | Auswahl: auto \| min \| max | Basis | **Was:** Richtung der Verbesserung.<br>**Nutzen:** Falsche Richtung = Abbruch genau beim besten Modell.<br>**Wofür:** auto. |
 | `directory` | Text | `'checkpoints'` |  | Basis | **Was:** Zielordner.<br>**Nutzen:** Hier landen die Checkpoints.<br>**Wofür:** Projektordner. |
 | `every_n_steps` | Ganzzahl (oder None) | `None` | ≥ 1 | Basis | **Was:** Zusätzlich alle n Schritte speichern (None = nur bei Evaluierung).<br>**Nutzen:** Absicherung langer Läufe.<br>**Wofür:** 1000. |
 | `save_best_only` | Ja/Nein | `True` |  | Basis | **Was:** Nur bei Verbesserung speichern (beste.pt).<br>**Nutzen:** Spart Speicherplatz.<br>**Wofür:** an. |
@@ -3669,6 +3878,35 @@ Fabrik-Signatur: `factory(args) -> Callback`
 | Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
 |---|---|---|---|---|---|
 | `max_minutes` | Kommazahl | `60.0` | ≥ 0.0 | Basis | **Was:** Maximale Trainingsdauer in Minuten.<br>**Nutzen:** Feste Zeitbudgets.<br>**Wofür:** Cluster-Zeitslots. |
+
+#### `callback:swa` — Stufe Fortgeschritten
+
+**Was:** Stochastic Weight Averaging: Gewichte der späten Trainingsphase mitteln.
+
+**Nutzen:** Flachere Minima, bessere Generalisierung – fast ohne Mehrkosten.
+
+**Wofür:** Bild-/Tabellenmodelle, lange Trainings.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `start_fraction` | Kommazahl | `0.75` | Bereich 0.0 … 1.0 | Basis | **Was:** Ab diesem Anteil des Trainings werden die Gewichte gemittelt.<br>**Nutzen:** Mittelt über die späte, flache Phase.<br>**Wofür:** 0.6–0.8. |
+| `every_n_steps` | Ganzzahl | `1` | ≥ 1 | Basis | **Was:** Mittelungsintervall in Schritten.<br>**Nutzen:** Seltener = billiger.<br>**Wofür:** 1–100. |
+| `apply_at_end` | Ja/Nein | `True` |  | Basis | **Was:** Am Ende die gemittelten Gewichte übernehmen.<br>**Nutzen:** Das gemittelte Modell generalisiert meist besser.<br>**Wofür:** an. |
+
+#### `callback:lisa` — Stufe Fortgeschritten
+
+**Was:** LISA: immer nur wenige, zufällig wechselnde Blöcke trainieren.
+
+**Nutzen:** Spart Gradienten- und Optimierer-Speicher fast wie LoRA, trainiert aber die vollen Gewichte.
+
+**Wofür:** Feintuning großer Modelle, wenn das volle Training nicht in den Speicher passt.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `active_blocks` | Ganzzahl | `2` | ≥ 1 | Basis | **Was:** So viele zufällig gewählte Blöcke sind gleichzeitig trainierbar.<br>**Nutzen:** Gradienten und Optimierer-Zustände gibt es nur für diese Blöcke – der Speicherbedarf fürs Training sinkt auf einen Bruchteil, ähnlich LoRA, aber mit vollen Gewichten.<br>**Wofür:** Feintuning großer Modelle auf kleiner Hardware (LISA, Pan et al. 2024).<br>**Tipp:** 1–4. |
+| `every_n_steps` | Ganzzahl | `20` | ≥ 1 | Basis | **Was:** Alle n Schritte werden neue Blöcke gezogen.<br>**Nutzen:** Mit der Zeit lernt jeder Block mit.<br>**Wofür:** 10–50. |
+| `always_trainable` | Text (oder None) | `'embed\|head\|final_norm\|lm_head'` |  | Basis | **Was:** Regex: Parameter außerhalb der Blöcke, die immer trainierbar bleiben (None = keine).<br>**Nutzen:** Embedding und Ausgabeschicht sind laut LISA besonders wichtig.<br>**Wofür:** Standard übernehmen. |
+| `seed` | Ganzzahl | `0` | ≥ 0 | Fortgeschritten | **Was:** Zufalls-Seed der Blockauswahl.<br>**Nutzen:** Reproduzierbarkeit.<br>**Wofür:** 0. |
 
 #### `callback:gradual_unfreeze` — Stufe Experimentell
 
@@ -3948,6 +4186,273 @@ Fabrik-Signatur: `factory(args) -> Modul mit forward(pred, target)`
 | `target_key` | Text (oder None) | `None` |  | Fortgeschritten | **Was:** Schlüssel des Ziels (bei dict-Zielen).<br>**Nutzen:** Wählt das passende Ziel.<br>**Wofür:** Multi-Task. |
 
 
+### Registry `metric`
+
+<a id="registry-metric"></a>
+
+**Metriken** – Kennzahlen zur Bewertung (Klassifikation, Regression, Sprache, Übersetzung, Segmentierung). Zeigen, wie gut die KI wirklich ist – der Verlust allein reicht nicht.
+
+Fabrik-Signatur: `factory(args) -> fn(pred, target) -> float`
+
+#### `metric:accuracy` (Aliase: `genauigkeit`) — Stufe Basis
+
+**Was:** Anteil richtiger Vorhersagen.
+
+**Nutzen:** Einfach verständlich.
+
+**Wofür:** Ausgewogene Klassen.
+
+**Tipp:** Bei unausgewogenen Klassen irreführend – dann balanced_accuracy/f1.
+
+#### `metric:top_k_accuracy` — Stufe Basis
+
+**Was:** Richtige Klasse unter den k wahrscheinlichsten.
+
+**Nutzen:** Viele, ähnliche Klassen.
+
+**Wofür:** ImageNet-Stil (Top-5).
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `k` | Ganzzahl | `5` | ≥ 1 | Basis | **Was:** Treffer, wenn die richtige Klasse unter den k besten ist.<br>**Nutzen:** Viele Klassen.<br>**Wofür:** 5. |
+
+#### `metric:precision` (Aliase: `praezision`) — Stufe Basis
+
+**Was:** Anteil der als positiv Vorhergesagten, die wirklich positiv sind.
+
+**Nutzen:** Wichtig, wenn Fehlalarme teuer sind.
+
+**Wofür:** Spam-Filter, Betrugsalarm.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `average` | Text | `'macro'` | Auswahl: macro \| weighted \| micro \| binary | Basis | **Was:** Mittelung über Klassen.<br>**Nutzen:** macro deckt Schwächen bei seltenen Klassen auf.<br>**Wofür:** macro. |
+
+#### `metric:recall` (Aliase: `trefferquote`, `sensitivitaet`) — Stufe Basis
+
+**Was:** Anteil der wirklich Positiven, die gefunden werden.
+
+**Nutzen:** Wichtig, wenn Übersehen teuer ist.
+
+**Wofür:** Diagnosen, Sicherheit.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `average` | Text | `'macro'` | Auswahl: macro \| weighted \| micro \| binary | Basis | **Was:** Mittelung über Klassen.<br>**Nutzen:** macro deckt Schwächen bei seltenen Klassen auf.<br>**Wofür:** macro. |
+
+#### `metric:f1` (Aliase: `f1_score`) — Stufe Basis
+
+**Was:** Harmonisches Mittel aus Präzision und Trefferquote.
+
+**Nutzen:** Ein Wert für unausgewogene Klassen.
+
+**Wofür:** Standard bei seltenen Klassen (macro).
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `average` | Text | `'macro'` | Auswahl: macro \| weighted \| micro \| binary | Basis | **Was:** Mittelung über Klassen.<br>**Nutzen:** macro deckt Schwächen bei seltenen Klassen auf.<br>**Wofür:** macro. |
+
+#### `metric:balanced_accuracy` (Aliase: `ausgeglichene_genauigkeit`) — Stufe Basis
+
+**Was:** Mittlere Trefferquote je Klasse.
+
+**Nutzen:** Unbeeindruckt von Klassenhäufigkeiten.
+
+**Wofür:** Unausgewogene Daten.
+
+#### `metric:mcc` — Stufe Fortgeschritten
+
+**Was:** Matthews-Korrelationskoeffizient (−1 … 1).
+
+**Nutzen:** Robusteste Einzelzahl für unausgewogene Daten.
+
+**Wofür:** Medizin, Biologie.
+
+#### `metric:auroc` (Aliase: `roc_auc`) — Stufe Basis
+
+**Was:** Fläche unter der ROC-Kurve (Trennschärfe über alle Schwellen).
+
+**Nutzen:** Unabhängig von der Entscheidungsschwelle.
+
+**Wofür:** Risiko-Scores, Ranking.
+
+**Tipp:** Mehrklassig: Mittel über 'eine gegen alle'.
+
+#### `metric:log_loss` — Stufe Fortgeschritten
+
+**Was:** Kreuzentropie der vorhergesagten Wahrscheinlichkeiten.
+
+**Nutzen:** Bewertet die Wahrscheinlichkeiten selbst.
+
+**Wofür:** Wahrscheinlichkeiten werden weiterverwendet.
+
+#### `metric:ece` (Aliase: `kalibrierungsfehler`) — Stufe Basis
+
+**Was:** Expected Calibration Error: Abstand zwischen Konfidenz und tatsächlicher Trefferquote.
+
+**Nutzen:** Ein Modell, das '90 %' sagt, soll in 90 % der Fälle recht haben.
+
+**Wofür:** Entscheidungen mit Risiko.
+
+**Tipp:** Verbessern: Project.calibrate() (Temperature Scaling).
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `bins` | Ganzzahl | `15` | ≥ 2 | Basis | **Was:** Anzahl Konfidenz-Intervalle.<br>**Nutzen:** Feinheit der Kalibrierungsmessung.<br>**Wofür:** 10–20. |
+
+#### `metric:brier` — Stufe Fortgeschritten
+
+**Was:** Brier-Score: mittlerer quadratischer Fehler der Wahrscheinlichkeiten.
+
+**Nutzen:** Genauigkeit + Kalibrierung.
+
+**Wofür:** Wettervorhersage, Risiken.
+
+#### `metric:mae` (Aliase: `mittlerer_absoluter_fehler`) — Stufe Basis
+
+**Was:** Mittlerer absoluter Fehler.
+
+**Nutzen:** In echten Einheiten, robust gegen Ausreißer.
+
+**Wofür:** Prognosen.
+
+#### `metric:mse` — Stufe Basis
+
+**Was:** Mittlerer quadratischer Fehler.
+
+**Nutzen:** Bestraft große Fehler stark.
+
+**Wofür:** Regression.
+
+#### `metric:rmse` — Stufe Basis
+
+**Was:** Wurzel des MSE.
+
+**Nutzen:** Einheiten wie das Ziel.
+
+**Wofür:** Regression, Prognose.
+
+#### `metric:r2` (Aliase: `bestimmtheitsmass`) — Stufe Basis
+
+**Was:** Bestimmtheitsmaß R² (1 = perfekt, 0 = wie Mittelwert).
+
+**Nutzen:** Anteil erklärter Streuung.
+
+**Wofür:** Regression.
+
+#### `metric:mape` — Stufe Basis
+
+**Was:** Mittlerer prozentualer Fehler.
+
+**Nutzen:** Verständlich für Fachleute.
+
+**Wofür:** Absatz-/Umsatzprognosen.
+
+**Tipp:** Instabil bei Zielen nahe 0 – dann smape.
+
+#### `metric:smape` — Stufe Basis
+
+**Was:** Symmetrischer prozentualer Fehler.
+
+**Nutzen:** Stabil bei kleinen Werten.
+
+**Wofür:** Zeitreihen-Wettbewerbe (M4).
+
+#### `metric:max_error` — Stufe Fortgeschritten
+
+**Was:** Größter Einzelfehler.
+
+**Nutzen:** Schlimmster Fall.
+
+**Wofür:** Sicherheitskritische Prognosen.
+
+#### `metric:perplexity` (Aliase: `perplexitaet`) — Stufe Basis
+
+**Was:** exp(Kreuzentropie) je Token.
+
+**Nutzen:** Wie 'überrascht' das Sprachmodell ist – kleiner ist besser.
+
+**Wofür:** Sprachmodelle.
+
+#### `metric:token_accuracy` — Stufe Basis
+
+**Was:** Anteil richtig vorhergesagter Tokens.
+
+**Nutzen:** Anschaulich.
+
+**Wofür:** Sprachmodelle, Seq2Seq.
+
+#### `metric:exact_match` — Stufe Basis
+
+**Was:** Anteil komplett richtiger Ausgaben.
+
+**Nutzen:** Streng: alles oder nichts.
+
+**Wofür:** Übersetzung kurzer Folgen, Code, Rechnen.
+
+#### `metric:bleu` — Stufe Basis
+
+**Was:** BLEU (n-Gramm-Übereinstimmung 1–4, mit Kürzestrafe; geglättet).
+
+**Nutzen:** Klassische Übersetzungsmetrik.
+
+**Wofür:** Übersetzung, Zusammenfassung.
+
+**Tipp:** Auf Token-IDs (mit Teacher Forcing) – Näherung an Satz-BLEU.
+
+#### `metric:iou` (Aliase: `miou`, `jaccard`) — Stufe Basis
+
+**Was:** Mittlere Intersection-over-Union je Klasse.
+
+**Nutzen:** Standard für Segmentierung.
+
+**Wofür:** Segmentierung.
+
+#### `metric:dice` — Stufe Basis
+
+**Was:** Dice-Koeffizient (2·Schnitt / Summe).
+
+**Nutzen:** Robust bei kleinen Objekten.
+
+**Wofür:** Medizinische Segmentierung.
+
+#### `metric:multilabel_accuracy` (Aliase: `hamming_genauigkeit`) — Stufe Basis
+
+**Was:** Anteil richtiger Einzel-Labels (1 − Hamming-Verlust).
+
+**Nutzen:** Mehrere Labels je Beispiel.
+
+**Wofür:** Tagging.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `threshold_logit` | Kommazahl | `0.0` |  | Basis | **Was:** Schwelle auf den Logits (0 = Wahrscheinlichkeit 0.5).<br>**Nutzen:** Höher = vorsichtiger (weniger Labels).<br>**Wofür:** 0. |
+
+#### `metric:subset_accuracy` — Stufe Basis
+
+**Was:** Anteil Beispiele, bei denen **alle** Labels stimmen.
+
+**Nutzen:** Streng.
+
+**Wofür:** Wenige Labels je Beispiel.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `threshold_logit` | Kommazahl | `0.0` |  | Basis | **Was:** Schwelle auf den Logits (0 = Wahrscheinlichkeit 0.5).<br>**Nutzen:** Höher = vorsichtiger (weniger Labels).<br>**Wofür:** 0. |
+
+#### `metric:multilabel_f1` — Stufe Basis
+
+**Was:** F1 über alle Labels (micro).
+
+**Nutzen:** Robust bei seltenen Labels.
+
+**Wofür:** Tagging, Mehrfach-Diagnosen.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `threshold_logit` | Kommazahl | `0.0` |  | Basis | **Was:** Schwelle auf den Logits (0 = Wahrscheinlichkeit 0.5).<br>**Nutzen:** Höher = vorsichtiger (weniger Labels).<br>**Wofür:** 0. |
+
+
 ### Registry `optimizer`
 
 <a id="registry-optimizer"></a>
@@ -3987,7 +4492,7 @@ Fabrik-Signatur: `factory(args, param_groups) -> torch.optim.Optimizer`
 | `betas` | Liste[Kommazahl] | `[0.9, 0.999]` | Bereich 0.0 … 1.0 · Länge 2 | Fortgeschritten | **Was:** Abklingraten für 1. Moment (Richtung) und 2. Moment (Skalierung).<br>**Nutzen:** β₂ kleiner (0.95) stabilisiert große Modelle; β₁ steuert die Glättung.<br>**Wofür:** LLMs: [0.9, 0.95]; Standard: [0.9, 0.999]. |
 | `eps` | Kommazahl | `1e-08` | ≥ 0.0 | Experte | **Was:** Stabilisator im Nenner.<br>**Nutzen:** Verhindert Division durch ~0; größer = vorsichtigere Updates.<br>**Wofür:** fp16: 1e-6…1e-5. |
 | `amsgrad` | Ja/Nein | `False` |  | Experte | **Was:** AMSGrad-Variante (monotones 2. Moment).<br>**Nutzen:** Theoretische Konvergenzgarantie, praktisch selten besser.<br>**Wofür:** Experimente. |
-| `fused` | Ja/Nein (oder None) | `None` |  | Experte | **Was:** Fusionierte CUDA-Implementierung (None = PyTorch entscheidet).<br>**Nutzen:** Schneller auf GPUs.<br>**Wofür:** Geschwindigkeit auf CUDA. |
+| `fused` | Ja/Nein (oder None) | `None` |  | Experte | **Was:** Fusionierte Implementierung (None = automatisch: fusioniert, wenn das Gerät es kann – CPU/GPU; False = Standard).<br>**Nutzen:** Ein Kernel für alle Parameter – auf CPU und GPU deutlich schneller.<br>**Wofür:** None lassen. |
 
 #### `optimizer:adamw` — Stufe Basis
 
@@ -4004,7 +4509,7 @@ Fabrik-Signatur: `factory(args, param_groups) -> torch.optim.Optimizer`
 | `betas` | Liste[Kommazahl] | `[0.9, 0.999]` | Bereich 0.0 … 1.0 · Länge 2 | Fortgeschritten | **Was:** Abklingraten für 1. Moment (Richtung) und 2. Moment (Skalierung).<br>**Nutzen:** β₂ kleiner (0.95) stabilisiert große Modelle; β₁ steuert die Glättung.<br>**Wofür:** LLMs: [0.9, 0.95]; Standard: [0.9, 0.999]. |
 | `eps` | Kommazahl | `1e-08` | ≥ 0.0 | Experte | **Was:** Stabilisator im Nenner.<br>**Nutzen:** Verhindert Division durch ~0; größer = vorsichtigere Updates.<br>**Wofür:** fp16: 1e-6…1e-5. |
 | `amsgrad` | Ja/Nein | `False` |  | Experte | **Was:** AMSGrad-Variante (monotones 2. Moment).<br>**Nutzen:** Theoretische Konvergenzgarantie, praktisch selten besser.<br>**Wofür:** Experimente. |
-| `fused` | Ja/Nein (oder None) | `None` |  | Experte | **Was:** Fusionierte CUDA-Implementierung (None = PyTorch entscheidet).<br>**Nutzen:** Schneller auf GPUs.<br>**Wofür:** Geschwindigkeit auf CUDA. |
+| `fused` | Ja/Nein (oder None) | `None` |  | Experte | **Was:** Fusionierte Implementierung (None = automatisch: fusioniert, wenn das Gerät es kann – CPU/GPU; False = Standard).<br>**Nutzen:** Ein Kernel für alle Parameter – auf CPU und GPU deutlich schneller.<br>**Wofür:** None lassen. |
 
 #### `optimizer:nadam` — Stufe Fortgeschritten
 
@@ -4020,8 +4525,6 @@ Fabrik-Signatur: `factory(args, param_groups) -> torch.optim.Optimizer`
 | `weight_decay` | Kommazahl | `0.0` | ≥ 0.0 | Basis | **Was:** Gewichtsverfall: zieht Gewichte in Richtung 0.<br>**Nutzen:** Regularisiert gegen Überanpassung, hält Gewichte klein.<br>**Wofür:** AdamW: 0.01…0.1; SGD: 1e-4…5e-4.<br>**Tipp:** Biases/Normen werden standardmäßig ausgenommen (training.no_decay_patterns). |
 | `betas` | Liste[Kommazahl] | `[0.9, 0.999]` | Bereich 0.0 … 1.0 · Länge 2 | Fortgeschritten | **Was:** Abklingraten für 1. Moment (Richtung) und 2. Moment (Skalierung).<br>**Nutzen:** β₂ kleiner (0.95) stabilisiert große Modelle; β₁ steuert die Glättung.<br>**Wofür:** LLMs: [0.9, 0.95]; Standard: [0.9, 0.999]. |
 | `eps` | Kommazahl | `1e-08` | ≥ 0.0 | Experte | **Was:** Stabilisator im Nenner.<br>**Nutzen:** Verhindert Division durch ~0; größer = vorsichtigere Updates.<br>**Wofür:** fp16: 1e-6…1e-5. |
-| `amsgrad` | Ja/Nein | `False` |  | Experte | **Was:** AMSGrad-Variante (monotones 2. Moment).<br>**Nutzen:** Theoretische Konvergenzgarantie, praktisch selten besser.<br>**Wofür:** Experimente. |
-| `fused` | Ja/Nein (oder None) | `None` |  | Experte | **Was:** Fusionierte CUDA-Implementierung (None = PyTorch entscheidet).<br>**Nutzen:** Schneller auf GPUs.<br>**Wofür:** Geschwindigkeit auf CUDA. |
 | `momentum_decay` | Kommazahl | `0.004` | ≥ 0.0 | Experte | **Was:** Momentum-Zerfall von NAdam.<br>**Nutzen:** Steuert Nesterov-Anteil über die Zeit.<br>**Wofür:** Selten. |
 
 #### `optimizer:radam` — Stufe Fortgeschritten
@@ -4039,7 +4542,7 @@ Fabrik-Signatur: `factory(args, param_groups) -> torch.optim.Optimizer`
 | `betas` | Liste[Kommazahl] | `[0.9, 0.999]` | Bereich 0.0 … 1.0 · Länge 2 | Fortgeschritten | **Was:** Abklingraten für 1. Moment (Richtung) und 2. Moment (Skalierung).<br>**Nutzen:** β₂ kleiner (0.95) stabilisiert große Modelle; β₁ steuert die Glättung.<br>**Wofür:** LLMs: [0.9, 0.95]; Standard: [0.9, 0.999]. |
 | `eps` | Kommazahl | `1e-08` | ≥ 0.0 | Experte | **Was:** Stabilisator im Nenner.<br>**Nutzen:** Verhindert Division durch ~0; größer = vorsichtigere Updates.<br>**Wofür:** fp16: 1e-6…1e-5. |
 | `amsgrad` | Ja/Nein | `False` |  | Experte | **Was:** AMSGrad-Variante (monotones 2. Moment).<br>**Nutzen:** Theoretische Konvergenzgarantie, praktisch selten besser.<br>**Wofür:** Experimente. |
-| `fused` | Ja/Nein (oder None) | `None` |  | Experte | **Was:** Fusionierte CUDA-Implementierung (None = PyTorch entscheidet).<br>**Nutzen:** Schneller auf GPUs.<br>**Wofür:** Geschwindigkeit auf CUDA. |
+| `fused` | Ja/Nein (oder None) | `None` |  | Experte | **Was:** Fusionierte Implementierung (None = automatisch: fusioniert, wenn das Gerät es kann – CPU/GPU; False = Standard).<br>**Nutzen:** Ein Kernel für alle Parameter – auf CPU und GPU deutlich schneller.<br>**Wofür:** None lassen. |
 
 #### `optimizer:adamax` — Stufe Fortgeschritten
 
@@ -4056,7 +4559,7 @@ Fabrik-Signatur: `factory(args, param_groups) -> torch.optim.Optimizer`
 | `betas` | Liste[Kommazahl] | `[0.9, 0.999]` | Bereich 0.0 … 1.0 · Länge 2 | Fortgeschritten | **Was:** Abklingraten für 1. Moment (Richtung) und 2. Moment (Skalierung).<br>**Nutzen:** β₂ kleiner (0.95) stabilisiert große Modelle; β₁ steuert die Glättung.<br>**Wofür:** LLMs: [0.9, 0.95]; Standard: [0.9, 0.999]. |
 | `eps` | Kommazahl | `1e-08` | ≥ 0.0 | Experte | **Was:** Stabilisator im Nenner.<br>**Nutzen:** Verhindert Division durch ~0; größer = vorsichtigere Updates.<br>**Wofür:** fp16: 1e-6…1e-5. |
 | `amsgrad` | Ja/Nein | `False` |  | Experte | **Was:** AMSGrad-Variante (monotones 2. Moment).<br>**Nutzen:** Theoretische Konvergenzgarantie, praktisch selten besser.<br>**Wofür:** Experimente. |
-| `fused` | Ja/Nein (oder None) | `None` |  | Experte | **Was:** Fusionierte CUDA-Implementierung (None = PyTorch entscheidet).<br>**Nutzen:** Schneller auf GPUs.<br>**Wofür:** Geschwindigkeit auf CUDA. |
+| `fused` | Ja/Nein (oder None) | `None` |  | Experte | **Was:** Fusionierte Implementierung (None = automatisch: fusioniert, wenn das Gerät es kann – CPU/GPU; False = Standard).<br>**Nutzen:** Ein Kernel für alle Parameter – auf CPU und GPU deutlich schneller.<br>**Wofür:** None lassen. |
 
 #### `optimizer:adagrad` — Stufe Fortgeschritten
 
@@ -4149,8 +4652,6 @@ Fabrik-Signatur: `factory(args, param_groups) -> torch.optim.Optimizer`
 | `weight_decay` | Kommazahl | `0.01` | ≥ 0.0 | Basis | **Was:** Entkoppelter Gewichtsverfall (AdamW).<br>**Nutzen:** Korrekte Regularisierung für adaptive Optimierer – der Grund, AdamW statt Adam zu nehmen.<br>**Wofür:** 0.01…0.1 (LLMs 0.1). |
 | `betas` | Liste[Kommazahl] | `[0.9, 0.999]` | Bereich 0.0 … 1.0 · Länge 2 | Fortgeschritten | **Was:** Abklingraten für 1. Moment (Richtung) und 2. Moment (Skalierung).<br>**Nutzen:** β₂ kleiner (0.95) stabilisiert große Modelle; β₁ steuert die Glättung.<br>**Wofür:** LLMs: [0.9, 0.95]; Standard: [0.9, 0.999]. |
 | `eps` | Kommazahl | `1e-08` | ≥ 0.0 | Experte | **Was:** Stabilisator im Nenner.<br>**Nutzen:** Verhindert Division durch ~0; größer = vorsichtigere Updates.<br>**Wofür:** fp16: 1e-6…1e-5. |
-| `amsgrad` | Ja/Nein | `False` |  | Experte | **Was:** AMSGrad-Variante (monotones 2. Moment).<br>**Nutzen:** Theoretische Konvergenzgarantie, praktisch selten besser.<br>**Wofür:** Experimente. |
-| `fused` | Ja/Nein (oder None) | `None` |  | Experte | **Was:** Fusionierte CUDA-Implementierung (None = PyTorch entscheidet).<br>**Nutzen:** Schneller auf GPUs.<br>**Wofür:** Geschwindigkeit auf CUDA. |
 | `block_size` | Ganzzahl | `256` | ≥ 16 | Experte | **Was:** Blockgröße der 8-Bit-Quantisierung der Optimierer-Zustände.<br>**Nutzen:** Jeder Block hat eine eigene Skala – kleiner = genauer, minimal mehr Speicher.<br>**Wofür:** 256. |
 | `min_8bit_size` | Ganzzahl | `4096` | ≥ 0 | Experte | **Was:** Parameter mit weniger Elementen behalten 32-Bit-Zustände.<br>**Nutzen:** Kleine Tensoren (Biases, Normen) sparen kaum, sind aber empfindlich.<br>**Wofür:** 4096. |
 | `dynamic_range` | Kommazahl | `14.0` | Bereich 2.0 … 40.0 | Experimentell | **Was:** Dynamikbereich der logarithmischen Quantisierung (natürlicher Log; 14 ≈ Faktor 10⁶ pro Block).<br>**Nutzen:** Größer = auch sehr kleine Werte darstellbar, aber gröbere Stufen.<br>**Wofür:** 14 (m), doppelt für v. |
@@ -4194,6 +4695,7 @@ Fabrik-Signatur: `factory(args) -> Paradigm`
 | Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
 |---|---|---|---|---|---|
 | `task` | Text | `'auto'` | Auswahl: auto \| classification \| regression \| multilabel | Basis | **Was:** Art der überwachten Aufgabe (nur relevant, wenn keine eigenen Verluste gesetzt sind).<br>**Nutzen:** Bestimmt Standardverlust und Metriken.<br>**Wofür:** Meist 'auto'. |
+| `label_smoothing` | Kommazahl | `0.0` | Bereich 0.0 … 0.5 | Basis | **Was:** Label Smoothing für den Standard-Klassifikationsverlust (Anteil der Zielwahrscheinlichkeit, der gleichmäßig auf alle Klassen verteilt wird).<br>**Nutzen:** Verhindert übermäßig selbstsichere Vorhersagen, bessere Kalibrierung.<br>**Wofür:** Klassifikation: 0.05–0.1. |
 
 #### `paradigm:causal_lm` (Aliase: `language_modeling`, `lm`) — Stufe Basis
 
@@ -4351,6 +4853,21 @@ Fabrik-Signatur: `factory(args) -> Paradigm`
 | `variant` | Text | `'sigmoid'` | Auswahl: sigmoid \| ipo \| hinge | Basis | **Was:** DPO-Verlustvariante.<br>**Nutzen:** Unterschiedliche Robustheit.<br>**Wofür:** sigmoid. |
 | `label_smoothing` | Kommazahl | `0.0` | Bereich 0.0 … 0.5 | Fortgeschritten | **Was:** Annahme verrauschter Präferenzen (cDPO).<br>**Nutzen:** Robust gegen falsch gelabelte Paare.<br>**Wofür:** 0–0.1. |
 | `reference_checkpoint` | Text (oder None) | `None` |  | Fortgeschritten | **Was:** Gewichte des Referenzmodells (None = Kopie des Start-Modells).<br>**Nutzen:** Ankerpunkt der Optimierung.<br>**Wofür:** Meist None. |
+
+#### `paradigm:evolution_strategies` (Aliase: `es`) — Stufe Experimentell
+
+**Was:** Evolution Strategies: Gewichte zufällig stören, aus der Fitness die Richtung schätzen (ohne Backward).
+
+**Nutzen:** Gradientenfrei – für nicht differenzierbare Ziele, sehr gut parallelisierbar (OpenAI-ES).
+
+**Wofür:** Kleine Modelle, Forschung, robuste Optimierung; langsamer als Backprop bei großen Netzen.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `base` | Text | `'auto'` | Auswahl: auto \| supervised \| causal_lm | Basis | **Was:** Woraus die Fitness (−Verlust) berechnet wird.<br>**Nutzen:** ES optimiert jede berechenbare Zielgröße.<br>**Wofür:** auto. |
+| `pairs` | Ganzzahl | `8` | ≥ 1 | Basis | **Was:** Anzahl Störungspaare (±ε) pro Schritt – Population = 2 × pairs.<br>**Nutzen:** Mehr Paare = genauere Schätzung der Richtung, mehr Forward-Durchläufe.<br>**Wofür:** 4–64. |
+| `sigma` | Kommazahl | `0.02` | ≥ 0.0 | Basis | **Was:** Stärke der zufälligen Störung der Gewichte.<br>**Nutzen:** Zu klein: verrauscht; zu groß: ungenau.<br>**Wofür:** 0.01–0.05. |
+| `rank_shaping` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Fitness-Formung über Ränge statt Rohwerte (OpenAI-ES).<br>**Nutzen:** Robust gegen Ausreißer und Skalen.<br>**Wofür:** an. |
 
 #### `paradigm:reinforcement` (Aliase: `rl`) — Stufe Basis
 
@@ -4558,9 +5075,6 @@ Fabrik-Signatur: `factory(args, optimizer, total_steps)`
 |---|---|---|---|---|---|
 | `warmup_steps` | Ganzzahl (oder None) | `None` | ≥ 0 | Basis | **Was:** Anzahl Aufwärmschritte (überschreibt warmup_ratio).<br>**Nutzen:** Lernrate steigt langsam an – schützt vor Divergenz am Anfang.<br>**Wofür:** Transformer: 1–5 % der Schritte bzw. 500–2000 Schritte. |
 | `warmup_ratio` | Kommazahl | `0.3` | Bereich 0.0 … 1.0 | Basis | **Was:** Anteil des Anstiegs zur Maximal-Lernrate (pct_start).<br>**Nutzen:** Langer Anstieg, dann Abfall.<br>**Wofür:** 0.25–0.3. |
-| `warmup_type` | Text | `'linear'` | Auswahl: linear \| cosine \| exponential | Experte | **Was:** Form des Anstiegs.<br>**Nutzen:** Feinheit; linear ist Standard.<br>**Wofür:** Selten zu ändern. |
-| `warmup_start_factor` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Experte | **Was:** Startfaktor der Lernrate im Warmup (0 = bei 0 beginnen).<br>**Nutzen:** Sanfter oder härterer Start.<br>**Wofür:** 0–0.1. |
-| `min_lr_ratio` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Untergrenze der Lernrate relativ zur Start-Lernrate.<br>**Nutzen:** Verhindert, dass das Training am Ende 'einfriert'.<br>**Wofür:** LLMs: 0.1. |
 | `div_factor` | Kommazahl | `25.0` | ≥ 1.0 | Fortgeschritten | **Was:** Start-LR = max_lr / div_factor.<br>**Nutzen:** Startniveau.<br>**Wofür:** 25. |
 | `final_div_factor` | Kommazahl | `10000.0` | ≥ 1.0 | Fortgeschritten | **Was:** End-LR = Start-LR / final_div_factor.<br>**Nutzen:** Endniveau.<br>**Wofür:** 1e4. |
 
@@ -4617,8 +5131,123 @@ Fabrik-Signatur: `factory(args, optimizer, total_steps)`
 | `min_lr_ratio` | Kommazahl | `0.0` | Bereich 0.0 … 1.0 | Fortgeschritten | **Was:** Untergrenze der Lernrate relativ zur Start-Lernrate.<br>**Nutzen:** Verhindert, dass das Training am Ende 'einfriert'.<br>**Wofür:** LLMs: 0.1. |
 | `factor` | Kommazahl | `0.5` | Bereich 0.0 … 1.0 | Basis | **Was:** Reduktionsfaktor bei Stillstand.<br>**Nutzen:** Wie stark die LR fällt.<br>**Wofür:** 0.1–0.5. |
 | `patience` | Ganzzahl | `2` | ≥ 0 | Basis | **Was:** Evaluierungen ohne Verbesserung bis zur Reduktion.<br>**Nutzen:** Geduld.<br>**Wofür:** 2–10. |
-| `mode` | Text | `'min'` | Auswahl: min \| max | Basis | **Was:** Ob die Metrik kleiner (Verlust) oder größer (Genauigkeit) besser ist.<br>**Nutzen:** Richtung.<br>**Wofür:** Verlust: min. |
+| `monitor` | Text | `'val_loss'` |  | Basis | **Was:** Beobachtete Validierungsmetrik (z. B. val_loss, val_accuracy).<br>**Nutzen:** Woran 'keine Verbesserung' gemessen wird.<br>**Wofür:** val_loss; fehlt sie, wird val_loss genommen. |
+| `mode` | Text | `'auto'` | Auswahl: auto \| min \| max | Basis | **Was:** Ob die Metrik kleiner (Verlust) oder größer (Genauigkeit) besser ist.<br>**Nutzen:** Richtung.<br>**Wofür:** auto. |
 | `threshold` | Kommazahl | `0.0001` | ≥ 0.0 | Experte | **Was:** Mindestverbesserung (relativ).<br>**Nutzen:** Rauschen ignorieren.<br>**Wofür:** 1e-4. |
+
+
+### Registry `log_backend`
+
+<a id="registry-log-backend"></a>
+
+**Logger-Ziele** – Wohin Trainingsprotokolle geschrieben werden (Konsole, Dateien, Dashboards, eigene Logger). Nachvollziehbare Experimente, Vergleich von Läufen, Überwachung im Team.
+
+Fabrik-Signatur: `factory(args) -> LogBackend`
+
+#### `log_backend:console` (Aliase: `konsole`) — Stufe Basis
+
+**Was:** Ausgabe im Terminal.
+
+**Nutzen:** Fortschritt direkt sehen.
+
+**Wofür:** Standard.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `level` | Text (oder None) | `None` | Auswahl: still \| minimal \| normal \| ausfuehrlich \| debug | Basis | **Was:** Eigene Stufe für dieses Ziel (None = Stufe des Loggers).<br>**Nutzen:** z. B. Konsole knapp, Datei ausführlich.<br>**Wofür:** None. |
+
+#### `log_backend:datei` (Aliase: `file`, `text`) — Stufe Basis
+
+**Was:** Textprotokoll mit Zeitstempel und Größenrotation (training.log).
+
+**Nutzen:** Nachlesen nach dem Lauf, Server ohne Terminal.
+
+**Wofür:** Lange Läufe, Cluster.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `level` | Text (oder None) | `None` | Auswahl: still \| minimal \| normal \| ausfuehrlich \| debug | Basis | **Was:** Eigene Stufe für dieses Ziel (None = Stufe des Loggers).<br>**Nutzen:** z. B. Konsole knapp, Datei ausführlich.<br>**Wofür:** None. |
+| `filename` | Text (oder None) | `None` |  | Basis | **Was:** Dateiname im Laufordner (None = Standardname).<br>**Nutzen:** Eigene Namenskonventionen.<br>**Wofür:** None. |
+
+#### `log_backend:jsonl` — Stufe Basis
+
+**Was:** Alles als JSON-Zeilen (Konfiguration, Meldungen, Metriken).
+
+**Nutzen:** Maschinenlesbar, robust, einfach auszuwerten.
+
+**Wofür:** Eigene Auswertungen, Dashboards.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `level` | Text (oder None) | `None` | Auswahl: still \| minimal \| normal \| ausfuehrlich \| debug | Basis | **Was:** Eigene Stufe für dieses Ziel (None = Stufe des Loggers).<br>**Nutzen:** z. B. Konsole knapp, Datei ausführlich.<br>**Wofür:** None. |
+| `filename` | Text (oder None) | `None` |  | Basis | **Was:** Dateiname im Laufordner (None = Standardname).<br>**Nutzen:** Eigene Namenskonventionen.<br>**Wofür:** None. |
+
+#### `log_backend:csv` — Stufe Basis
+
+**Was:** Metriken als CSV im Langformat (schritt, phase, name, wert).
+
+**Nutzen:** Direkt in Excel/Pandas.
+
+**Wofür:** Tabellen-Auswertung.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `level` | Text (oder None) | `None` | Auswahl: still \| minimal \| normal \| ausfuehrlich \| debug | Basis | **Was:** Eigene Stufe für dieses Ziel (None = Stufe des Loggers).<br>**Nutzen:** z. B. Konsole knapp, Datei ausführlich.<br>**Wofür:** None. |
+| `filename` | Text (oder None) | `None` |  | Basis | **Was:** Dateiname im Laufordner (None = Standardname).<br>**Nutzen:** Eigene Namenskonventionen.<br>**Wofür:** None. |
+
+#### `log_backend:python` (Aliase: `logging`) — Stufe Basis
+
+**Was:** An das Python-'logging' weitergeben.
+
+**Nutzen:** Integration in bestehende Logging-Infrastruktur (Handler, Syslog, Graylog, Firmen-Logger).
+
+**Wofür:** Produktionsumgebungen.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `level` | Text (oder None) | `None` | Auswahl: still \| minimal \| normal \| ausfuehrlich \| debug | Basis | **Was:** Eigene Stufe für dieses Ziel (None = Stufe des Loggers).<br>**Nutzen:** z. B. Konsole knapp, Datei ausführlich.<br>**Wofür:** None. |
+| `logger_name` | Text | `'ki_baukasten'` |  | Basis | **Was:** Name des Python-Loggers (logging.getLogger).<br>**Nutzen:** Eigene Handler (Datei, Syslog, Graylog, Firmen-Logging) lassen sich daran hängen.<br>**Wofür:** ki_baukasten. |
+
+#### `log_backend:tensorboard` — Stufe Fortgeschritten
+
+**Was:** TensorBoard: Kurven, Histogramme, Konfiguration (benötigt 'tensorboard').
+
+**Nutzen:** Interaktive Auswertung im Browser.
+
+**Wofür:** Experimente vergleichen ('tensorboard --logdir logs').
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `level` | Text (oder None) | `None` | Auswahl: still \| minimal \| normal \| ausfuehrlich \| debug | Basis | **Was:** Eigene Stufe für dieses Ziel (None = Stufe des Loggers).<br>**Nutzen:** z. B. Konsole knapp, Datei ausführlich.<br>**Wofür:** None. |
+
+#### `log_backend:wandb` — Stufe Fortgeschritten
+
+**Was:** Weights & Biases (benötigt 'wandb').
+
+**Nutzen:** Team-Dashboards, Vergleich vieler Läufe.
+
+**Wofür:** Teams, Hyperparameter-Suche.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `level` | Text (oder None) | `None` | Auswahl: still \| minimal \| normal \| ausfuehrlich \| debug | Basis | **Was:** Eigene Stufe für dieses Ziel (None = Stufe des Loggers).<br>**Nutzen:** z. B. Konsole knapp, Datei ausführlich.<br>**Wofür:** None. |
+| `project` | Text | `'ki-baukasten'` |  | Basis | **Was:** W&B-Projekt.<br>**Nutzen:** Läufe gruppieren.<br>**Wofür:** Projektname. |
+| `entity` | Text (oder None) | `None` |  | Basis | **Was:** W&B-Team/Benutzer (None = Standard). |
+| `mode` | Text | `'online'` | Auswahl: online \| offline \| disabled | Basis | **Was:** online, offline (später synchronisieren) oder aus.<br>**Nutzen:** Ohne Internet: offline.<br>**Wofür:** online. |
+
+#### `log_backend:mlflow` — Stufe Fortgeschritten
+
+**Was:** MLflow-Tracking (benötigt 'mlflow').
+
+**Nutzen:** Experimente und Modelle zentral verwalten.
+
+**Wofür:** Unternehmen, MLOps.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `level` | Text (oder None) | `None` | Auswahl: still \| minimal \| normal \| ausfuehrlich \| debug | Basis | **Was:** Eigene Stufe für dieses Ziel (None = Stufe des Loggers).<br>**Nutzen:** z. B. Konsole knapp, Datei ausführlich.<br>**Wofür:** None. |
+| `experiment` | Text | `'ki-baukasten'` |  | Basis | **Was:** MLflow-Experiment.<br>**Nutzen:** Läufe gruppieren.<br>**Wofür:** Projektname. |
+| `tracking_uri` | Text (oder None) | `None` |  | Basis | **Was:** MLflow-Server bzw. Ordner (None = ./mlruns oder MLFLOW_TRACKING_URI).<br>**Nutzen:** Zentrale Ablage im Team. |
 
 
 ### Registry `environment`
@@ -5897,6 +6526,8 @@ Fabrik-Signatur: `factory(args) -> DatasetBundle(train, val, info)`
 | `seq_len` | Ganzzahl | `64` | ≥ 2 | Basis | **Was:** Länge der Trainingsausschnitte.<br>**Nutzen:** Kontextlänge beim Training.<br>**Wofür:** 32–512. |
 | `stride` | Ganzzahl | `8` | ≥ 1 | Basis | **Was:** Schrittweite der Ausschnitte.<br>**Nutzen:** Kleiner = mehr (überlappende) Beispiele.<br>**Wofür:** seq_len/4. |
 | `repeat` | Ganzzahl | `4` | ≥ 1 | Fortgeschritten | **Was:** Text so oft wiederholen (für sehr kurze Texte).<br>**Nutzen:** Mehr Trainingsbeispiele.<br>**Wofür:** 1–20. |
+| `tokenizer` | Text | `'zeichen'` | Auswahl: zeichen \| wort \| bpe | Basis | **Was:** Tokenizer für den Text.<br>**Nutzen:** Zeichen: winziges Vokabular; BPE: kürzere Folgen, mehr Inhalt pro Kontext (wie GPT/LLaMA).<br>**Wofür:** Kleine Texte: zeichen; größere Korpora: bpe. |
+| `vocab_size` | Ganzzahl | `500` | ≥ 8 | Fortgeschritten | **Was:** Vokabulargröße für wort/bpe.<br>**Nutzen:** Größer = kürzere Folgen, größere Einbettungen.<br>**Wofür:** 500–32.000. |
 
 #### `dataset:seq2seq_toy` (Aliase: `seq2seq`) — Stufe Basis
 
@@ -6011,19 +6642,133 @@ Fabrik-Signatur: `factory(args) -> DatasetBundle(train, val, info)`
 
 #### `dataset:csv` — Stufe Basis
 
-**Was:** Eigene CSV-Datei (numerische Spalten).
+**Was:** Eigene CSV-Tabelle: Zahlen- und Kategorie-Spalten, fehlende Werte, Skalierung ohne Datenleckage.
 
-**Nutzen:** Eigene Tabellendaten ohne Code.
+**Nutzen:** Eigene Tabellendaten ohne Code – vorbereitet wie in der Praxis üblich.
 
 **Wofür:** Echte Projekte.
 
 | Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
 |---|---|---|---|---|---|
-| `path` | Text | `'daten.csv'` |  | Basis | **Was:** CSV-Datei mit Kopfzeile.<br>**Nutzen:** Eigene Tabellendaten.<br>**Wofür:** Nur numerische Spalten. |
+| `path` | Text | `'daten.csv'` |  | Basis | **Was:** CSV-Datei mit Kopfzeile.<br>**Nutzen:** Eigene Tabellendaten – Zahlen- und Kategorie-Spalten.<br>**Wofür:** Pfad zur Datei. |
 | `target` | Text (oder None) | `None` |  | Basis | **Was:** Zielspalte (None = letzte Spalte).<br>**Nutzen:** Was vorhergesagt werden soll.<br>**Wofür:** Spaltenname. |
-| `task` | Text | `'auto'` | Auswahl: auto \| classification \| regression | Basis | **Was:** Aufgabentyp.<br>**Nutzen:** Datentyp des Ziels.<br>**Wofür:** auto. |
+| `task` | Text | `'auto'` | Auswahl: auto \| classification \| regression | Basis | **Was:** Aufgabentyp.<br>**Nutzen:** Bestimmt Verlust und Metriken.<br>**Wofür:** auto. |
 | `delimiter` | Text | `','` |  | Fortgeschritten | **Was:** Trennzeichen.<br>**Nutzen:** CSV-Dialekt.<br>**Wofür:** ',' oder ';'. |
-| `standardize` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Merkmale standardisieren (Mittel 0, Std 1).<br>**Nutzen:** Wichtig für neuronale Netze.<br>**Wofür:** an. |
+| `drop_columns` | Liste[Text] | `[]` |  | Basis | **Was:** Spalten, die nicht verwendet werden (z. B. IDs).<br>**Nutzen:** IDs/Namen führen zu Auswendiglernen statt Lernen.<br>**Wofür:** Kundennummer, Zeitstempel als Text … |
+| `categorical` | Liste[Text] | `[]` |  | Fortgeschritten | **Was:** Spalten, die immer als Kategorie behandelt werden (auch wenn sie Zahlen enthalten).<br>**Nutzen:** Postleitzahlen oder Codes sind Kategorien, keine Mengen.<br>**Wofür:** z. B. ['plz', 'produkt_id']. |
+| `encoding` | Text | `'onehot'` | Auswahl: onehot \| ordinal | Fortgeschritten | **Was:** Kodierung von Kategorie-Spalten.<br>**Nutzen:** One-Hot ist für neuronale Netze meist besser.<br>**Wofür:** onehot. |
+| `max_categories` | Ganzzahl | `30` | ≥ 1 | Fortgeschritten | **Was:** Höchstens so viele Kategorien je Spalte, seltene → '<andere>'.<br>**Nutzen:** Begrenzt die Merkmalszahl.<br>**Wofür:** 10–100. |
+| `missing` | Text | `'mittelwert'` | Auswahl: mittelwert \| median \| null \| zeile_entfernen | Basis | **Was:** Umgang mit fehlenden Werten.<br>**Nutzen:** Lücken sind in echten Daten die Regel.<br>**Wofür:** median bei Ausreißern. |
+| `missing_indicator` | Ja/Nein | `True` |  | Fortgeschritten | **Was:** Zusätzliche 0/1-Spalte 'fehlt' für Spalten mit Lücken.<br>**Nutzen:** Oft ist schon das Fehlen eine Information.<br>**Wofür:** an. |
+| `scaling` | Text | `'standard'` | Auswahl: standard \| minmax \| robust \| keine | Basis | **Was:** Skalierung der Zahlen-Spalten.<br>**Nutzen:** Neuronale Netze lernen mit ähnlich skalierten Merkmalen viel besser.<br>**Wofür:** standard; robust bei Ausreißern. |
+| `standardize` | Ja/Nein | `True` |  | Experte | **Was:** Kompatibilität: aus = keine Skalierung (überschreibt 'scaling').<br>**Nutzen:** Ältere Konfigurationen.<br>**Wofür:** an. |
+| `target_scaling` | Text | `'auto'` | Auswahl: auto \| keine \| standard \| log | Fortgeschritten | **Was:** Transformation des Regressionsziels (Metriken und Vorhersagen bleiben in echten Einheiten).<br>**Nutzen:** Ziele in großen Einheiten (Preise ~ 100 000) lernt ein Netz sonst kaum; schiefe Ziele besser logarithmisch.<br>**Wofür:** auto; log bei Preisen/Umsätzen mit großer Spannweite. |
+| `val_fraction` | Kommazahl | `0.0` | Bereich 0.0 … 0.9 | Basis | **Was:** Validierungsanteil direkt beim Laden (0 = später im Training abteilen).<br>**Nutzen:** Beim Laden abgeteilt werden Mittelwerte/Skalen nur aus Trainingszeilen berechnet – keine Datenleckage.<br>**Wofür:** 0.1–0.2. |
+| `split` | Text | `'stratifiziert'` | Auswahl: zufall \| stratifiziert \| zeitlich | Basis | **Was:** Art der Aufteilung (bei val_fraction > 0).<br>**Nutzen:** Zeitreihen immer 'zeitlich' – sonst sieht das Modell die Zukunft.<br>**Wofür:** Klassifikation: stratifiziert. |
+| `seed` | Ganzzahl | `0` | ≥ 0 | Fortgeschritten | **Was:** Seed der Aufteilung.<br>**Nutzen:** Reproduzierbar.<br>**Wofür:** 0. |
+
+#### `dataset:text_classification` (Aliase: `textklassifikation`, `texte_mit_labels`) — Stufe Basis
+
+**Was:** Texte mit Labels aus CSV/TSV (oder eingebautes Stimmungs-Beispiel) mit Tokenizer zeichen/wort/bpe.
+
+**Nutzen:** Spam, Stimmung, Themen, Absichten – mit Attention-Maske für Auffüllung.
+
+**Wofür:** Textklassifikation.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `path` | Text (oder None) | `None` |  | Basis | **Was:** CSV/TSV-Datei mit Text- und Label-Spalte (None = eingebautes Stimmungs-Beispiel).<br>**Nutzen:** Eigene Textklassifikation (Spam, Stimmung, Themen …).<br>**Wofür:** Pfad zur Datei. |
+| `text_column` | Text | `'text'` |  | Basis | **Was:** Spalte mit dem Text.<br>**Nutzen:** Eingabe.<br>**Wofür:** text. |
+| `label_column` | Text | `'label'` |  | Basis | **Was:** Spalte mit dem Label.<br>**Nutzen:** Ziel.<br>**Wofür:** label. |
+| `delimiter` | Text | `'auto'` |  | Fortgeschritten | **Was:** Trennzeichen ('auto' = Tab bei .tsv, sonst Komma).<br>**Nutzen:** Dateiformat.<br>**Wofür:** auto. |
+| `tokenizer` | Text | `'bpe'` | Auswahl: zeichen \| wort \| bpe | Basis | **Was:** Tokenizer.<br>**Nutzen:** BPE ist der heutige Standard: kompakte Folgen, keine unbekannten Wörter.<br>**Wofür:** bpe. |
+| `vocab_size` | Ganzzahl | `1000` | ≥ 8 | Basis | **Was:** Vokabulargröße (wort/bpe).<br>**Nutzen:** Größer = kürzere Folgen, mehr Parameter.<br>**Wofür:** 500–30.000. |
+| `seq_len` | Ganzzahl | `64` | ≥ 4 | Basis | **Was:** Länge nach Auffüllen/Kürzen.<br>**Nutzen:** Längere Texte werden abgeschnitten.<br>**Wofür:** 95 % der Texte sollten passen. |
+| `n_samples` | Ganzzahl | `800` | ≥ 10 | Basis | **Was:** Anzahl Beispiele im eingebauten Beispiel.<br>**Nutzen:** Nur ohne path.<br>**Wofür:** 800. |
+| `val_fraction` | Kommazahl | `0.15` | Bereich 0.0 … 0.9 | Basis | **Was:** Validierungsanteil (Tokenizer wird nur auf dem Trainingsteil gelernt).<br>**Nutzen:** Ehrliche Bewertung.<br>**Wofür:** 0.1–0.2. |
+| `split` | Text | `'stratifiziert'` | Auswahl: zufall \| stratifiziert \| zeitlich | Basis | **Was:** Art der Aufteilung.<br>**Nutzen:** Klassen fair verteilt. |
+| `seed` | Ganzzahl | `0` | ≥ 0 | Fortgeschritten | **Was:** Seed.<br>**Nutzen:** Reproduzierbar.<br>**Wofür:** 0. |
+
+#### `dataset:image_folder` (Aliase: `bildordner`) — Stufe Basis
+
+**Was:** Bilder aus ordner/<klasse>/*.png\|jpg (Pillow), Größe angepasst und normiert.
+
+**Nutzen:** Eigene Bilddaten ohne Code.
+
+**Wofür:** Bildklassifikation mit echten Fotos.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `path` | Text | `'bilder'` |  | Basis | **Was:** Ordner mit einem Unterordner je Klasse (bilder/katze/*.jpg, bilder/hund/*.jpg).<br>**Nutzen:** Der übliche Aufbau von Bilddatensätzen (wie ImageFolder).<br>**Wofür:** Pfad. |
+| `val_path` | Text (oder None) | `None` |  | Basis | **Was:** Eigener Validierungsordner gleichen Aufbaus (sonst val_fraction).<br>**Nutzen:** Feste Testbilder.<br>**Wofür:** Optional. |
+| `size` | Liste[Ganzzahl] | `[64, 64]` | ≥ 4 · Länge 2 | Basis | **Was:** Zielgröße [Höhe, Breite].<br>**Nutzen:** Alle Bilder brauchen dieselbe Größe; größer = genauer, langsamer.<br>**Wofür:** 32–224. |
+| `channels` | Ganzzahl | `3` | Auswahl: 1 \| 3 | Basis | **Was:** 1 = Graustufen, 3 = Farbe.<br>**Nutzen:** Eingabekanäle.<br>**Wofür:** 3. |
+| `normalize` | Text | `'datensatz'` | Auswahl: datensatz \| imagenet \| halb \| keine | Basis | **Was:** Normierung der Pixel.<br>**Nutzen:** Stabileres, schnelleres Training.<br>**Wofür:** datensatz; vortrainiert: imagenet. |
+| `max_per_class` | Ganzzahl (oder None) | `None` | ≥ 1 | Fortgeschritten | **Was:** Höchstens so viele Bilder je Klasse (None = alle).<br>**Nutzen:** Schnelle Versuche / Ausgleich.<br>**Wofür:** None. |
+| `val_fraction` | Kommazahl | `0.15` | Bereich 0.0 … 0.9 | Basis | **Was:** Validierungsanteil ohne val_path.<br>**Nutzen:** Ehrliche Bewertung.<br>**Wofür:** 0.1–0.2. |
+| `seed` | Ganzzahl | `0` | ≥ 0 | Fortgeschritten | **Was:** Seed.<br>**Nutzen:** Reproduzierbar.<br>**Wofür:** 0. |
+
+#### `dataset:segmentation` (Aliase: `segmentierung`) — Stufe Basis
+
+**Was:** Bilder mit Masken (eine Klasse je Pixel): synthetische Formen oder eigene Ordner bilder/ + masken/.
+
+**Nutzen:** Segmentierung ohne Code – für U-Net/CNN mit task='dense'.
+
+**Wofür:** Medizin, Satellit, Qualitätskontrolle.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `images` | Text (oder None) | `None` |  | Basis | **Was:** Ordner mit Bildern (None = synthetische Formen).<br>**Nutzen:** Eigene Segmentierungsdaten.<br>**Wofür:** Pfad. |
+| `masks` | Text (oder None) | `None` |  | Basis | **Was:** Ordner mit Masken gleichen Namens (Graustufen: Pixelwert = Klasse; 255 wird als 1 gelesen).<br>**Nutzen:** Zielklasse je Pixel.<br>**Wofür:** Pfad. |
+| `size` | Liste[Ganzzahl] | `[32, 32]` | ≥ 8 · Länge 2 | Basis | **Was:** Bildgröße.<br>**Nutzen:** Größer = feinere Details, mehr Rechenzeit.<br>**Wofür:** 32–256. |
+| `n_samples` | Ganzzahl | `600` | ≥ 10 | Basis | **Was:** Anzahl synthetischer Bilder.<br>**Nutzen:** Nur ohne eigene Daten.<br>**Wofür:** 600. |
+| `noise` | Kommazahl | `0.15` | ≥ 0.0 | Basis | **Was:** Bildrauschen (synthetisch).<br>**Nutzen:** Schwierigkeit.<br>**Wofür:** 0.1–0.3. |
+| `val_fraction` | Kommazahl | `0.15` | Bereich 0.0 … 0.9 | Basis | **Was:** Validierungsanteil.<br>**Nutzen:** Ehrliche Bewertung.<br>**Wofür:** 0.15. |
+| `seed` | Ganzzahl | `0` | ≥ 0 | Fortgeschritten | **Was:** Seed.<br>**Nutzen:** Reproduzierbar.<br>**Wofür:** 0. |
+
+#### `dataset:audio` (Aliase: `audio_klassifikation`, `geraeusche`) — Stufe Basis
+
+**Was:** Audio-Klassifikation aus WAV-Ordnern (oder synthetischen Tönen) als Log-Mel-Spektrogramm/Wellenform.
+
+**Nutzen:** Sprachbefehle, Geräusche, Maschinenüberwachung – ohne Zusatzpakete.
+
+**Wofür:** CNN auf Spektrogrammen.
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `path` | Text (oder None) | `None` |  | Basis | **Was:** Ordner mit Unterordnern je Klasse voller WAV-Dateien (None = synthetische Töne/Geräusche).<br>**Nutzen:** Eigene Geräusch-/Sprachbefehl-Daten.<br>**Wofür:** Pfad. |
+| `sample_rate` | Ganzzahl | `8000` | ≥ 1000 | Basis | **Was:** Abtastrate in Hz (Dateien werden umgerechnet).<br>**Nutzen:** Sprache: 16000; einfache Geräusche: 8000.<br>**Wofür:** 8000–16000. |
+| `duration` | Kommazahl | `0.5` | ≥ 0.05 | Basis | **Was:** Länge je Beispiel in Sekunden (kürzen/auffüllen).<br>**Nutzen:** Einheitliche Eingabegröße.<br>**Wofür:** 0.5–2. |
+| `features` | Text | `'spektrogramm'` | Auswahl: spektrogramm \| wellenform | Basis | **Was:** Eingabedarstellung.<br>**Nutzen:** Spektrogramme machen Frequenzen sichtbar – meist besser und kleiner.<br>**Wofür:** spektrogramm. |
+| `n_mels` | Ganzzahl | `40` | ≥ 8 | Fortgeschritten | **Was:** Mel-Bänder.<br>**Nutzen:** Frequenzauflösung.<br>**Wofür:** 40–128. |
+| `n_fft` | Ganzzahl | `256` | ≥ 16 | Fortgeschritten | **Was:** FFT-Fenster.<br>**Nutzen:** Zeit- vs. Frequenzauflösung.<br>**Wofür:** 256–1024. |
+| `hop` | Ganzzahl | `128` | ≥ 1 | Fortgeschritten | **Was:** Fenster-Schritt.<br>**Nutzen:** Zeitauflösung.<br>**Wofür:** n_fft/2. |
+| `n_samples` | Ganzzahl | `800` | ≥ 10 | Basis | **Was:** Anzahl synthetischer Beispiele.<br>**Nutzen:** Nur ohne path.<br>**Wofür:** 800. |
+| `noise` | Kommazahl | `0.1` | ≥ 0.0 | Basis | **Was:** Hintergrundrauschen (synthetisch).<br>**Nutzen:** Schwierigkeit.<br>**Wofür:** 0.05–0.3. |
+| `val_fraction` | Kommazahl | `0.15` | Bereich 0.0 … 0.9 | Basis | **Was:** Validierungsanteil.<br>**Nutzen:** Ehrliche Bewertung.<br>**Wofür:** 0.15. |
+| `seed` | Ganzzahl | `0` | ≥ 0 | Fortgeschritten | **Was:** Seed.<br>**Nutzen:** Reproduzierbar.<br>**Wofür:** 0. |
+
+#### `dataset:instructions` (Aliase: `anweisungen`, `sft`, `chat`) — Stufe Basis
+
+**Was:** Frage→Antwort-Paare (JSONL/CSV oder Beispielaufgaben) für Instruction-Tuning; Verlust nur auf Antworten.
+
+**Nutzen:** Aus einem Sprachmodell wird ein Assistent, der Anweisungen befolgt (SFT).
+
+**Wofür:** Mit Project.ask(frage).
+
+| Pfad | Typ | Standard | Regeln | Stufe | Beschreibung |
+|---|---|---|---|---|---|
+| `path` | Text (oder None) | `None` |  | Basis | **Was:** JSONL (eine Zeile {'prompt': …, 'response': …}) oder CSV mit Spalten prompt/response (None = eingebaute Beispielaufgaben).<br>**Nutzen:** Eigene Frage-Antwort-/Chat-Daten.<br>**Wofür:** Pfad. |
+| `prompt_key` | Text | `'prompt'` |  | Basis | **Was:** Feld/Spalte der Anweisung.<br>**Nutzen:** Eingabe.<br>**Wofür:** prompt (auch: instruction). |
+| `response_key` | Text | `'response'` |  | Basis | **Was:** Feld/Spalte der Antwort.<br>**Nutzen:** Ziel.<br>**Wofür:** response (auch: output). |
+| `template` | Text | `'Frage: {prompt}\nAntwort: '` |  | Basis | **Was:** Vorlage vor der Antwort ({prompt} wird ersetzt).<br>**Nutzen:** Das Modell lernt das Format – bei Benutzung (Project.ask) wird dieselbe Vorlage verwendet.<br>**Wofür:** Chat-Formate: '<\|user\|>{prompt}<\|assistant\|>'. |
+| `train_on_prompt` | Ja/Nein | `False` |  | Basis | **Was:** Verlust auch auf der Anweisung (aus = nur auf der Antwort, Standard beim SFT).<br>**Nutzen:** Das Modell soll antworten lernen, nicht Fragen nachplappern.<br>**Wofür:** aus. |
+| `tokenizer` | Text | `'zeichen'` | Auswahl: zeichen \| wort \| bpe | Basis | **Was:** Tokenizer.<br>**Nutzen:** zeichen: sicher bei kleinen Daten; bpe: kompakter bei viel Text.<br>**Wofür:** zeichen/bpe. |
+| `vocab_size` | Ganzzahl | `1000` | ≥ 8 | Fortgeschritten | **Was:** Vokabular (wort/bpe).<br>**Nutzen:** Größe.<br>**Wofür:** 500–30.000. |
+| `seq_len` | Ganzzahl | `64` | ≥ 8 | Basis | **Was:** Maximale Länge (Anweisung + Antwort).<br>**Nutzen:** Längere Beispiele werden gekürzt.<br>**Wofür:** 64–2048. |
+| `n_samples` | Ganzzahl | `2000` | ≥ 10 | Basis | **Was:** Anzahl Beispielaufgaben (höchstens so viele, wie es verschiedene gibt: ≈ 1.600).<br>**Nutzen:** Nur ohne path.<br>**Wofür:** 2000. |
+| `val_fraction` | Kommazahl | `0.1` | Bereich 0.0 … 0.9 | Basis | **Was:** Validierungsanteil.<br>**Nutzen:** Ehrliche Bewertung.<br>**Wofür:** 0.1. |
+| `seed` | Ganzzahl | `0` | ≥ 0 | Fortgeschritten | **Was:** Seed.<br>**Nutzen:** Reproduzierbar.<br>**Wofür:** 0. |
 
 #### `dataset:tensor_file` (Aliase: `pt`) — Stufe Basis
 
@@ -6111,6 +6856,14 @@ Fabrik-Signatur: `factory(args) -> dict (ProjectConfig)`
 
 **Wofür:** Modell 'transformer', Daten 'text'.
 
+#### `preset:sprachmodell_sft` — Stufe Basis
+
+**Was:** Instruction-Tuning (SFT): Sprachmodell lernt Fragen zu beantworten – Verlust nur auf den Antworten.
+
+**Nutzen:** Anwendungsgebiet: Sprachmodelle, Textverständnis, Übersetzung.
+
+**Wofür:** Modell 'transformer', Daten 'instructions'.
+
 #### `preset:text_klassifikation` — Stufe Basis
 
 **Was:** Encoder-Transformer (BERT-artig) mit CLS-Token zur Sequenzklassifikation.
@@ -6139,7 +6892,7 @@ Fabrik-Signatur: `factory(args) -> dict (ProjectConfig)`
 
 **Was:** ResNet-artiges CNN mit Label Smoothing und Mixup.
 
-**Nutzen:** Anwendungsgebiet: Bildklassifikation, Bildgenerierung.
+**Nutzen:** Anwendungsgebiet: Bildklassifikation, Segmentierung, Bildgenerierung.
 
 **Wofür:** Modell 'cnn', Daten 'shapes'.
 
@@ -6147,7 +6900,7 @@ Fabrik-Signatur: `factory(args) -> dict (ProjectConfig)`
 
 **Was:** Vision Transformer (Patches, CLS-Token, Stochastic Depth).
 
-**Nutzen:** Anwendungsgebiet: Bildklassifikation, Bildgenerierung.
+**Nutzen:** Anwendungsgebiet: Bildklassifikation, Segmentierung, Bildgenerierung.
 
 **Wofür:** Modell 'transformer', Daten 'shapes'.
 
@@ -6155,9 +6908,25 @@ Fabrik-Signatur: `factory(args) -> dict (ProjectConfig)`
 
 **Was:** Effizientes MobileNet/EfficientNet-artiges CNN (Inverted Residuals + SE).
 
-**Nutzen:** Anwendungsgebiet: Bildklassifikation, Bildgenerierung.
+**Nutzen:** Anwendungsgebiet: Bildklassifikation, Segmentierung, Bildgenerierung.
 
 **Wofür:** Modell 'cnn', Daten 'shapes'.
+
+#### `preset:segmentierung_unet` — Stufe Basis
+
+**Was:** U-Net für Segmentierung (eine Klasse je Pixel) mit Dice+Kreuzentropie, IoU/Dice.
+
+**Nutzen:** Anwendungsgebiet: Bildklassifikation, Segmentierung, Bildgenerierung.
+
+**Wofür:** Modell 'unet', Daten 'segmentation'.
+
+#### `preset:audio_klassifikation` — Stufe Basis
+
+**Was:** CNN auf Log-Mel-Spektrogrammen (Geräusche, Sprachbefehle).
+
+**Nutzen:** Anwendungsgebiet: Audio: Geräusche, Sprachbefehle, Maschinenklänge.
+
+**Wofür:** Modell 'cnn', Daten 'audio'.
 
 #### `preset:vae_bilder` — Stufe Basis
 

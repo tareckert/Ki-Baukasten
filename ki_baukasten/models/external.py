@@ -189,6 +189,11 @@ class ExternalModel(BaseModel):
             self.inner = torch.export.load(str(path)).module()
         elif fmt == "torchscript":
             self.inner = torch.jit.load(str(path), map_location="cpu")
+        if fmt in ("export", "torchscript"):
+            # Einsatz-Exporte speichern Gewichte ohne Gradienten – zum Weitertrainieren wieder trainierbar machen
+            for prm in self.inner.parameters():
+                if prm.is_floating_point() and prm.numel():
+                    prm.requires_grad_(True)
         elif fmt == "module":
             if not c.allow_pickle:
                 raise ConfigError("format 'module' lädt Pickle (führt Code aus) – nur mit model.allow_pickle = true.")

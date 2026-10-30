@@ -87,6 +87,11 @@ class MaskInfo:
     def is_simple_causal(self) -> bool:
         return self.causal and self.window is None and self.key_padding_mask is None and self.q_len == self.k_len
 
+    @property
+    def is_decode_step(self) -> bool:
+        """Generierung mit Cache: ein Query hinter allen Keys – kausal erlaubt es alle (ohne Fenster/Padding)."""
+        return self.causal and self.window is None and self.key_padding_mask is None and self.q_len == 1
+
     def combined(self) -> torch.Tensor | None:
         """Boolesche Maske ``[B|1, 1, T, S]`` (``True`` = erlaubt) oder ``None``."""
         if self.is_empty:
@@ -105,6 +110,22 @@ class MaskInfo:
             mask = mask & self.key_padding_mask.bool().view(-1, 1, 1, self.k_len)
         self._cache = mask
         return mask
+
+
+_GQA_OK: bool | None = None
+
+
+def sdpa_gqa_supported() -> bool:
+    """Kann ``scaled_dot_product_attention`` Gruppen-KV direkt (``enable_gqa``, PyTorch ≥ 2.5)?"""
+    global _GQA_OK
+    if _GQA_OK is None:
+        try:
+            t = torch.zeros(1, 2, 1, 4)
+            F.scaled_dot_product_attention(t, t[:, :1], t[:, :1], enable_gqa=True)
+            _GQA_OK = True
+        except (TypeError, RuntimeError):
+            _GQA_OK = False
+    return _GQA_OK
 
 
 def _neg(dtype: torch.dtype) -> float:
@@ -157,13 +178,23 @@ class SoftmaxKernel(nn.Module):
         self.cfg = cfg
         self.last_weights: torch.Tensor | None = None
 
+    @property
+    def supports_gqa(self) -> bool:
+        """Weniger KV- als Query-Köpfe direkt verarbeiten (ohne KV-Kopien) – im SDPA-Pfad."""
+        c = self.cfg
+        return c.backend != "manual" and c.logit_softcap is None and not c.store_weights and sdpa_gqa_supported()
+
     def forward(self, q, k, v, masks: MaskInfo, bias, scale, dropout_p):
         c = self.cfg
         scale = scale / c.temperature
         use_sdpa = c.backend != "manual" and c.logit_softcap is None and not c.store_weights
         if use_sdpa:
+            gqa = {"enable_gqa": True} if k.shape[1] != q.shape[1] else {}
             if bias is None and masks.is_simple_causal:
-                return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, is_causal=True, scale=scale)
+                return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, is_causal=True, scale=scale,
+                                                      **gqa)
+            if bias is None and masks.is_decode_step:      # ein neues Token sieht alle bisherigen → keine Maske
+                return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, scale=scale, **gqa)
             mask = masks.combined()
             attn_mask = None
             if bias is not None:
@@ -172,7 +203,8 @@ class SoftmaxKernel(nn.Module):
                 base = attn_mask if attn_mask is not None else torch.zeros((), dtype=q.dtype, device=q.device)
                 neg = torch.tensor(_neg(q.dtype), dtype=q.dtype, device=q.device)
                 attn_mask = torch.where(mask, base, neg)  # broadcastet auf [B, H, T, S]
-            return F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=dropout_p, scale=scale)
+            return F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=dropout_p, scale=scale,
+                                                  **gqa)
 
         logits = torch.matmul(q, k.transpose(-2, -1)) * scale
         if bias is not None:
@@ -552,7 +584,8 @@ class MultiHeadAttention(nn.Module):
             S = k.shape[2]
         if cache is not None:
             key_padding_mask = cache.append_mask(key_padding_mask, B, Tq, x.device)
-        if Hkv != H:  # GQA: KV-Köpfe für Gruppen von Query-Köpfen wiederverwenden
+        if Hkv != H and not getattr(self.kernel, "supports_gqa", False):
+            # GQA: KV-Köpfe für Gruppen von Query-Köpfen wiederverwenden (SDPA kann das ohne Kopie)
             k = k.repeat_interleave(H // Hkv, dim=1)
             v = v.repeat_interleave(H // Hkv, dim=1)
 

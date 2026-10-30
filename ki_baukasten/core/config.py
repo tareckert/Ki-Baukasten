@@ -57,6 +57,7 @@ import enum
 import json
 import math
 import re
+import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -91,6 +92,20 @@ _TYPE_LABELS = {
 
 def _type_label(t: type) -> str:
     return _TYPE_LABELS.get(t, getattr(t, "__name__", str(t)))
+
+
+class _Unset:
+    """Marker "nicht angegeben" (z. B. für ``off``/``on`` eines ``Param``)."""
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+#: Marker für nicht angegebene Schalterwerte (siehe ``core.switches``).
+UNSET: Any = _Unset()
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +287,11 @@ class Param:
         default_factory: Funktion für veränderliche Standardwerte.
         item_type: Elementtyp(en) für Listen/Tupel (z. B. ``int``).
         length:    erlaubte Länge für Listen: Zahl oder ``(min, max)``.
+        off:       Wert für den Schalter **Aus** (z. B. ``0.0`` für Dropout). Ohne Angabe wird er
+                   abgeleitet (siehe ``core.switches``); ``None`` ist ein gültiger Aus-Wert.
+        on:        Wert für den Schalter **An**, wenn der Standardwert selbst "aus" ist
+                   (z. B. ``0.2`` für Mixup).
+        switchable: ``False`` = Pflicht-Einstellung ohne Aus-Zustand (nur An/Eigen).
     """
 
     kind: ClassVar[str] = "value"
@@ -293,6 +313,9 @@ class Param:
         default_factory: Callable[[], Any] | None = None,
         item_type: Any = None,
         length: int | tuple[int, int] | None = None,
+        off: Any = UNSET,
+        on: Any = UNSET,
+        switchable: bool | None = None,
     ):
         if not isinstance(tooltip, Tooltip):
             raise TypeError("Param braucht ein Tooltip (T(...)) – jede Einstellung muss erklärt sein.")
@@ -324,6 +347,9 @@ class Param:
         self.unit = unit
         self.validator = validator
         self.length = length
+        self.off = off
+        self.on = on
+        self.switchable = switchable
 
     # ------------------------------------------------------------ Deskriptor
     def __set_name__(self, owner: type, name: str) -> None:
@@ -645,13 +671,16 @@ class BaseConfig:
     __title__: ClassVar[str] = ""
     __tooltip__: ClassVar[Tooltip | None] = None
     _params: ClassVar[dict[str, Param]] = {}
+    _omitted: ClassVar[frozenset[str]] = frozenset()   # per __omit__ entfernte geerbte Parameter
 
     # ------------------------------------------------------------ Klassenaufbau
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Sammelt alle ``Param``-Definitionen inkl. geerbter (in Definitionsreihenfolge).
 
         Unterklassen können geerbte Parameter überschreiben, indem sie einen
-        Parameter gleichen Namens neu definieren (z. B. anderer Standardwert).
+        Parameter gleichen Namens neu definieren (z. B. anderer Standardwert), und
+        geerbte Parameter, die für sie nichts bewirken, mit ``__omit__ = ("name", …)``
+        entfernen – sie erscheinen dann weder in GUI/Doku noch in gespeicherten Dateien.
         """
         super().__init_subclass__(**kwargs)
         params: dict[str, Param] = {}
@@ -660,6 +689,10 @@ class BaseConfig:
         for name, value in cls.__dict__.items():
             if isinstance(value, Param):
                 params[name] = value
+        omitted = set(getattr(cls, "_omitted", frozenset())) | set(cls.__dict__.get("__omit__", ()))
+        for name in omitted:
+            params.pop(name, None)
+        cls._omitted = frozenset(omitted)
         cls._params = params
 
     @classmethod
@@ -857,6 +890,10 @@ class BaseConfig:
                 continue
             first = key.split(".", 1)[0]
             if first not in self._values and not isinstance(self, FreeConfig):
+                if first in type(self)._omitted:   # z. B. ältere Datei: amsgrad bei NAdam hat nie gewirkt
+                    warnings.warn(f"[{prefix + key}] '{first}' gibt es bei '{self.title()}' nicht (wirkt dort nicht) "
+                                  f"– ignoriert.", stacklevel=2)
+                    continue
                 raise UnknownParameterError(first, type(self)._params.keys(), path=prefix + key, owner=self.title())
             try:
                 current = self.get(key)

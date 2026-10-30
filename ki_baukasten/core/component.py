@@ -31,7 +31,7 @@ import copy
 from collections.abc import Mapping
 from typing import Any, Callable, Iterable
 
-from .config import BaseConfig, ConfigError, Param
+from .config import UNSET, BaseConfig, ConfigError, Param
 from .registry import Component, registry
 from .tooltip import Level, Tooltip
 
@@ -227,6 +227,8 @@ class ComponentParam(Param):
         group: str | None = None,
         nullable: bool | None = None,
         tags: Iterable[str] | None = None,
+        off: Any = UNSET,
+        on: Any = UNSET,
     ):
         self.registry_kind = registry_kind
         self.default_name = default
@@ -239,7 +241,7 @@ class ComponentParam(Param):
         super().__init__(
             None, tooltip=tooltip, type=object, level=level, group=group,
             nullable=(default is None) if nullable is None else nullable,
-            default_factory=factory,
+            default_factory=factory, off=off, on=on,
         )
 
     @property

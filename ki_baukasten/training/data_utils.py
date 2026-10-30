@@ -82,15 +82,55 @@ def as_dataset(data: Any) -> Dataset:
     )
 
 
-def split_dataset(ds: Dataset, fraction: float, seed: int | None) -> tuple[Dataset, Dataset | None]:
-    """Teilt zufällig einen Validierungsanteil ab."""
+def split_dataset(ds: Dataset, fraction: float, seed: int | None, strategy: str = "zufall"
+                  ) -> tuple[Dataset, Dataset | None]:
+    """Teilt einen Validierungsanteil ab: ``zufall`` | ``stratifiziert`` (Klassenanteile gleich) | ``zeitlich``
+    (die letzten Beispiele – keine Zukunftsinformation im Training)."""
+    from ..data.files import split_indices
+
     n = len(ds)  # type: ignore[arg-type]
-    n_val = int(round(n * fraction))
-    if fraction <= 0 or n_val == 0 or n_val >= n:
+    if strategy == "zufall":
+        n_val = int(round(n * fraction))
+        if fraction <= 0 or n_val == 0 or n_val >= n:
+            return ds, None
+        g = torch.Generator().manual_seed(seed if seed is not None else 0)
+        perm = torch.randperm(n, generator=g).tolist()
+        return Subset(ds, perm[n_val:]), Subset(ds, perm[:n_val])
+    labels = class_labels(ds) if strategy == "stratifiziert" else None
+    train, val = split_indices(n, fraction, strategy, labels.tolist() if labels is not None else None,
+                               seed if seed is not None else 0)
+    if not val:
         return ds, None
-    g = torch.Generator().manual_seed(seed if seed is not None else 0)
-    perm = torch.randperm(n, generator=g).tolist()
-    return Subset(ds, perm[n_val:]), Subset(ds, perm[:n_val])
+    return Subset(ds, train), Subset(ds, val)
+
+
+def class_labels(ds: Any) -> torch.Tensor | None:
+    """Ganzzahlige Klassen-Ziele eines (Teil-)Datensatzes oder ``None``."""
+    if isinstance(ds, Subset):
+        inner = class_labels(ds.dataset)
+        return inner[list(ds.indices)] if inner is not None else None
+    data = getattr(ds, "data", None) if isinstance(ds, DictDataset) else None
+    targets = data.get("targets") if isinstance(data, dict) else None
+    if not isinstance(targets, torch.Tensor) or targets.is_floating_point() or targets.dim() != 1:
+        return None
+    return targets
+
+
+def class_weight_tensor(ds: Any, mode: str) -> torch.Tensor | None:
+    """Klassengewichte aus den Häufigkeiten: ``ausgeglichen`` = N / (K · n_k), ``wurzel`` = deren Wurzel (milder)."""
+    if mode in (None, "keine"):
+        return None
+    labels = class_labels(ds)
+    if labels is None:
+        return None
+    labels = labels[labels >= 0].long()
+    counts = torch.bincount(labels).float()
+    present = counts > 0
+    weights = torch.ones_like(counts)
+    weights[present] = len(labels) / (int(present.sum()) * counts[present])
+    if mode == "wurzel":
+        weights = weights.sqrt()
+    return weights
 
 
 def to_device(obj: Any, device: torch.device, non_blocking: bool = False) -> Any:
@@ -161,13 +201,86 @@ def find_collate(ds: Any) -> Callable | None:
     return None
 
 
+def _tensor_source(ds: Any) -> tuple[dict, torch.Tensor | None] | None:
+    """(Tensor-dict, Index-Abbildung) für ``DictDataset`` und (verschachtelte) ``Subset`` davon – sonst ``None``."""
+    mapping = None
+    while isinstance(ds, Subset):
+        idx = torch.as_tensor(list(ds.indices), dtype=torch.long)
+        mapping = idx if mapping is None else idx[mapping]
+        ds = ds.dataset
+    if not isinstance(ds, DictDataset) or getattr(ds, "collate_fn", None) is not None:
+        return None
+
+    def all_tensors(obj: Any) -> bool:
+        if isinstance(obj, dict):
+            return all(all_tensors(v) for v in obj.values())
+        return isinstance(obj, torch.Tensor) and obj.dim() > 0
+    return (ds.data, mapping) if all_tensors(ds.data) else None
+
+
+def as_tensor_dict(ds: Any) -> dict | None:
+    """Tensor-dict eines ``DictDataset`` bzw. (verschachtelten) ``Subset`` davon – sonst ``None``."""
+    if isinstance(ds, dict):
+        return ds
+    source = _tensor_source(ds)
+    if source is None:
+        return None
+    data, mapping = source
+    return data if mapping is None else _take(data, mapping)
+
+
+def _take(obj: Any, idx: torch.Tensor) -> Any:
+    if isinstance(obj, dict):
+        return {k: _take(v, idx) for k, v in obj.items()}
+    return obj.index_select(0, idx) if idx.device == obj.device else obj[idx.to(obj.device)]
+
+
+class TensorBatchLoader(DataLoader):
+    """DataLoader für Daten, die als Tensoren im Speicher liegen: holt jeden Batch mit **einem** Index-Zugriff
+    je Tensor statt Beispiel für Beispiel zu lesen und wieder zusammenzufügen (bei kleinen Modellen oft der
+    größte Zeitfresser). Reihenfolge, Sampler, ``drop_last`` und Länge verhalten sich exakt wie beim
+    normalen ``DataLoader``; die Batches sind identisch zu ``default_collate``."""
+
+    def __init__(self, dataset: Dataset, data: dict, mapping: torch.Tensor | None, batch_size: int, shuffle: bool,
+                 drop_last: bool, sampler: Sampler | None, pin_memory: bool):
+        self._data, self._mapping, self._pin = data, mapping, pin_memory and torch.cuda.is_available()
+        super().__init__(dataset, batch_size=batch_size, shuffle=shuffle and sampler is None, drop_last=drop_last,
+                         sampler=sampler, collate_fn=collate)
+
+    def __iter__(self):
+        batches = iter(self.batch_sampler)
+        # wie DataLoader: einen Basis-Seed ziehen → gleicher Zufallsverlauf (Reihenfolge, Dropout …) wie bisher
+        torch.empty((), dtype=torch.int64).random_(generator=self.generator)
+        for indices in batches:
+            idx = torch.as_tensor(indices, dtype=torch.long)
+            if self._mapping is not None:
+                idx = self._mapping[idx]
+            batch = _take(self._data, idx)
+            if self._pin:
+                batch = pin(batch)
+            yield batch
+
+
+def pin(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {k: pin(v) for k, v in obj.items()}
+    return obj.pin_memory() if isinstance(obj, torch.Tensor) and obj.device.type == "cpu" else obj
+
+
 def make_loader(data: Any, batch_size: int, shuffle: bool, drop_last: bool = False, num_workers: int = 0,
                 pin_memory: bool = False, sampler: Sampler | None = None,
                 collate_fn: Callable | None = None) -> DataLoader:
-    """Baut einen DataLoader (ein vorhandener DataLoader wird unverändert zurückgegeben)."""
+    """Baut einen DataLoader (ein vorhandener DataLoader wird unverändert zurückgegeben).
+
+    Liegen die Daten als Tensoren im Speicher (Standardfall) und laufen keine Hintergrundprozesse, entsteht ein
+    ``TensorBatchLoader`` (gleiche Batches, viel weniger Aufwand je Batch).
+    """
     if isinstance(data, DataLoader):
         return data
     ds = as_dataset(data)
+    source = _tensor_source(ds) if collate_fn is None and num_workers == 0 else None
+    if source is not None:
+        return TensorBatchLoader(ds, source[0], source[1], batch_size, shuffle, drop_last, sampler, pin_memory)
     return DataLoader(ds, batch_size=batch_size, shuffle=shuffle and sampler is None, drop_last=drop_last,
                       num_workers=num_workers, pin_memory=pin_memory, sampler=sampler,
                       collate_fn=collate_fn or find_collate(ds) or collate)
